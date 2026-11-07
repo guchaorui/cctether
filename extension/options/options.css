@@ -1,0 +1,234 @@
+/* Settings page (opens in a tab). */
+
+body { font-size: 14px; background: var(--bg-sunken); }
+
+.page {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 48px 24px 56px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ------------------------------------------------------------------ masthead */
+
+.masthead { display: flex; align-items: center; gap: 16px; padding: 0 4px 12px; }
+.masthead-logo { flex: none; width: 44px; height: 44px; }
+.masthead-name { font-size: 22px; font-weight: 700; letter-spacing: -0.015em; line-height: 1.2; }
+.masthead-tagline { color: var(--text-2); margin-top: 2px; }
+
+/* ------------------------------------------------------------------ cards */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 22px 24px;
+  box-shadow: var(--shadow-sm);
+}
+.card-label {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text-2);
+  margin-bottom: 14px;
+}
+.card-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.card-row .card-label { margin: 0; }
+
+/* ------------------------------------------------------------------ connection status */
+
+.conn { display: flex; flex-direction: column; gap: 12px; }
+.conn-head { display: flex; align-items: center; gap: 14px; }
+.conn-text { flex: 1; min-width: 0; }
+.conn-title { font-size: 17px; font-weight: 650; line-height: 1.3; letter-spacing: -0.01em; }
+.conn-server { font-family: var(--mono); font-size: 13px; color: var(--text-2); margin-top: 2px; overflow-wrap: anywhere; }
+.conn-link { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text-2); margin-top: 2px; }
+.conn-body {
+  color: var(--text-2);
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--tone-soft);
+}
+.conn[data-kind="paused"] .conn-body,
+.conn[data-kind="replaced"] .conn-body,
+.conn[data-kind="disconnected"] .conn-body { color: var(--text); }
+.conn-body code { background: color-mix(in srgb, var(--tone) 10%, var(--surface)); }
+.conn-detail { font-family: var(--mono); font-size: 12px; color: var(--text-3); overflow-wrap: anywhere; }
+.conn-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; }
+.retry-wrap {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--text-2); font-variant-numeric: tabular-nums;
+}
+.retry-wrap .icon { color: var(--text-3); }
+.flash { padding: 10px 12px; border-radius: 10px; background: var(--accent-soft); }
+
+/* ------------------------------------------------------------------ paired details */
+
+.details { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line); }
+.facts-table { margin: 0; display: flex; flex-direction: column; gap: 12px; }
+.facts-table > div { display: grid; grid-template-columns: 132px 1fr; gap: 16px; align-items: baseline; }
+.facts-table dt { color: var(--text-2); font-size: 13px; }
+.facts-table dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.fingerprint { font-size: 13.5px; letter-spacing: 0.04em; }
+.dd-hint { display: block; margin-top: 3px; font-size: 12.5px; color: var(--text-3); }
+.details-actions { display: flex; gap: 10px; margin-top: 20px; flex-wrap: wrap; }
+
+/* ------------------------------------------------------------------ pairing form */
+
+.pair-title { font-size: 17px; font-weight: 650; letter-spacing: -0.01em; margin-bottom: 18px; }
+#conn-status:not([hidden]) + .pair:not([hidden]) { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--line); }
+
+.pair-steps { display: flex; flex-direction: column; gap: 20px; }
+.pair-steps > li { display: flex; gap: 14px; }
+.step-n {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+}
+.step-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.step-body > p, .step-body > label { padding-top: 1px; }
+
+.command {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 6px 6px 14px;
+  border-radius: 10px;
+  background: var(--code-bg);
+}
+.command-text { background: none; padding: 0; font-size: 14px; color: var(--text); }
+.command .btn-ghost:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
+
+textarea {
+  width: 100%;
+  min-height: 84px;
+  resize: vertical;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: break-all;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+textarea::placeholder { color: var(--text-3); }
+textarea:focus { outline: none; border-color: var(--accent); box-shadow: var(--focus); }
+textarea[aria-invalid="true"] { border-color: var(--danger); }
+textarea[aria-invalid="true"]:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 25%, transparent); }
+
+.validation { font-size: 13px; }
+.validation code { background: color-mix(in srgb, var(--tone) 10%, var(--surface)); }
+.secret-note { font-size: 12.5px; }
+
+.form-actions { display: flex; gap: 10px; margin-top: 22px; padding-left: 38px; }
+
+/* ------------------------------------------------------------------ language */
+
+.segmented {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  border-radius: 10px;
+  background: var(--neutral-soft);
+}
+.segmented button {
+  height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.segmented button:hover { color: var(--text); }
+.segmented button[aria-checked="true"] {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12), 0 0 0 1px var(--line);
+}
+
+/* ------------------------------------------------------------------ how it works */
+
+.facts { display: flex; flex-direction: column; gap: 12px; }
+.facts li { display: flex; gap: 12px; align-items: flex-start; color: var(--text); }
+.fact-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-top: -3px;
+  border-radius: 8px;
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+}
+
+/* ------------------------------------------------------------------ help */
+
+.faq { margin: -6px 0 -8px; }
+.faq details + details { border-top: 1px solid var(--line); }
+.faq summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary:hover { color: var(--accent-ink); }
+.faq .chev { color: var(--text-3); transition: transform 0.15s; }
+.faq details[open] .chev { transform: rotate(180deg); }
+.faq details p { padding: 0 28px 14px 0; color: var(--text-2); }
+
+/* ------------------------------------------------------------------ about */
+
+.about { padding: 8px 4px 0; display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--text-2); }
+.about-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.about a { display: inline-flex; align-items: center; gap: 4px; }
+.sep { color: var(--text-3); }
+.about code { font-size: 12px; }
+
+/* ------------------------------------------------------------------ dialog */
+
+dialog {
+  width: min(420px, calc(100vw - 32px));
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-lg);
+}
+dialog::backdrop { background: rgba(10, 14, 18, 0.45); }
+dialog h2 { font-size: 17px; font-weight: 650; margin-bottom: 8px; }
+dialog p { color: var(--text-2); }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
+
+/* ------------------------------------------------------------------ narrow windows */
+
+@media (max-width: 560px) {
+  .page { padding: 28px 14px 40px; gap: 12px; }
+  .card { padding: 18px 16px; }
+  .facts-table > div { grid-template-columns: 1fr; gap: 2px; }
+  .form-actions { padding-left: 0; }
+  .pair-steps > li { gap: 10px; }
+}

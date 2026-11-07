@@ -16,3 +16,6 @@ test-results/
 # Logs and OS files
 *.log
 .DS_Store
+
+# Visual review output (scripts/screenshots.mjs)
+screenshots/

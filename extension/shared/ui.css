@@ -1,0 +1,273 @@
+/* cctether shared design tokens and components (popup + settings page).
+   No remote fonts: system stacks that look right for both Latin and Chinese. */
+
+:root {
+  color-scheme: light dark;
+
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial,
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC",
+    "Source Han Sans SC", "WenQuanYi Micro Hei", "WenQuanYi Zen Hei", sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono",
+    "PingFang SC", "Microsoft YaHei", monospace;
+
+  --bg: #ffffff;
+  --bg-sunken: #f4f5f6;
+  --surface: #ffffff;
+  --surface-2: #f6f7f8;
+  --line: #e5e8eb;
+  --line-strong: #d4d9dd;
+  --text: #15191c;
+  --text-2: #565e66;
+  --text-3: #858d95;
+
+  --accent: #0f7f72;
+  --accent-hover: #0b6c61;
+  --accent-text: #ffffff;
+  --accent-ink: #0c6f63;
+  --accent-soft: #e6f4f1;
+  --accent-line: #bfe3dc;
+
+  --info: #2f6be0;
+  --info-ink: #2156c2;
+  --info-soft: #eaf1fd;
+  --warn: #c47c0a;
+  --warn-ink: #8f5800;
+  --warn-soft: #fdf4e2;
+  --danger: #d43c43;
+  --danger-ink: #b3262d;
+  --danger-soft: #fdeded;
+  --neutral: #6b737b;
+  --neutral-ink: #4d555c;
+  --neutral-soft: #f0f2f4;
+
+  --on-tone: #ffffff;
+  --code-bg: #eef1f3;
+  --focus: 0 0 0 3px rgba(15, 127, 114, 0.3);
+  --shadow-sm: 0 1px 2px rgba(16, 24, 32, 0.06);
+  --shadow-lg: 0 18px 50px rgba(16, 24, 32, 0.18), 0 2px 8px rgba(16, 24, 32, 0.08);
+  --radius: 12px;
+  --radius-sm: 8px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1b1d20;
+    --bg-sunken: #141618;
+    --surface: #212428;
+    --surface-2: #26292e;
+    --line: #31363b;
+    --line-strong: #3d4349;
+    --text: #e8ebee;
+    --text-2: #a9b0b7;
+    --text-3: #7b838c;
+
+    --accent: #36bfad;
+    --accent-hover: #4dcfbd;
+    --accent-text: #04201c;
+    --accent-ink: #5cd2c1;
+    --accent-soft: rgba(54, 191, 173, 0.13);
+    --accent-line: rgba(54, 191, 173, 0.32);
+
+    --info: #6b98f2;
+    --info-ink: #93b4f6;
+    --info-soft: rgba(107, 152, 242, 0.14);
+    --warn: #e5a83e;
+    --warn-ink: #f0c070;
+    --warn-soft: rgba(229, 168, 62, 0.13);
+    --danger: #f06a70;
+    --danger-ink: #f59a9e;
+    --danger-soft: rgba(240, 106, 112, 0.13);
+    --neutral: #8f979f;
+    --neutral-ink: #b4bbc2;
+    --neutral-soft: #2a2e33;
+
+    --on-tone: #15181b;
+    --code-bg: #2c3136;
+    --focus: 0 0 0 3px rgba(54, 191, 173, 0.35);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-lg: 0 18px 50px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  color: var(--text);
+  background: var(--bg);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+:lang(zh) body, body:lang(zh) { line-height: 1.6; }
+
+h1, h2, h3, p, ul, ol { margin: 0; }
+p, li, dd, summary, label { text-wrap: pretty; }
+ul, ol { padding: 0; list-style: none; }
+a { color: var(--accent-ink); text-decoration: none; }
+a:hover { text-decoration: underline; text-underline-offset: 2px; }
+
+code {
+  font-family: var(--mono);
+  font-size: 0.9em;
+  background: var(--code-bg);
+  border-radius: 5px;
+  padding: 0.08em 0.38em;
+  white-space: nowrap;
+}
+/* Long code (IDs, install commands) sits on its own line, always at the end of a sentence. */
+code.is-long {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 6px;
+  padding: 0.3em 0.55em;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.icon { flex: none; display: block; }
+
+:focus-visible { outline: none; box-shadow: var(--focus); }
+
+/* ------------------------------------------------------------------ buttons */
+
+.btn {
+  --btn-h: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: var(--btn-h);
+  padding: 0 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.12s, border-color 0.12s, color 0.12s, box-shadow 0.12s;
+}
+.btn .icon { width: 14px; height: 14px; }
+.btn:disabled { cursor: default; opacity: 0.45; }
+
+.btn-primary { background: var(--accent); color: var(--accent-text); }
+.btn-primary:not(:disabled):hover { background: var(--accent-hover); }
+
+.btn-secondary { background: var(--surface); color: var(--text); border-color: var(--line-strong); box-shadow: var(--shadow-sm); }
+.btn-secondary:not(:disabled):hover { background: var(--surface-2); }
+
+.btn-ghost { background: transparent; color: var(--text-2); }
+.btn-ghost:not(:disabled):hover { background: var(--neutral-soft); color: var(--text); }
+
+.btn-danger { background: var(--surface); color: var(--danger-ink); border-color: var(--line-strong); }
+.btn-danger:not(:disabled):hover { background: var(--danger-soft); border-color: transparent; }
+.btn-danger-solid { background: var(--danger); color: var(--on-tone); }
+.btn-danger-solid:not(:disabled):hover { filter: brightness(0.95); }
+
+.btn-sm { --btn-h: 28px; padding: 0 10px; font-size: 12.5px; border-radius: 7px; }
+
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.icon-btn:hover { background: var(--neutral-soft); color: var(--text); }
+
+/* ------------------------------------------------------------------ tones */
+
+.tone-ok      { --tone: var(--accent);  --tone-ink: var(--accent-ink);  --tone-soft: var(--accent-soft); }
+.tone-info    { --tone: var(--info);    --tone-ink: var(--info-ink);    --tone-soft: var(--info-soft); }
+.tone-warn    { --tone: var(--warn);    --tone-ink: var(--warn-ink);    --tone-soft: var(--warn-soft); }
+.tone-danger  { --tone: var(--danger);  --tone-ink: var(--danger-ink);  --tone-soft: var(--danger-soft); }
+.tone-neutral { --tone: var(--neutral); --tone-ink: var(--neutral-ink); --tone-soft: var(--neutral-soft); }
+
+/* Round state icon */
+.state-badge {
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  color: var(--on-tone);
+  background: var(--tone);
+}
+.state-badge.is-soft { color: var(--accent-ink); background: var(--accent-soft); }
+.state-badge.is-spinning::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  border-top-color: var(--tone);
+  border-right-color: var(--tone);
+  animation: spin 1.1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .state-badge.is-spinning::after { animation: none; border-color: var(--tone); opacity: 0.35; }
+}
+
+/* Small coloured dot */
+.dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--tone, var(--neutral));
+}
+
+/* Pill */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--tone-ink);
+  background: var(--tone-soft);
+  white-space: nowrap;
+}
+.chip .icon { width: 12px; height: 12px; }
+
+/* Calm inline note */
+.note {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.note .icon { margin-top: 2px; color: var(--text-3); }
+
+/* Text with a status colour */
+.msg { display: flex; gap: 7px; align-items: flex-start; font-size: 13px; color: var(--tone-ink); }
+.msg .icon { margin-top: 2px; width: 15px; height: 15px; }
+
+.muted { color: var(--text-2); }
+.faint { color: var(--text-3); }
+.mono { font-family: var(--mono); }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap;
+}
+[hidden] { display: none !important; }

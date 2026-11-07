@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>cctether</title>
+  <link rel="icon" href="../icons/icon-32.png">
+  <link rel="stylesheet" href="../shared/ui.css">
+  <link rel="stylesheet" href="options.css">
+  <script type="module" src="options.js"></script>
+</head>
+<body>
+  <div class="page">
+    <header class="masthead">
+      <img class="masthead-logo" src="../icons/icon.svg" alt="" width="44" height="44">
+      <div>
+        <h1 class="masthead-name">cctether</h1>
+        <p class="masthead-tagline" data-i18n="app.tagline"></p>
+      </div>
+    </header>
+
+    <!-- Connection -->
+    <section class="card" id="connection" aria-labelledby="connection-h">
+      <h2 class="card-label" id="connection-h" data-i18n="opt.connection"></h2>
+
+      <div id="conn-status"></div>
+
+      <form id="pair-form" class="pair" novalidate autocomplete="off" hidden>
+        <h3 class="pair-title" id="pair-title"></h3>
+        <ol class="pair-steps">
+          <li>
+            <span class="step-n">1</span>
+            <div class="step-body">
+              <p data-i18n="opt.pair.step1"></p>
+              <div class="command">
+                <code class="command-text">cctether pair</code>
+                <button type="button" class="btn btn-sm btn-ghost" id="copy-cmd"></button>
+              </div>
+            </div>
+          </li>
+          <li>
+            <span class="step-n">2</span>
+            <div class="step-body">
+              <label for="code" data-i18n="opt.pair.step2"></label>
+              <textarea id="code" name="code" rows="3" spellcheck="false" autocapitalize="off"
+                autocomplete="off" data-i18n-placeholder="opt.pair.placeholder"></textarea>
+              <p class="validation" id="validation" aria-live="polite" hidden></p>
+              <p class="note secret-note"><span id="secret-icon"></span><span data-i18n="opt.pair.secret"></span></p>
+            </div>
+          </li>
+        </ol>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary" id="pair-submit" data-i18n="opt.pair.submit" disabled></button>
+          <button type="button" class="btn btn-ghost" id="pair-cancel" data-i18n="opt.pair.cancel" hidden></button>
+        </div>
+      </form>
+
+      <div id="paired-details"></div>
+    </section>
+
+    <!-- Language -->
+    <section class="card card-row" aria-labelledby="lang-h">
+      <h2 class="card-label" id="lang-h" data-i18n="opt.lang.heading"></h2>
+      <div class="segmented" role="radiogroup" aria-labelledby="lang-h" id="lang">
+        <button type="button" role="radio" data-lang="auto" data-i18n="opt.lang.auto"></button>
+        <button type="button" role="radio" data-lang="zh" lang="zh-CN" data-i18n="lang.zh"></button>
+        <button type="button" role="radio" data-lang="en" lang="en" data-i18n="lang.en"></button>
+      </div>
+    </section>
+
+    <!-- How it works -->
+    <section class="card" aria-labelledby="how-h">
+      <h2 class="card-label" id="how-h" data-i18n="opt.how.heading"></h2>
+      <ul class="facts">
+        <li data-icon="mark"><span data-i18n="opt.how.own"></span></li>
+        <li data-icon="lock"><span data-i18n="opt.how.crypto"></span></li>
+        <li data-icon="group"><span data-i18n="opt.how.group"></span></li>
+        <li data-icon="eyeOff"><span data-i18n="opt.how.telemetry"></span></li>
+        <li data-icon="pause"><span data-i18n="opt.how.pause"></span></li>
+      </ul>
+    </section>
+
+    <!-- Help -->
+    <section class="card" aria-labelledby="help-h">
+      <h2 class="card-label" id="help-h" data-i18n="opt.help.heading"></h2>
+      <div class="faq">
+        <details><summary><span data-i18n="opt.help.code.q"></span></summary><p data-i18n="opt.help.code.a"></p></details>
+        <details><summary><span data-i18n="opt.help.group.q"></span></summary><p data-i18n="opt.help.group.a"></p></details>
+        <details><summary><span data-i18n="opt.help.debug.q"></span></summary><p data-i18n="opt.help.debug.a"></p></details>
+        <details><summary><span data-i18n="opt.help.leak.q"></span></summary><p data-i18n="opt.help.leak.a"></p></details>
+      </div>
+    </section>
+
+    <!-- About -->
+    <footer class="about" aria-labelledby="about-h">
+      <h2 class="sr-only" id="about-h" data-i18n="opt.about.heading"></h2>
+      <p class="about-line">
+        <span id="version"></span>
+        <span class="sep" aria-hidden="true">·</span>
+        <a id="source-link" target="_blank" rel="noopener"><span data-i18n="opt.about.source"></span></a>
+        <span class="sep" aria-hidden="true">·</span>
+        <span data-i18n="opt.about.license"></span>
+      </p>
+      <p class="about-line faint"><span data-i18n="opt.about.extId"></span> <code id="ext-id"></code></p>
+    </footer>
+  </div>
+
+  <dialog id="unpair-dialog" aria-labelledby="unpair-h">
+    <form method="dialog">
+      <h2 id="unpair-h" data-i18n="opt.unpair.title"></h2>
+      <p data-i18n="opt.unpair.body"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-secondary" value="keep" data-i18n="opt.unpair.keep" autofocus></button>
+        <button class="btn btn-danger-solid" value="unpair" data-i18n="opt.unpair.confirm"></button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

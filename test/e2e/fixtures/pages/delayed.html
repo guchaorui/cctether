@@ -1,0 +1,14 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Delayed</title></head>
+<body>
+<p id="spinner">Loading…</p>
+<script>
+  setTimeout(() => {
+    const d = document.createElement('div');
+    d.id = 'late';
+    d.textContent = 'Arrived late';
+    document.body.appendChild(d);
+    document.getElementById('spinner').remove();
+  }, 800);
+</script>
+</body></html>

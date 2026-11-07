@@ -1,0 +1,15 @@
+# Caddy in front of cctether: HTTPS with an automatic Let's Encrypt certificate.
+# Only the extension entrance is forwarded; every other path gets 404.
+# Replace browser.example.com with your own (sub)domain, pointing at this server.
+# Then pair with: cctether pair --url wss://browser.example.com/cctether
+
+browser.example.com {
+	@tether path /cctether
+	handle @tether {
+		reverse_proxy 127.0.0.1:27182
+	}
+	handle {
+		respond 404
+	}
+	header -Server
+}

@@ -1,0 +1,25 @@
+# systemd user service: keeps cctether running on a server, even when you're logged out.
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp cctether.service ~/.config/systemd/user/
+#   # edit ExecStart if `command -v cctether` is somewhere else
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now cctether
+#   sudo loginctl enable-linger "$USER"     # start at boot without logging in
+#   journalctl --user -u cctether -f         # logs
+
+[Unit]
+Description=cctether: browser tools for Claude Code
+After=network.target
+
+[Service]
+ExecStart=%h/.local/bin/cctether daemon
+Restart=always
+RestartSec=2
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=%h/.config/cctether
+
+[Install]
+WantedBy=default.target

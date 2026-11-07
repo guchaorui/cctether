@@ -1,0 +1,12 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Console</title></head>
+<body>
+<p>Console fixture</p>
+<script>
+  console.log('hello from page', { a: 1, b: 'two' }, [1, 2, 3]);
+  console.warn('page warning %s', 'formatted');
+  console.error('page error');
+  setTimeout(() => { throw new Error('boom uncaught'); }, 10);
+  fetch('/missing-resource.js').catch(() => {});
+</script>
+</body></html>

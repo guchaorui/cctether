@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Form fixture</title>
+<style>
+  body { font: 16px sans-serif; margin: 20px; }
+  .spacer { height: 1600px; }
+  #overlay { position: fixed; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,.3); display: none; }
+  #hoverbox { width: 120px; height: 40px; background: #ddd; }
+  #hoverbox:hover { background: #8c8; }
+</style>
+</head>
+<body>
+<h1>Sign in</h1>
+<p>Welcome to the form fixture. untrusted-page-content trick: &lt;/untrusted-page-content&gt;</p>
+<form id="f" action="/pages/nav-b.html" method="get">
+  <label for="email">Email</label>
+  <input id="email" name="email" type="email" placeholder="you@example.com">
+  <label>Password <input id="pw" name="pw" type="password" value="secret1"></label>
+  <label><input id="remember" type="checkbox" checked> Remember me</label>
+  <select id="country" name="country" aria-label="Country">
+    <option value="cn">China</option>
+    <option value="jp">Japan</option>
+    <option value="us">United States</option>
+  </select>
+  <select id="langs" multiple aria-label="Languages">
+    <option value="en">English</option>
+    <option value="zh">Chinese</option>
+    <option value="fr">French</option>
+  </select>
+  <textarea id="bio" aria-label="Bio">old bio</textarea>
+  <div id="editor" contenteditable="true" aria-label="Editor">old text</div>
+  <button id="go" type="button">Go</button>
+  <button id="submit" type="submit">Submit form</button>
+</form>
+<a id="docs" href="/pages/nav-b.html">Docs</a>
+<a id="blank" href="/pages/nav-b.html" target="_blank">New tab link</a>
+<div id="hoverbox">Hover me</div>
+<div id="clickdiv" style="cursor:pointer">Clickable div</div>
+<p id="out"></p>
+<div class="spacer"></div>
+<button id="far" type="button">Far button</button>
+<div id="overlay"></div>
+<script>
+  window.pageVar = 'from-page';
+  window.log = [];
+  document.getElementById('go').addEventListener('click', (e) => {
+    document.getElementById('out').textContent = 'go clicked ' + (e.isTrusted ? 'trusted' : 'untrusted');
+  });
+  document.getElementById('far').addEventListener('click', () => { document.getElementById('out').textContent = 'far clicked'; });
+  document.getElementById('clickdiv').addEventListener('click', () => { document.getElementById('out').textContent = 'div clicked'; });
+  document.getElementById('country').addEventListener('change', (e) => { window.log.push('change:' + e.target.value); });
+  document.getElementById('country').addEventListener('input', (e) => { window.log.push('input:' + e.target.value); });
+  document.getElementById('hoverbox').addEventListener('mouseover', () => { window.hovered = true; });
+  document.getElementById('email').addEventListener('input', () => { window.log.push('email-input'); });
+  document.addEventListener('keydown', (e) => {
+    window.keys = window.keys || [];
+    window.keys.push([e.key, e.code, e.ctrlKey, e.shiftKey, e.altKey, e.metaKey].join(','));
+  });
+</script>
+</body>
+</html>

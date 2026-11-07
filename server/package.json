@@ -1,0 +1,28 @@
+{
+  "name": "cctether",
+  "version": "0.1.0",
+  "description": "Let Claude Code use your browser over your own connection — no third-party relay.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "cctether": "bin/cctether.js"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/guchaorui/cctether.git"
+  },
+  "dependencies": {
+    "ws": "8.22.1"
+  }
+}
