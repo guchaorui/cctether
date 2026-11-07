@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { FailureLimiter, clientIp } from '../src/ratelimit.js';
 import { validate } from '../src/schema.js';
 import { encodePairingCode, decodePairingCode, keyFingerprint } from '../src/pairing.js';
-import { initConfig, loadConfig, saveConfig, configDir, isValidServerUrl, serverUrl, ConfigError } from '../src/config.js';
+import { initConfig, loadConfig, saveConfig, configDir, isValidServerUrl, serverUrl, trustProxy, socketPath, ConfigError } from '../src/config.js';
 import { TOOLS, mcpToolList } from '../src/tools.js';
 import { parsePairingCode, keyFingerprint as extFingerprint, checkServerUrl, displayServer } from '../../extension/shared/pairing.js';
 
@@ -40,13 +40,39 @@ test('failure limiter memory is bounded', () => {
   assert.equal(l.isBlocked('10.0.3.231'), true);
 });
 
-test('clientIp uses X-Forwarded-For only behind a local proxy', () => {
+test('clientIp uses X-Forwarded-For only when told a local proxy is in front', () => {
   const req = (peer, xff) => ({ socket: { remoteAddress: peer }, headers: xff ? { 'x-forwarded-for': xff } : {} });
-  assert.equal(clientIp(req('203.0.113.9', '1.2.3.4')), '203.0.113.9');
-  assert.equal(clientIp(req('127.0.0.1', '6.6.6.6, 198.51.100.7')), '198.51.100.7');
-  assert.equal(clientIp(req('::1', '198.51.100.7')), '198.51.100.7');
-  assert.equal(clientIp(req('127.0.0.1')), '127.0.0.1');
-  assert.equal(clientIp(req('::ffff:127.0.0.1', ' ')), '::ffff:127.0.0.1');
+  const trust = { trustProxy: true };
+  assert.equal(clientIp(req('203.0.113.9', '1.2.3.4'), trust), '203.0.113.9');
+  assert.equal(clientIp(req('127.0.0.1', '6.6.6.6, 198.51.100.7'), trust), '198.51.100.7');
+  assert.equal(clientIp(req('::1', '198.51.100.7'), trust), '198.51.100.7');
+  assert.equal(clientIp(req('127.0.0.1'), trust), '127.0.0.1');
+  assert.equal(clientIp(req('::ffff:127.0.0.1', ' '), trust), '::ffff:127.0.0.1');
+  // Default: the header is ignored.
+  assert.equal(clientIp(req('127.0.0.1', '198.51.100.7')), '127.0.0.1');
+});
+
+test('trustProxy follows the public address unless set explicitly', () => {
+  const base = { publicUrl: null, trustProxySetting: null };
+  assert.equal(trustProxy(base), false);
+  assert.equal(trustProxy({ ...base, publicUrl: 'wss://browser.example.com/cctether' }), true);
+  assert.equal(trustProxy({ ...base, publicUrl: 'ws://127.0.0.1:27182/cctether' }), false);
+  assert.equal(trustProxy({ ...base, publicUrl: 'wss://localhost:9443/cctether' }), false);
+  assert.equal(trustProxy({ publicUrl: 'wss://browser.example.com/cctether', trustProxySetting: false }), false);
+  assert.equal(trustProxy({ publicUrl: null, trustProxySetting: true }), true);
+});
+
+test('control socket path falls back to the private runtime dir when the config path is too long', () => {
+  const long = join(mkdtempSync(join(tmpdir(), 'cct-')), 'x'.repeat(120));
+  const rt = mkdtempSync(join(tmpdir(), 'rt-'));
+  chmodSync(rt, 0o700);
+  const p = socketPath(long, { XDG_RUNTIME_DIR: rt });
+  assert.ok(p.startsWith(rt + '/cctether-') && p.endsWith('.sock'), p);
+  assert.equal(socketPath(long, { XDG_RUNTIME_DIR: rt }), p, 'stable');
+  // A runtime dir others can read is not used.
+  chmodSync(rt, 0o755);
+  assert.equal(socketPath(long, { XDG_RUNTIME_DIR: rt }), join(long, 'control.sock'));
+  assert.equal(socketPath('/short', {}), '/short/control.sock');
 });
 
 test('schema validation', () => {

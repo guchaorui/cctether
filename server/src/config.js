@@ -1,7 +1,7 @@
 // Configuration directory and config.json (SPEC §4.5).
 
 import { mkdirSync, readFileSync, writeFileSync, renameSync, chmodSync, statSync, existsSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -16,10 +16,37 @@ export function configDir(env = process.env) {
   return join(homedir(), '.config', 'cctether');
 }
 
-export const paths = (dir) => ({
+/** Unix socket paths are limited to 104 (macOS) / 108 (Linux) bytes. */
+const MAX_SOCKET_PATH = 100;
+
+function isPrivateDir(d) {
+  try {
+    const st = statSync(d);
+    return st.isDirectory() && st.uid === process.getuid?.() && (st.mode & 0o077) === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The control socket lives in the config directory. If that path is too long for a Unix socket,
+ * use the per-user runtime directory instead (private by definition, but checked anyway).
+ */
+export function socketPath(dir, env = process.env) {
+  const p = join(dir, 'control.sock');
+  if (Buffer.byteLength(p) <= MAX_SOCKET_PATH) return p;
+  const rt = env.XDG_RUNTIME_DIR;
+  if (rt && isPrivateDir(rt)) {
+    const alt = join(rt, `cctether-${createHash('sha256').update(dir).digest('hex').slice(0, 16)}.sock`);
+    if (Buffer.byteLength(alt) <= MAX_SOCKET_PATH) return alt;
+  }
+  return p; // too long: startControl explains what to do
+}
+
+export const paths = (dir, env = process.env) => ({
   dir,
   config: join(dir, 'config.json'),
-  socket: join(dir, 'control.sock'),
+  socket: socketPath(dir, env),
   log: join(dir, 'daemon.log'),
 });
 
@@ -36,7 +63,11 @@ function validate(raw) {
     port: raw.port ?? DEFAULT_PORT,
     publicUrl: raw.publicUrl ?? null,
     extensionIds: raw.extensionIds ?? DEFAULT_EXTENSION_IDS,
+    trustProxySetting: raw.trustProxy ?? null,
   };
+  if (cfg.trustProxySetting !== null && typeof cfg.trustProxySetting !== 'boolean') {
+    throw new ConfigError('config.json: "trustProxy" must be true, false or null.');
+  }
   if (cfg.key.length !== 32) throw new ConfigError('config.json: "key" must be 32 bytes (base64url). Run `cctether rotate` to make a new one.');
   if (!Number.isInteger(cfg.port) || cfg.port < 1 || cfg.port > 65535) throw new ConfigError('config.json: "port" must be 1-65535.');
   if (cfg.publicUrl !== null && !isValidServerUrl(cfg.publicUrl)) {
@@ -54,6 +85,18 @@ export function isValidServerUrl(url) {
   if (u.username || u.password || u.hash || u.search) return false;
   if (u.protocol === 'wss:') return true;
   return u.protocol === 'ws:' && ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname);
+}
+
+/**
+ * Whether to take the client address from X-Forwarded-For when the peer is this computer.
+ * Default: yes when the public address is HTTPS on another host (that means a local reverse proxy
+ * such as Caddy or cloudflared is in front), otherwise no. "trustProxy" in config.json overrides.
+ */
+export function trustProxy(cfg) {
+  if (cfg.trustProxySetting !== null && cfg.trustProxySetting !== undefined) return cfg.trustProxySetting;
+  if (!cfg.publicUrl) return false;
+  const u = new URL(cfg.publicUrl);
+  return u.protocol === 'wss:' && !['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname);
 }
 
 export function localUrl(cfg) {
@@ -89,6 +132,7 @@ export function saveConfig(dir, cfg) {
     port: cfg.port,
     publicUrl: cfg.publicUrl,
     extensionIds: cfg.extensionIds,
+    trustProxy: cfg.trustProxySetting ?? null,
   };
   writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 });
   chmodSync(tmp, 0o600);

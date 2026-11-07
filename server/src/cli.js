@@ -2,7 +2,7 @@
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { configDir, paths, loadConfig, saveConfig, initConfig, newKey, serverUrl, localUrl, isValidServerUrl, ConfigError } from './config.js';
+import { configDir, paths, loadConfig, saveConfig, initConfig, newKey, serverUrl, localUrl, isValidServerUrl, trustProxy, ConfigError } from './config.js';
 import { encodePairingCode, keyFingerprint } from './pairing.js';
 import { adminRequest } from './control.js';
 import { createLogger } from './log.js';
@@ -108,6 +108,7 @@ export async function main(argv) {
         if (opts.url !== undefined && opts.url !== cfg.publicUrl) {
           cfg.publicUrl = opts.url;
           saveConfig(dir, cfg);
+          await notifyDaemon(P);
         }
         const url = serverUrl(cfg);
         err('Connection code — keep it secret: anyone who has it can control this browser connection.');
@@ -140,6 +141,7 @@ export async function main(argv) {
         out(`Settings:     ${P.config}`);
         out(`Address:      ${serverUrl(cfg)}${cfg.publicUrl ? ` (local ${localUrl(cfg)})` : ''}`);
         out(`Key:          fingerprint ${keyFingerprint(cfg.key)}`);
+        out(`Proxy:        ${trustProxy(cfg) ? 'behind a local reverse proxy (client addresses from X-Forwarded-For)' : 'none (client addresses from the connection)'}`);
         if (!st?.ok) {
           out('Service:      not running (it starts automatically when Claude Code uses cctether)');
           return 3;

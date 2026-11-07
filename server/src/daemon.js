@@ -1,6 +1,6 @@
 // The resident service: extension entrance + control entrance (SPEC §4.1).
 
-import { loadConfig, initConfig, paths, WS_PATH } from './config.js';
+import { loadConfig, initConfig, paths, trustProxy, WS_PATH } from './config.js';
 import { keyFingerprint } from './pairing.js';
 import { Gateway } from './gateway.js';
 import { startControl, adminRequest, AlreadyRunningError } from './control.js';
@@ -13,7 +13,7 @@ export async function runDaemon({ dir, version, log, port: portOverride, exitOnS
   if (created) log(`created ${P.config} with a new key`);
   const port = portOverride ?? cfg.port;
 
-  const gateway = new Gateway({ key: cfg.key, extensionIds: cfg.extensionIds, path: WS_PATH, version, log });
+  const gateway = new Gateway({ key: cfg.key, extensionIds: cfg.extensionIds, path: WS_PATH, version, log, trustProxy: trustProxy(cfg) });
   let boundPort;
   try {
     boundPort = await gateway.listen(port);
@@ -54,7 +54,7 @@ export async function runDaemon({ dir, version, log, port: portOverride, exitOnS
           case 'status':
             return {
               ok: true, pid: process.pid, version, port: boundPort, path: WS_PATH,
-              publicUrl: cfg.publicUrl, fingerprint: keyFingerprint(cfg.key), startedAt,
+              publicUrl: cfg.publicUrl, trustProxy: gateway.trustProxy, fingerprint: keyFingerprint(cfg.key), startedAt,
               browser: gateway.status(), mcpSessions: sessions,
             };
           case 'reload':
@@ -81,6 +81,7 @@ export async function runDaemon({ dir, version, log, port: portOverride, exitOnS
     if (!next) return { ok: false, error: 'config.json is missing' };
     const keyChanged = Buffer.compare(next.key, cfg.key) !== 0;
     gateway.setExtensionIds(next.extensionIds);
+    gateway.trustProxy = trustProxy(next);
     gateway.setKey(next.key);
     const portChanged = next.port !== cfg.port;
     cfg = next;

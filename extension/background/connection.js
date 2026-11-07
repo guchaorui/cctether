@@ -227,13 +227,14 @@ export class Connection {
       this.#phase = 'connected';
       this.#attempt = 0;
       this.#lastPong = Date.now();
+      this.#hbTimer = setInterval(() => this.#heartbeat(gen), HEARTBEAT_MS);
+      this.#send(gen, { t: 'info', ...this.#o.getInfo() });
       this.#setStatus({
         conn: 'connected', error: null, retryAt: null,
         serverVersion: typeof m.server === 'string' ? m.server.slice(0, 20) : null,
       });
-      this.#send(gen, { t: 'info', ...this.#o.getInfo() });
-      this.#hbTimer = setInterval(() => this.#heartbeat(gen), HEARTBEAT_MS);
-      this.#o.onConnectedChange(true);
+      // The status callback may have stopped or restarted the connection.
+      if (gen === this.#gen) this.#o.onConnectedChange(true);
       return;
     }
 

@@ -14,22 +14,33 @@
   - 全程走用户自己的连接，不经过 Anthropic 的中转服务器。
 - 起因：官方 Claude in Chrome 插件要经过 Anthropic 中转。主人的 Mac 有时连不上 Claude，这条链就断了。
 - 要开源（MIT），给有同样需求的人用。所以不能写死主人的环境，界面和 README 都要中英双语。
-- **当前：第一阶段还没开工（SPEC §10.1）。新对话从 `docs/HANDOFF.md` 第零节开始。**
+- **当前：第一阶段收尾中（SPEC §10.1）。新对话从 `docs/HANDOFF.md` 第零节开始。**
 
-## 仓库结构（计划，建好后照实改）
+## 仓库结构
 
 ```
-extension/   浏览器插件：MV3，零依赖，不打包，用户能直接「加载已解压的扩展程序」
-server/      npm 包 cctether：命令行、常驻服务、MCP 薄壳、配对
-test/e2e/    端到端测试：无界面 Chrome for Testing + 插件 + 服务
-docs/        SPEC（施工图）、HANDOFF（交接）；第二阶段加协议说明、部署文档
-deploy/      通用部署示例（Caddy、systemd、Cloudflare 隧道），不放主人的真实配置
-scripts/     打包插件 zip、批量截图之类的脚本
+extension/          浏览器插件：MV3，零依赖，不打包，用户能直接「加载已解压的扩展程序」
+  background/       service worker：main.js → app.js（总调度）、connection.js + crypto.js（连接和加密）、
+                    tabs.js（标签组范围）、debugger.js（调试器）、page-scripts.js、tools/（20 个工具）、badge.js（图标）
+  popup/ options/   弹窗、设置页；文字全在 shared/strings.js（中英）
+  shared/           contract.js（后台和界面之间的约定）、pairing.js（连接码）、i18n、ui.css
+  icons/            图标；源文件和生成脚本是 scripts/icons.mjs
+server/             npm 包 cctether：bin/cctether.js 命令行；src/ 里 gateway（插件入口）、control（控制入口）、
+                    mcp、shim（cctether mcp）、daemon、protocol、config、tools（工具定义，唯一来源）
+test/e2e/           端到端测试：无界面 Chrome for Testing + 插件 + 服务；lib/ 是自写的 CDP 客户端和 Chrome 启动器
+docs/               SPEC（施工图）、HANDOFF（交接）、install-mac.zh-CN.md（Mac 安装步骤）
+deploy/             通用部署示例（Caddy、systemd），不放主人的真实配置
+scripts/            icons.mjs（生成图标）、screenshots.mjs（界面批量截图，输出到 screenshots/，不进仓库）
 ```
 
 ## 命令
 
-还没有。建好后写在这里：测试、端到端、截图、打包。
+- 服务端单元测试：`cd server && npm test`（约 15 秒）
+- 端到端测试：`node --test test/e2e/*.test.mjs`（约 40 秒，用 `~/.cache/ms-playwright` 里的 Chrome for Testing，或设 `CHROME_PATH`）
+  - 有界面跑（多测 1 项弹框）：先 `Xvfb :97 -screen 0 1280x900x24 -nolisten tcp &`，再 `CCTETHER_HEADED=1 DISPLAY=:97 node --test test/e2e/tools.test.mjs`
+- 界面截图：`node scripts/screenshots.mjs [过滤词]`（全量约 2.5 分钟），看 `screenshots/sheet-*.png`
+- 重新生成图标：`node scripts/icons.mjs`
+- 本机试命令行：`node server/bin/cctether.js help`；临时配置目录用 `CCTETHER_HOME=/tmp/xxx`
 
 ## 规矩
 

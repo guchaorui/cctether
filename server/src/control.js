@@ -94,8 +94,12 @@ export async function startControl({ socketPath, onMcp, onAdmin, log = () => {} 
   });
 
   await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(socketPath, () => { server.off('error', reject); resolve(); });
+    server.once('error', (e) => {
+      if (e.code === 'EINVAL' || e.code === 'ENAMETOOLONG') {
+        reject(new Error(`Can't create the control socket ${socketPath}: the path is too long. Set CCTETHER_HOME to a shorter folder, e.g. ~/.cctether.`));
+      } else reject(e);
+    });
+    server.listen(socketPath, () => { server.removeAllListeners('error'); resolve(); });
   });
   chmodSync(socketPath, 0o600);
   log(`control socket ready`);

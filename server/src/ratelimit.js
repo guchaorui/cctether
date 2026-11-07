@@ -42,12 +42,14 @@ export class FailureLimiter {
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 
 /**
- * The address to rate-limit by. Behind a local reverse proxy (Caddy, cloudflared) the peer is
- * loopback; then the last X-Forwarded-For entry is the address the proxy saw.
+ * The address to rate-limit by. Behind a local reverse proxy (Caddy, cloudflared) every peer is
+ * loopback; with `trustProxy` the last X-Forwarded-For entry (the address the proxy saw) is used
+ * instead. Without it the header is ignored: any local process could otherwise forge it to dodge
+ * the limiter or get an innocent address blocked.
  */
-export function clientIp(req) {
+export function clientIp(req, { trustProxy = false } = {}) {
   const peer = req.socket.remoteAddress ?? 'unknown';
-  if (!LOOPBACK.has(peer)) return peer;
+  if (!trustProxy || !LOOPBACK.has(peer)) return peer;
   const xff = req.headers['x-forwarded-for'];
   if (typeof xff === 'string' && xff.trim()) {
     const last = xff.split(',').pop().trim();

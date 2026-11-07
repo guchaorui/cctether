@@ -41,9 +41,10 @@ export class Gateway extends EventEmitter {
 
   constructor({
     key, extensionIds, path = '/cctether', version, log = () => {}, limiter = new FailureLimiter(),
-    handshakeTimeoutMs = HANDSHAKE_TIMEOUT_MS, idleTimeoutMs = IDLE_TIMEOUT_MS,
+    handshakeTimeoutMs = HANDSHAKE_TIMEOUT_MS, idleTimeoutMs = IDLE_TIMEOUT_MS, trustProxy = false,
   }) {
     super();
+    this.trustProxy = trustProxy;
     this.#handshakeTimeoutMs = handshakeTimeoutMs;
     this.#idleTimeoutMs = idleTimeoutMs;
     this.#key = key;
@@ -116,7 +117,7 @@ export class Gateway extends EventEmitter {
   // --- connection setup ------------------------------------------------------------------
 
   #onUpgrade(req, socket, head) {
-    const ip = clientIp(req);
+    const ip = clientIp(req, { trustProxy: this.trustProxy });
     const reject = (status, text) => {
       socket.end(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
     };
