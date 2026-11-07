@@ -8,6 +8,7 @@
 - 第一阶段主人 2026-11-08 已试用确认。那次试用提的问题（断网检测、设置页图标对齐）都改好了。
 - 主人的 Mac 上的插件还是 **0.1.1**（2026-11-08 用 `cctether check` 看到的），所以 0.1.2 的图标对齐主人还没看到。0.2.0 包含它，照 `docs/install-mac.zh-CN.md` 第七节更新插件就能看到。
 - 服务器上的 cctether 服务已经升级到 0.2.0（见下面「部署」）。插件 0.1.1 和服务端 0.2.0 的协议一样，能正常连。
+- **GitHub Actions 的两个文件（`.github/workflows/`）还没 push 上去**：服务器上 `gh` 的登录缺 `workflow` 权限，GitHub 拒收。它们在本地单独一个提交里（「Add GitHub Actions…」）。主人在 Claude Code 里运行 `! gh auth refresh -h github.com -s workflow`、照提示在浏览器里授权以后，`git push` 就行，然后看 CI 第一次跑的结果（`gh run list`）。
 - **新窗口接手时**：先问主人看过没有、有没有要改的；再按下面「主人要定的事」逐条问。没得到主人点头，不发 npm、不建 Release、不公开仓库。
 
 ### 第二阶段做了什么
