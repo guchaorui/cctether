@@ -166,14 +166,14 @@ textarea[aria-invalid="true"]:focus { box-shadow: 0 0 0 3px color-mix(in srgb, v
 /* ------------------------------------------------------------------ how it works */
 
 .facts { display: flex; flex-direction: column; gap: 12px; }
-.facts li { display: flex; gap: 12px; align-items: flex-start; color: var(--text); }
+/* Icons sit at the vertical middle of their text: of the line, or of all lines when it wraps. */
+.facts li { display: flex; gap: 12px; align-items: center; color: var(--text); }
 .fact-icon {
   flex: none;
   display: grid;
   place-items: center;
   width: 28px;
   height: 28px;
-  margin-top: -3px;
   border-radius: 8px;
   color: var(--accent-ink);
   background: var(--accent-soft);
