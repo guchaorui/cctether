@@ -1,0 +1,48 @@
+# Push a tag like v0.2.0 to make a draft GitHub Release with the extension zip and the npm package
+# (SPEC §8.3). The draft is published by hand after a look. Nothing is published to npm here.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: Draft release
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Check that the tag matches both versions
+        run: |
+          node scripts/pack-extension.mjs --check
+          version=$(node -p "require('./server/package.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME doesn't match version $version" >&2
+            exit 1
+          fi
+      - run: node scripts/pack-extension.mjs
+      - run: npm pack --pack-destination ../dist
+        working-directory: server
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum * | tee SHA256SUMS
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
+            --draft --verify-tag --generate-notes --title "cctether ${GITHUB_REF_NAME#v}"

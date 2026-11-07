@@ -1,0 +1,75 @@
+# Tests and packaging on every push and pull request (SPEC §8.3).
+# Actions are pinned to full commit SHAs; the comment says which release that is.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: Server tests (Node ${{ matrix.node }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci
+        working-directory: server
+      - run: npm test
+        working-directory: server
+
+  e2e:
+    name: End-to-end tests (Chrome for Testing)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - run: npm ci
+        working-directory: server
+      - name: Install Chrome for Testing (stable)
+        run: |
+          url=$(curl -fsSL https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json \
+            | jq -r '.channels.Stable.downloads.chrome[] | select(.platform == "linux64") | .url')
+          curl -fsSL "$url" -o "$RUNNER_TEMP/chrome.zip"
+          unzip -q "$RUNNER_TEMP/chrome.zip" -d "$RUNNER_TEMP"
+          echo "CHROME_PATH=$RUNNER_TEMP/chrome-linux64/chrome" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/chrome-linux64/chrome" --version
+      - name: Let Chrome use its sandbox (Ubuntu 24.04 restricts user namespaces)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: node --test test/e2e/*.test.mjs
+
+  package:
+    name: Package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - run: node scripts/pack-extension.mjs
+      - run: npm pack --pack-destination ../dist
+        working-directory: server
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cctether-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
