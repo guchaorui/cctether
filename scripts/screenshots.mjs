@@ -78,6 +78,7 @@ const POPUP = {
   'connected-empty': { status: { ...connected, sharedTabs: 0, attachedTabs: 0 }, activity: [] },
   'paused-user': { status: connected, settings: { paused: true, pausedReason: 'user' }, activity: ACTIVITY },
   'paused-debugger': { status: { ...connected, attachedTabs: 0 }, settings: { paused: true, pausedReason: 'debugger_canceled' }, activity: ACTIVITY },
+  'disconnected-offline': { status: disc('offline', null), activity: ACTIVITY },
   'disconnected-unreachable': { status: disc('unreachable'), activity: ACTIVITY },
   'disconnected-rate_limited': { status: disc('rate_limited', 4 * 60e3 + 10e3), activity: ACTIVITY.slice(0, 4) },
   server_auth_failed: { status: disc('server_auth_failed', 30000), activity: ACTIVITY },

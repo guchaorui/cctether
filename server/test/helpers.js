@@ -21,7 +21,7 @@ export async function startGateway(opts = {}) {
 }
 
 /** The real extension connection code, with a Node WebSocket that can set Origin. */
-export function makeExtension({ url, key, origin = ORIGIN, onCall, headers } = {}) {
+export function makeExtension({ url, key, origin = ORIGIN, onCall, headers, options = {} } = {}) {
   const statuses = [];
   let status = {};
   const waiters = [];
@@ -34,6 +34,7 @@ export function makeExtension({ url, key, origin = ORIGIN, onCall, headers } = {
     },
     onCall: onCall ?? (async (tool, args) => ({ ok: true, data: { content: [{ type: 'text', text: `${tool}:${JSON.stringify(args)}` }] } })),
     getInfo: () => ({ extension: '0.1.0', browser: 'TestBrowser 1', platform: 'test' }),
+    ...options,
   });
   return {
     conn,
@@ -79,3 +80,24 @@ export function rawClient(url, { origin = ORIGIN, headers } = {}) {
 }
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** A TCP relay in front of the gateway that can silently stop passing data (a dead network path). */
+export async function blackholeProxy(targetPort) {
+  const { createServer, connect } = await import('node:net');
+  let dead = false;
+  const sockets = new Set();
+  const server = createServer((client) => {
+    const upstream = connect(targetPort, '127.0.0.1');
+    for (const s of [client, upstream]) { sockets.add(s); s.on('error', () => {}); s.on('close', () => sockets.delete(s)); }
+    client.on('data', (d) => { if (!dead) upstream.write(d); });
+    upstream.on('data', (d) => { if (!dead) client.write(d); });
+    client.on('close', () => upstream.destroy());
+    upstream.on('close', () => client.destroy());
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  return {
+    port: server.address().port,
+    kill() { dead = true; },
+    close() { for (const s of sockets) s.destroy(); server.close(); },
+  };
+}

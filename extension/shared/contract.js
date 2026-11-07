@@ -51,8 +51,9 @@ export const DEFAULT_SETTINGS = { lang: 'auto', paused: false, pausedReason: nul
  */
 
 /**
- * @typedef {'unreachable'|'timeout'|'server_auth_failed'|'auth_rejected'|'origin_rejected'|
+ * @typedef {'offline'|'unreachable'|'timeout'|'server_auth_failed'|'auth_rejected'|'origin_rejected'|
  *           'rate_limited'|'update_extension'|'update_server'|'insecure_url'|'protocol_error'|'closed'} ErrorCode
+ *   offline            this computer has no network (browser 'offline' event); reconnects on 'online', no retry timer
  *   unreachable        could not open the WebSocket (server down, wrong address, network/proxy problem)
  *   timeout            connected but the handshake or heartbeat timed out
  *   server_auth_failed the server could NOT prove it knows the key: wrong connection code or an impostor server

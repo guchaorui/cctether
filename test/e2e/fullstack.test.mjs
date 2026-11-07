@@ -227,6 +227,23 @@ test('the extension reconnects after the service restarts', async () => {
   assert.ok(!(await mcp.call('list_tabs')).isError);
 });
 
+test('losing the network shows "offline" at once and reconnects when it is back', async () => {
+  await waitConn('connected');
+  const net = (offline) => sw.send('Network.emulateNetworkConditions', { offline, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+  await sw.send('Network.enable');
+  try {
+    const t0 = Date.now();
+    await net(true);
+    const st = await waitConn('disconnected', (s) => s.error?.code === 'offline', 5000);
+    assert.ok(Date.now() - t0 < 3000, `offline shown after ${Date.now() - t0} ms`);
+    assert.equal(st.retryAt, null);
+  } finally {
+    await net(false);
+  }
+  await waitConn('connected', () => true, 10000);
+  await sw.send('Network.disable');
+});
+
 test('a second browser replaces this one; reconnect takes it back', async () => {
   const { WebSocket } = await import(join(ROOT, 'server/node_modules/ws/wrapper.mjs'));
   const { Connection } = await import(join(ROOT, 'extension/background/connection.js'));

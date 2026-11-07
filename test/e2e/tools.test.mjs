@@ -7,12 +7,15 @@
 //   CCTETHER_HEADED=1 DISPLAY=:97 node --test test/e2e/tools.test.mjs
 
 import { test, before, after } from 'node:test';
+import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { launchChrome } from './lib/chrome.js';
+
+const VERSION_RE = JSON.parse(readFileSync(new URL('../../extension/manifest.json', import.meta.url), 'utf8')).version.replace(/\./g, '\\.');
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..', '..');
@@ -204,7 +207,7 @@ test('tool names and arguments match the server definitions', async () => {
 test('list_tabs with nothing shared explains how to share', async () => {
   const r = await ok('list_tabs');
   assert.match(r.text, /No tabs are shared/);
-  assert.match(r.text, /cctether extension 0\.1\.0/);
+  assert.match(r.text, new RegExp(`cctether extension ${VERSION_RE}`));
   await fails('read_page', {}, 'no_tab');
 });
 
@@ -718,7 +721,7 @@ test('tabs.js: shareTab / unshareTab / tabInfo / countSharedTabs / onSharedTabsC
 
 test('list_extensions marks unpacked ones and cctether itself', async () => {
   const r = await ok('list_extensions');
-  assert.match(r.text, new RegExp(`"cctether" v0\\.1\\.0 id=${EXT_ID}: enabled, unpacked, this is cctether itself`));
+  assert.match(r.text, new RegExp(`"cctether" v${VERSION_RE} id=${EXT_ID}: enabled, unpacked, this is cctether itself`));
   assert.match(r.text, new RegExp(`"ext-logger" v1\\.0\\.0 id=${loggerId}: enabled, unpacked`));
 });
 

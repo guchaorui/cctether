@@ -42,9 +42,10 @@ chrome.storage.onChanged.addListener(onStorageChanged);
 chrome.runtime.onInstalled.addListener(({ reason }) => {
   if (reason === 'install') chrome.runtime.openOptionsPage();
 });
-self.addEventListener('online', () => {
-  ready.then(() => { if (!connection.connected) connection.reconnectNow(); });
-});
+// Chrome doesn't close a WebSocket when the network goes away; react to the network events
+// directly instead of waiting for the heartbeat to time out.
+self.addEventListener('offline', () => { ready.then(() => connection.networkLost()); });
+self.addEventListener('online', () => { ready.then(() => connection.networkBack()); });
 
 const ready = init().catch((e) => log('init failed', e));
 

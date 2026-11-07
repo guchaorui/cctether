@@ -83,6 +83,17 @@ const ICONS = {
     ['rect', { x: 7.5, y: 6.5, width: 3, height: 11, rx: 1, ...DOTF }],
     ['rect', { x: 13.5, y: 6.5, width: 3, height: 11, rx: 1, ...DOTF }],
   ],
+  // Larger drawings of the two glyphs that look small next to lock / folder / eye in a list of
+  // icons (the mark is flat, the pause bars are narrow), so a column of icons reads as one size.
+  markLg: [
+    ['path', { d: 'M5.2 16C8.9 6.4 15.1 17.6 18.8 8', 'stroke-width': 2.2 }],
+    ['circle', { cx: 5.2, cy: 16, r: 2.4, ...DOTF }],
+    ['circle', { cx: 18.8, cy: 8, r: 2.4, ...DOTF }],
+  ],
+  pauseLg: [
+    ['rect', { x: 6.8, y: 5, width: 3.6, height: 14, rx: 1.2, ...DOTF }],
+    ['rect', { x: 13.6, y: 5, width: 3.6, height: 14, rx: 1.2, ...DOTF }],
+  ],
   play: [['path', { d: 'M8.5 6.8v10.4a.8.8 0 0 0 1.2.7l8.3-5.2a.8.8 0 0 0 0-1.4L9.7 6.1a.8.8 0 0 0-1.2.7z', ...DOTF }]],
   swap: [['path', { d: 'M5 8.5h13M14.5 5l3.5 3.5-3.5 3.5M19 15.5H6M9.5 12 6 15.5 9.5 19' }]],
   shield: [
@@ -171,7 +182,7 @@ export function icon(name, { size = 16, cls = '' } = {}) {
 // Connection state → what to show
 
 const ERROR_ICON = {
-  unreachable: 'broken', timeout: 'clock', closed: 'broken', rate_limited: 'clock',
+  offline: 'broken', unreachable: 'broken', timeout: 'clock', closed: 'broken', rate_limited: 'clock',
   server_auth_failed: 'shield', auth_rejected: 'key', origin_rejected: 'shield', insecure_url: 'shield',
   protocol_error: 'shield', update_extension: 'update', update_server: 'update',
 };

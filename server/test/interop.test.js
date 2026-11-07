@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes, createHmac } from 'node:crypto';
-import { startGateway, makeExtension, rawClient, sleep, ORIGIN } from './helpers.js';
+import { startGateway, makeExtension, rawClient, sleep, ORIGIN, blackholeProxy } from './helpers.js';
 import { FailureLimiter } from '../src/ratelimit.js';
 import { PROTO, LABEL_CLIENT, LABEL_SERVER, b64u, fromB64u, proof, deriveSessionKeys, SessionCipher } from '../src/protocol.js';
 
@@ -355,4 +355,88 @@ test('the server side of the protocol matches the WebCrypto side byte for byte',
   void f1;
   // Sanity: HMAC label really is part of the proof.
   assert.notDeepEqual(proof(key, LABEL_CLIENT, cn, sn), createHmac('sha256', key).update(cn).update(sn).digest());
+});
+
+test('a network path that silently stops working is noticed by the heartbeat', async (t) => {
+  const g = await startGateway();
+  const proxy = await blackholeProxy(g.port);
+  t.after(() => { proxy.close(); g.gw.close(); });
+  const ext = makeExtension({
+    url: `ws://127.0.0.1:${proxy.port}/cctether`, key: g.key,
+    options: { heartbeatMs: 200, pongTimeoutMs: 300 },
+  });
+  ext.start();
+  await ext.waitFor((s) => s.conn === 'connected');
+  await sleep(700); // pings are answered while the path works
+  assert.equal(ext.status.conn, 'connected');
+  proxy.kill(); // no FIN, no RST: bytes just stop arriving
+  const t0 = Date.now();
+  const st = await ext.waitFor((s) => s.conn === 'disconnected', 3000);
+  assert.equal(st.error.code, 'timeout');
+  assert.ok(Date.now() - t0 < 1500, `noticed after ${Date.now() - t0} ms`);
+  ext.stop();
+});
+
+test('going offline is shown at once; the connection comes back with the network', async (t) => {
+  const g = await startGateway();
+  t.after(() => g.gw.close());
+  let online = true;
+  const ext = makeExtension({ url: g.url, key: g.key, options: { isOnline: () => online } });
+  ext.start();
+  await ext.waitFor((s) => s.conn === 'connected');
+  online = false;
+  ext.conn.networkLost();
+  assert.equal(ext.status.conn, 'disconnected');
+  assert.deepEqual(ext.status.error, { code: 'offline' });
+  assert.equal(ext.status.retryAt, null, 'no retry timer while offline');
+  // A periodic check while still offline does nothing.
+  ext.conn.tick();
+  await sleep(200);
+  assert.equal(ext.status.error.code, 'offline');
+  // Network back.
+  online = true;
+  ext.conn.networkBack();
+  await ext.waitFor((s) => s.conn === 'connected');
+  // A failed attempt while the computer is offline is also reported as offline.
+  online = false;
+  ext.conn.reconnectNow();
+  await g.gw.close();
+  const st = await ext.waitFor((s) => s.conn === 'disconnected');
+  assert.equal(st.error.code, 'offline');
+  ext.stop();
+});
+
+test('the periodic check reconnects if the online event was missed', async (t) => {
+  const g = await startGateway();
+  t.after(() => g.gw.close());
+  let online = true;
+  const ext = makeExtension({ url: g.url, key: g.key, options: { isOnline: () => online } });
+  ext.start();
+  await ext.waitFor((s) => s.conn === 'connected');
+  online = false;
+  ext.conn.networkLost();
+  online = true;
+  ext.conn.tick();
+  await ext.waitFor((s) => s.conn === 'connected');
+  ext.stop();
+});
+
+test('the network coming back does not take over from another browser', async (t) => {
+  const g = await startGateway();
+  t.after(() => g.gw.close());
+  const a = makeExtension({ url: g.url, key: g.key });
+  a.start();
+  await a.waitFor((s) => s.conn === 'connected');
+  const b = makeExtension({ url: g.url, key: g.key });
+  b.start();
+  await b.waitFor((s) => s.conn === 'connected');
+  await a.waitFor((s) => s.conn === 'replaced');
+  a.conn.networkLost();
+  a.conn.networkBack();
+  a.conn.tick();
+  await sleep(300);
+  assert.equal(a.status.conn, 'replaced');
+  assert.equal(b.status.conn, 'connected');
+  a.stop();
+  b.stop();
 });

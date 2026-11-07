@@ -45,6 +45,8 @@ const en = {
   'retry.minutes': ({ n }) => `${n} min`,
 
   // Why we are disconnected (ErrorCode) and what to do
+  'err.offline.title': 'You’re offline',
+  'err.offline.body': 'This computer has no network connection. cctether reconnects as soon as it’s back.',
   'err.unreachable.title': 'Can’t reach the server',
   'err.unreachable.body': 'The server isn’t answering. Check that the computer running Claude Code is on and cctether is running there. A proxy app or firewall can also block the connection.',
   'err.timeout.title': 'The server stopped answering',
@@ -157,8 +159,8 @@ const en = {
   'lang.en': 'English',
 
   'opt.how.heading': 'How it works',
-  'opt.how.own': 'Connects only to your own server, the one in your connection code. No third-party relay, Anthropic’s included.',
-  'opt.how.crypto': 'Every message is encrypted, and both sides prove they hold the key before anything happens.',
+  'opt.how.own': 'Connects only to your own server. No third-party relay, not even Anthropic’s.',
+  'opt.how.crypto': 'Every message is encrypted. Both sides prove they hold the key first.',
   'opt.how.group': 'Claude can only use tabs in the cctether tab group. Your other tabs stay out of reach.',
   'opt.how.telemetry': 'No analytics and no telemetry. Nothing is sent anywhere else.',
   'opt.how.pause': 'Pause any time from the cctether button in the toolbar.',
@@ -213,6 +215,8 @@ const zh = {
   'retry.seconds': ({ n }) => `${n} 秒`,
   'retry.minutes': ({ n }) => `${n} 分钟`,
 
+  'err.offline.title': '网络断了',
+  'err.offline.body': '这台电脑现在没有网络。网络一恢复，cctether 会自己连回去。',
   'err.unreachable.title': '连不上服务器',
   'err.unreachable.body': '服务器没有响应。请确认 Claude Code 所在的电脑开着，上面的 cctether 也在运行。代理软件或防火墙也可能挡住连接。',
   'err.timeout.title': '服务器没有回应',
@@ -319,7 +323,7 @@ const zh = {
   'lang.en': 'English',
 
   'opt.how.heading': '工作原理',
-  'opt.how.own': '只连你自己的服务器，也就是连接码里的那个地址。不经过任何第三方中转，包括 Anthropic。',
+  'opt.how.own': '只连你自己的服务器，不经过任何第三方中转，包括 Anthropic。',
   'opt.how.crypto': '每条消息都加密。两边都先证明自己有密钥，才会开始干活。',
   'opt.how.group': 'Claude 只能使用 cctether 标签组里的标签页，碰不到你别的标签页。',
   'opt.how.telemetry': '没有统计，也没有遥测，不往别处发任何东西。',

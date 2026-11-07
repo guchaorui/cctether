@@ -5,13 +5,21 @@ import { PROTO, randomNonce, importSharedKey, clientProof, verifyServerProof, cr
 import { checkServerUrl, displayServer, base64urlToBytes, bytesToBase64url } from '../shared/pairing.js';
 
 const HANDSHAKE_TIMEOUT_MS = 10_000;
-const HEARTBEAT_MS = 20_000;
-const PONG_TIMEOUT_MS = 45_000;
+/** A ping every 10 s keeps the service worker alive and notices a dead link within ~20 s. */
+const HEARTBEAT_MS = 10_000;
+const PONG_TIMEOUT_MS = 10_000;
+/**
+ * Extension service workers don't reliably get 'offline' / 'online' events (seen with Chrome's
+ * network emulation: navigator.onLine changes, no event fires), so the flag is also read every second.
+ */
+const NET_CHECK_MS = 1000;
 const BACKOFF_MS = [1000, 2000, 4000, 8000, 15_000, 30_000];
 /** Errors that retrying soon won't fix (wrong key, wrong version, blocked): retry rarely. */
 const SLOW_RETRY_MS = 5 * 60_000;
 const SLOW_ERRORS = new Set(['server_auth_failed', 'auth_rejected', 'origin_rejected', 'update_extension', 'update_server', 'rate_limited']);
 const SERVER_ERRORS = new Set(['auth_rejected', 'origin_rejected', 'update_extension', 'update_server', 'rate_limited']);
+/** States where "the network is back" must not trigger a reconnect. */
+const NO_AUTO_RECONNECT = new Set(['replaced', 'insecure_url', ...SLOW_ERRORS]);
 /** Messages above this many characters are sent as fragments (frames must stay under 1 MB). */
 const FRAG_CHARS = 120_000;
 const MAX_MESSAGE_CHARS = 30 * 1024 * 1024;
@@ -26,6 +34,10 @@ const CLOSE_CODE_ERRORS = { 4401: 'auth_rejected', 4403: 'origin_rejected', 4409
  * @property {(connected: boolean) => void} [onConnectedChange]
  * @property {(url: string) => any} [createSocket]
  * @property {(msg: string) => void} [log]
+ * @property {() => boolean} [isOnline]          false when the computer has no network (navigator.onLine)
+ * @property {number} [heartbeatMs]
+ * @property {number} [pongTimeoutMs]
+ * @property {number} [netCheckMs]               how often to read isOnline(); 0 = never
  */
 export class Connection {
   #o;
@@ -39,14 +51,26 @@ export class Connection {
   #retryTimer = null;
   #hsTimer = null;
   #hbTimer = null;
-  #lastPong = 0;
+  #pongTimer = null;
+  #downCode = null; // why we are down (ErrorCode or 'replaced')
+  #waitingForNetwork = false;
+  #netTimer = null;
   #cipher = null;
   #sendChain = Promise.resolve();
   #recvChain = Promise.resolve();
 
   /** @param {ConnectionOptions} opts */
   constructor(opts) {
-    this.#o = { createSocket: (url) => new WebSocket(url), log: () => {}, onConnectedChange: () => {}, ...opts };
+    this.#o = {
+      createSocket: (url) => new WebSocket(url),
+      log: () => {},
+      onConnectedChange: () => {},
+      isOnline: () => globalThis.navigator?.onLine !== false,
+      heartbeatMs: HEARTBEAT_MS,
+      pongTimeoutMs: PONG_TIMEOUT_MS,
+      netCheckMs: NET_CHECK_MS,
+      ...opts,
+    };
   }
 
   get connected() {
@@ -63,6 +87,7 @@ export class Connection {
     this.#pairing = pairing;
     this.#keys = null;
     this.#attempt = 0;
+    this.#watchNetwork(true);
     const server = displayServer(pairing.url);
     if (resume.replaced) {
       this.#phase = 'down';
@@ -81,6 +106,7 @@ export class Connection {
   /** Forget the pairing and disconnect. */
   stop() {
     this.#teardown();
+    this.#watchNetwork(false);
     this.#pairing = null;
     this.#keys = null;
     this.#phase = 'idle';
@@ -98,11 +124,38 @@ export class Connection {
   /** Called periodically (chrome.alarms): reconnect if a retry is due, check the heartbeat. */
   tick() {
     if (!this.#pairing) return;
-    if (this.#phase === 'down' && this.#retryAt !== null && this.#retryAt <= Date.now()) this.#connect();
+    if (this.#phase === 'down' && this.#waitingForNetwork) {
+      if (this.#o.isOnline()) this.reconnectNow(); // missed the 'online' event
+    } else if (this.#phase === 'down' && this.#retryAt !== null && this.#retryAt <= Date.now()) this.#connect();
     else if (this.#phase === 'connected') this.#heartbeat(this.#gen);
   }
 
+  /** The computer lost its network (browser 'offline' event): say so at once instead of waiting for the heartbeat. */
+  networkLost() {
+    if (!this.#pairing || this.#phase === 'idle') return;
+    if (this.#phase === 'down' && (this.#waitingForNetwork || this.#downCode === 'replaced' || this.#downCode === 'insecure_url')) return;
+    this.#down(this.#gen, 'offline');
+  }
+
+  /** The network is back (browser 'online' event): reconnect now, unless waiting is deliberate. */
+  networkBack() {
+    if (!this.#pairing || this.#phase !== 'down') return;
+    if (this.#waitingForNetwork || !NO_AUTO_RECONNECT.has(this.#downCode)) this.reconnectNow();
+  }
+
   // --- internals -------------------------------------------------------------------------
+
+  #watchNetwork(on) {
+    clearInterval(this.#netTimer);
+    this.#netTimer = null;
+    if (!on || !this.#o.netCheckMs) return;
+    this.#netTimer = setInterval(() => {
+      if (this.#o.isOnline()) {
+        if (this.#waitingForNetwork) this.networkBack();
+      } else if (!this.#waitingForNetwork) this.networkLost();
+    }, this.#o.netCheckMs);
+    this.#netTimer?.unref?.(); // Node (tests): don't keep the process alive
+  }
 
   #setStatus(patch) {
     this.#o.onStatus(patch);
@@ -122,8 +175,10 @@ export class Connection {
     clearTimeout(this.#retryTimer);
     clearTimeout(this.#hsTimer);
     clearInterval(this.#hbTimer);
-    this.#retryTimer = this.#hsTimer = this.#hbTimer = null;
+    clearTimeout(this.#pongTimer);
+    this.#retryTimer = this.#hsTimer = this.#hbTimer = this.#pongTimer = null;
     this.#retryAt = null;
+    this.#waitingForNetwork = false;
     this.#cipher = null;
     const ws = this.#ws;
     this.#ws = null;
@@ -226,8 +281,7 @@ export class Connection {
       clearTimeout(this.#hsTimer);
       this.#phase = 'connected';
       this.#attempt = 0;
-      this.#lastPong = Date.now();
-      this.#hbTimer = setInterval(() => this.#heartbeat(gen), HEARTBEAT_MS);
+      this.#hbTimer = setInterval(() => this.#heartbeat(gen), this.#o.heartbeatMs);
       this.#send(gen, { t: 'info', ...this.#o.getInfo() });
       this.#setStatus({
         conn: 'connected', error: null, retryAt: null,
@@ -240,7 +294,8 @@ export class Connection {
 
     switch (m.t) {
       case 'pong':
-        this.#lastPong = Date.now();
+        clearTimeout(this.#pongTimer);
+        this.#pongTimer = null;
         break;
       case 'call':
         // Calls run concurrently; don't block the receive chain.
@@ -274,7 +329,8 @@ export class Connection {
 
   #heartbeat(gen) {
     if (gen !== this.#gen || this.#phase !== 'connected') return;
-    if (Date.now() - this.#lastPong > PONG_TIMEOUT_MS) return this.#down(gen, 'timeout');
+    if (this.#pongTimer) return; // still waiting for the last pong
+    this.#pongTimer = setTimeout(() => this.#down(gen, 'timeout'), this.#o.pongTimeoutMs);
     this.#send(gen, { t: 'ping' });
   }
 
@@ -311,6 +367,14 @@ export class Connection {
     if (gen !== this.#gen) return;
     this.#teardown();
     this.#phase = 'down';
+    this.#downCode = code;
+    if (code === 'offline' || (code !== 'replaced' && code !== 'insecure_url' && !this.#o.isOnline())) {
+      // No network: no point retrying on a timer; networkBack() or tick() reconnects.
+      this.#downCode = 'offline';
+      this.#waitingForNetwork = true;
+      this.#setStatus({ conn: 'disconnected', error: { code: 'offline' }, retryAt: null });
+      return;
+    }
     if (code === 'replaced') {
       this.#setStatus({ conn: 'replaced', error: null, retryAt: null });
       return;
