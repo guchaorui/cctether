@@ -3,7 +3,7 @@
   "name": "cctether",
   "short_name": "cctether",
   "description": "__MSG_extDescription__",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "default_locale": "en",
   "minimum_chrome_version": "120",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvNg3A46bCqivE5cej+AwbkCGAzbr6GjsNa/cmvFfEFps4Dg44/SOYvvBHmu/3P05kSHCplMgUwK6zWxRGd59WDojvw/XotZ6psSMLWtuQhhWI22qiHxGm1guHi5nk8RY4iusSSimeRHPnZLmCFHyVncyB/HSvkXTA0EPEVw1N5Dm4zjpbeT0NNCj45rXfYApN7/uSVDcQl5J7OgMKYsABddNS/v6+SyuOQU3Tc5vpcAgH11aJ+bMoQyFTT6fgjgMmAIKTrTzaTiKehtO6J2kgNvHL7JOJuQM3znLp3INnleworofl6xbIYuB4m3/0olV8gK8SlDP6ZX4GzCpXGKzBQIDAQAB",

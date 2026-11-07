@@ -15,8 +15,10 @@ const HELP = `cctether ${VERSION} — let Claude Code use your browser over your
 Usage: cctether <command> [options]
 
 Commands:
+  setup                         Set everything up, step by step (start here)
   init [--port N] [--url URL]   Create the key and settings (done automatically on first use)
   pair [--url URL]              Show the connection code to paste into the browser extension
+  check                         Test that the extension's address reaches this service
   status [--json]               Is the service running? Is a browser connected?
   rotate                        Make a new key; the old connection code stops working at once
   daemon                        Run the service in the foreground (systemd uses this)
@@ -30,6 +32,12 @@ Options:
               the browser is on this computer or reaches it through an SSH tunnel.
   --port N    Port of the local service (default 27182)
 
+Setup options (to run it from a script, give --yes and how the browser connects):
+  --yes, -y                     Don't ask; take the defaults
+  --mode local|ssh|https        Browser on this computer / through an SSH tunnel / over HTTPS
+  --no-install --no-service --no-mcp   Skip installing, the background service, or adding to Claude Code
+  --lang en|zh                  Language of setup and check (default: from LANG)
+
 Settings live in ${'$'}CCTETHER_HOME, else ${'$'}XDG_CONFIG_HOME/cctether, else ~/.config/cctether.
 `;
 
@@ -39,12 +47,14 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--json' || a === '-h' || a === '--help') opts[a.replace(/^-+/, '')] = true;
-    else if (a === '--url' || a === '--port') {
+    else if (a === '--yes' || a === '-y') opts.yes = true;
+    else if (a === '--no-install' || a === '--no-service' || a === '--no-mcp') opts[a.slice(5)] = false;
+    else if (a === '--url' || a === '--port' || a === '--mode' || a === '--lang') {
       if (i + 1 >= argv.length) throw new ConfigError(`${a} needs a value`);
       opts[a.slice(2)] = argv[++i];
-    } else if (a.startsWith('--url=') || a.startsWith('--port=')) {
-      const [k, v] = a.slice(2).split('=');
-      opts[k] = v;
+    } else if (/^--(url|port|mode|lang)=/.test(a)) {
+      const i2 = a.indexOf('=');
+      opts[a.slice(2, i2)] = a.slice(i2 + 1);
     } else if (a.startsWith('-')) throw new ConfigError(`Unknown option ${a}`);
     else rest.push(a);
   }
@@ -53,7 +63,12 @@ function parseArgs(argv) {
     if (!Number.isInteger(p) || p < 1 || p > 65535) throw new ConfigError('--port must be a number from 1 to 65535');
     opts.port = p;
   }
-  if (opts.url !== undefined && !isValidServerUrl(opts.url)) {
+  if (opts.mode !== undefined && !['local', 'ssh', 'https'].includes(opts.mode)) {
+    throw new ConfigError('--mode must be local, ssh or https');
+  }
+  if (opts.lang !== undefined && !['en', 'zh'].includes(opts.lang)) throw new ConfigError('--lang must be en or zh');
+  // setup also accepts a bare domain for --url and fixes it up itself
+  if (opts.url !== undefined && !isValidServerUrl(opts.url) && !(rest[0] === 'setup' && opts.mode !== 'local')) {
     throw new ConfigError('--url must start with wss:// (or ws:// for 127.0.0.1 / localhost), with no query string, e.g. wss://browser.example.com/cctether');
   }
   return { opts, rest };
@@ -167,10 +182,39 @@ export async function main(argv) {
         return 0;
       }
 
+      case 'setup': {
+        const { runSetup } = await import('./setup.js');
+        const interactive = !!(process.stdin.isTTY && process.stdout.isTTY);
+        const { createInterface } = await import('node:readline/promises');
+        // One readline per question: while it's open the terminal is in raw mode, and Ctrl-C
+        // wouldn't reach a long `npm install` or systemctl run in between.
+        const ask = async (prompt) => {
+          const rl = createInterface({ input: process.stdin, output: process.stdout });
+          rl.on('SIGINT', () => { out(''); process.exit(130); });
+          try {
+            return await rl.question(prompt);
+          } finally {
+            rl.close();
+          }
+        };
+        return runSetup({
+          dir, version: VERSION, cliPath: CLI_PATH, opts, write: out, ask, interactive,
+          // The code is a secret: only show it on a terminal, not in logs or another program's output.
+          showCode: !!process.stdout.isTTY,
+          color: interactive && !process.env.NO_COLOR,
+        });
+      }
+
+      case 'check': {
+        const { runCheck } = await import('./setup.js');
+        return runCheck({ dir, version: VERSION, write: out, lang: opts.lang, color: !!process.stdout.isTTY && !process.env.NO_COLOR });
+      }
+
       case 'daemon': {
         const log = createLogger();
         const { runDaemon } = await import('./daemon.js');
-        const r = await runDaemon({ dir, version: VERSION, log, port: opts.port });
+        // INVOCATION_ID is set by systemd for the services it runs.
+        const r = await runDaemon({ dir, version: VERSION, log, port: opts.port, takeOver: !!process.env.INVOCATION_ID });
         if (r.alreadyRunning) return 0;
         return new Promise(() => {}); // runs until a signal
       }

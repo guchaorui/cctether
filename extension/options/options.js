@@ -215,7 +215,7 @@ function startChange() {
 
 async function copyCommand() {
   try {
-    await navigator.clipboard.writeText('cctether pair');
+    await navigator.clipboard.writeText($('command-text').textContent.trim());
     copied = true;
     render();
     setTimeout(() => { copied = false; render(); }, 1600);

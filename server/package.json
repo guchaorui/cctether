@@ -1,7 +1,23 @@
 {
   "name": "cctether",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Let Claude Code use your browser over your own connection — no third-party relay.",
+  "keywords": [
+    "claude-code",
+    "claude",
+    "mcp",
+    "mcp-server",
+    "browser",
+    "chrome",
+    "chrome-extension",
+    "devtools",
+    "automation"
+  ],
+  "homepage": "https://github.com/guchaorui/cctether#readme",
+  "bugs": {
+    "url": "https://github.com/guchaorui/cctether/issues"
+  },
+  "author": "guchaorui",
   "license": "MIT",
   "private": true,
   "type": "module",
@@ -20,7 +36,8 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/guchaorui/cctether.git"
+    "url": "git+https://github.com/guchaorui/cctether.git",
+    "directory": "server"
   },
   "dependencies": {
     "ws": "8.22.1"

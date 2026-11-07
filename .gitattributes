@@ -1,0 +1,3 @@
+# Same bytes on every system, so the extension zip is reproducible (scripts/pack-extension.mjs).
+* text=auto eol=lf
+*.png binary

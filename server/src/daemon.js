@@ -7,7 +7,13 @@ import { startControl, adminRequest, AlreadyRunningError } from './control.js';
 import { createMcpSession, lineSplitter } from './mcp.js';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-export async function runDaemon({ dir, version, log, port: portOverride, exitOnSignal = true }) {
+/**
+ * @param {object} o
+ * @param {boolean} [o.takeOver]  started by systemd: if a copy started by Claude Code (`cctether mcp`)
+ *   holds the port, stop it and take its place instead of exiting. Otherwise systemd would restart
+ *   this service every few seconds until it gave up, and the stray copy would stay in charge.
+ */
+export async function runDaemon({ dir, version, log, port: portOverride, exitOnSignal = true, takeOver = false }) {
   const P = paths(dir);
   let { cfg, created } = initConfig(dir);
   if (created) log(`created ${P.config} with a new key`);
@@ -16,7 +22,7 @@ export async function runDaemon({ dir, version, log, port: portOverride, exitOnS
   const gateway = new Gateway({ key: cfg.key, extensionIds: cfg.extensionIds, path: WS_PATH, version, log, trustProxy: trustProxy(cfg) });
   let boundPort;
   try {
-    boundPort = await gateway.listen(port);
+    boundPort = takeOver ? await listenTakingOver(gateway, port, P, log) : await gateway.listen(port);
   } catch (e) {
     if (e.code !== 'EADDRINUSE') throw e;
     // Either another cctether service holds the port (fine) or some other program does.
@@ -107,4 +113,22 @@ export async function runDaemon({ dir, version, log, port: portOverride, exitOnS
 
   log(`cctether ${version} listening on 127.0.0.1:${boundPort}${WS_PATH} (key ${keyFingerprint(cfg.key)})`);
   return { port: boundPort, gateway, shutdown };
+}
+
+/** Listen on the port; while another cctether service holds it, ask that one to stop (up to ~10 s). */
+async function listenTakingOver(gateway, port, P, log) {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    try {
+      return await gateway.listen(port);
+    } catch (e) {
+      if (e.code !== 'EADDRINUSE' || Date.now() > deadline) throw e;
+    }
+    const st = await adminRequest(P.socket, { cmd: 'status' }, 1000);
+    if (st?.ok && st.pid !== process.pid) {
+      log(`taking over from the service started outside systemd (pid ${st.pid})`);
+      await adminRequest(P.socket, { cmd: 'stop' }, 1000);
+    }
+    await sleep(150);
+  }
 }

@@ -16,7 +16,7 @@ const en = {
   // Connection states
   'state.unpaired.title': 'Not set up yet',
   'state.unpaired.body': 'Pair this browser with the computer that runs Claude Code. It takes about a minute.',
-  'state.unpaired.step1': 'On the computer that runs Claude Code, run `cctether pair`.',
+  'state.unpaired.step1': 'On the computer that runs Claude Code, run `npx cctether@latest setup`.',
   'state.unpaired.step2': 'Paste the connection code it prints into cctether’s settings.',
   'state.unpaired.step3': 'Claude can then use the tabs you share with it.',
   'state.connecting.title': 'Connecting…',
@@ -130,6 +130,7 @@ const en = {
   'opt.pair.heading': 'Pair with your server',
   'opt.pair.changeHeading': 'Pair with a different server',
   'opt.pair.step1': 'On the computer that runs Claude Code, open a terminal and run:',
+  'opt.pair.step1.hint': 'It sets things up and prints a connection code. Already set up? Run `cctether pair` instead.',
   'opt.pair.step2': 'Paste the connection code it prints:',
   'opt.pair.copy': 'Copy',
   'opt.pair.copied': 'Copied',
@@ -167,7 +168,7 @@ const en = {
 
   'opt.help.heading': 'Help',
   'opt.help.code.q': 'Where do I get a connection code?',
-  'opt.help.code.a': 'On the computer that runs Claude Code, run `cctether pair` in a terminal. It prints a code that starts with `cctether1:`. Copy the whole line and paste it above.',
+  'opt.help.code.a': 'On the computer that runs Claude Code, run `npx cctether@latest setup` in a terminal and answer its questions. At the end it prints a code that starts with `cctether1:`. Copy the whole line and paste it above. If cctether is already set up there, `cctether pair` prints the code again.',
   'opt.help.group.q': 'What is the cctether tab group?',
   'opt.help.group.a': 'Claude can only see and use tabs in the tab group named cctether. Tabs Claude opens join it by itself. To let Claude use a page you already have open, drag its tab into the group, or click the cctether button on that page and choose “Share”. Drag a tab out of the group to take it back.',
   'opt.help.debug.q': 'Why does Chrome say “cctether” started debugging this browser?',
@@ -189,7 +190,7 @@ const zh = {
 
   'state.unpaired.title': '还没有配对',
   'state.unpaired.body': '先和 Claude Code 所在的电脑配对，一分钟左右就好。',
-  'state.unpaired.step1': '在 Claude Code 所在的电脑上运行 `cctether pair`。',
+  'state.unpaired.step1': '在 Claude Code 所在的电脑上运行 `npx cctether@latest setup`。',
   'state.unpaired.step2': '把它显示的连接码粘贴到 cctether 的设置页。',
   'state.unpaired.step3': '之后 Claude 就能使用你共享给它的标签页。',
   'state.connecting.title': '正在连接…',
@@ -294,6 +295,7 @@ const zh = {
   'opt.pair.heading': '和服务器配对',
   'opt.pair.changeHeading': '换一个服务器配对',
   'opt.pair.step1': '在 Claude Code 所在的电脑上打开终端，运行：',
+  'opt.pair.step1.hint': '它会一步步装好，最后显示连接码。已经装好了？运行 `cctether pair` 可以再看一次连接码。',
   'opt.pair.step2': '把它显示的连接码粘贴到这里：',
   'opt.pair.copy': '复制',
   'opt.pair.copied': '已复制',
@@ -331,7 +333,7 @@ const zh = {
 
   'opt.help.heading': '帮助',
   'opt.help.code.q': '连接码从哪里来？',
-  'opt.help.code.a': '在 Claude Code 所在的电脑上打开终端，运行 `cctether pair`，它会显示一串以 `cctether1:` 开头的连接码。整行复制，粘贴到上面就行。',
+  'opt.help.code.a': '在 Claude Code 所在的电脑上打开终端，运行 `npx cctether@latest setup`，按提示回答几个问题。最后它会显示一串以 `cctether1:` 开头的连接码，整行复制，粘贴到上面就行。那边已经装好的话，运行 `cctether pair` 可以再显示一次。',
   'opt.help.group.q': 'cctether 标签组是什么？',
   'opt.help.group.a': 'Claude 只能看到、使用名叫 cctether 的标签组里的标签页。它自己打开的标签页会自动进组。想让 Claude 用你已经打开的页面，可以把标签页拖进组里，或者在那个页面点工具栏上的 cctether 按钮，再点「共享」。把标签页拖出组，就收回来了。',
   'opt.help.debug.q': '为什么 Chrome 提示“cctether”已开始调试此浏览器？',

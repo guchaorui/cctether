@@ -64,7 +64,9 @@ test('cctether mcp starts the service, which serves MCP and admin commands', asy
   assert.match(init.stdout, /Created/);
 
   const mcp = mcpClient(home);
-  t.after(async () => { mcp.close(); await cli(home, 'stop'); });
+  let mcp2 = null;
+  // Close every MCP client before stopping the service: an open one would start it again.
+  t.after(async () => { mcp.close(); mcp2?.close(); await sleep(400); await cli(home, 'stop'); });
   const init1 = await mcp.request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } });
   assert.equal(init1.result.serverInfo.name, 'cctether');
   const list = await mcp.request('tools/list', {});
@@ -96,8 +98,7 @@ test('cctether mcp starts the service, which serves MCP and admin commands', asy
   assert.deepEqual(r2.result, { content: [{ type: 'text', text: 'list_tabs:{}' }] });
 
   // A second MCP client shares the same service and browser.
-  const mcp2 = mcpClient(home);
-  t.after(() => mcp2.close());
+  mcp2 = mcpClient(home);
   const r3 = await mcp2.request('tools/call', { name: 'find', arguments: { selector: 'h1' } });
   assert.deepEqual(r3.result.content[0].text, 'find:{"selector":"h1"}');
 
@@ -147,4 +148,34 @@ test('pair --url saves a public address; bad URLs are refused', async () => {
   assert.equal(decodePairingCode(again.stdout.trim()).url, 'wss://browser.example.com/cctether');
   assert.ok(existsSync(join(home, 'config.json')));
   assert.equal(JSON.parse(readFileSync(join(home, 'config.json'), 'utf8')).publicUrl, 'wss://browser.example.com/cctether');
+});
+
+test('a service started by systemd takes over from one Claude Code started', async (t) => {
+  const home = join(mkdtempSync(join(tmpdir(), 'cct-')), 'home');
+  const port = await freePort();
+  await cli(home, 'init', '--port', String(port));
+  t.after(() => cli(home, 'stop'));
+  const start = (env = {}) => {
+    const p = spawn(process.execPath, [CLI, 'daemon'], { env: { ...process.env, CCTETHER_HOME: home, ...env }, stdio: 'ignore', detached: true });
+    p.unref();
+    return p;
+  };
+  const status = async () => { const r = await cli(home, 'status', '--json'); return JSON.parse(r.stdout); };
+  const stray = start();
+  for (let i = 0; i < 50 && !(await status()).running; i++) await sleep(100);
+  assert.equal((await status()).pid, stray.pid);
+
+  // Without INVOCATION_ID a second copy just leaves; with it (systemd), it takes over.
+  const plain = start();
+  await new Promise((r) => plain.on('exit', r));
+  assert.equal((await status()).pid, stray.pid);
+  const managed = start({ INVOCATION_ID: 'test' });
+  let st;
+  for (let i = 0; i < 60; i++) {
+    st = await status();
+    if (st.running && st.pid === managed.pid) break;
+    await sleep(100);
+  }
+  assert.equal(st.pid, managed.pid);
+  assert.equal(st.port, port);
 });
