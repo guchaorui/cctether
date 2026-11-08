@@ -1,6 +1,6 @@
 {
   "name": "cctether",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Let Claude Code use your browser over your own connection — no third-party relay.",
   "keywords": [
     "claude-code",

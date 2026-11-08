@@ -169,6 +169,7 @@ cctether 由一个浏览器插件和一个常驻服务组成，常驻服务跑�
   - 但只有设置里「信任本机反向代理」（`trustProxy`）打开时才这么取，不然一律按直接对端算。理由：本机任何程序都能伪造这个头，用来绕过限流，或者让别人的 IP 被封（安全审查发现，见 §6.3）。
   - `trustProxy` 默认值：对外地址是别的主机上的 `wss://` 时打开（那种部署前面一定有反向代理），否则关闭。config.json 里可以明确写 true/false 覆盖。
 - **Origin 检查**：只接受白名单里的 `chrome-extension://<插件 ID>`，没有 Origin 的一律拒绝。
+  - 白名单 = cctether 自己的两个 ID（自己加载的版本 `nfebjhhcnoilmfjacolkofphfekkjioh`、Chrome 应用商店版 `mbkadoolgknacadjkfjjajldmllbkdib`，内置、总是允许）+ config.json 里 `extensionIds` 额外加的。config.json 只存额外的；0.3.0 以前的配置文件把旧的默认 ID 写死在里面，读的时候照样合并内置的，所以升级后不用改文件。
 
 ### 4.5 端口、文件和命令（2026-11-07 定）
 
@@ -525,3 +526,6 @@ cctether 由一个浏览器插件和一个常驻服务组成，常驻服务跑�
   - 第一次跑 GitHub Actions 发现：服务「我是 systemd 起的」原来靠 `INVOCATION_ID` 判断，CI 机器上所有程序都继承了它。改成服务单元里明确写 `daemon --takeover`（§8.1 第 4 步）。
   - Chrome 应用商店的材料：商店用 zip、宣传图、上架内容、隐私政策（§8.3）。
   - 发布前的审查（Opus subagent）：没有严重、高危；4 个中危都修了（CLAUDE.md 那段说明在边角情况下会删掉用户的内容、撤销说明照做也不管用、软链接会被换成普通文件；「让 Claude 帮你装」挡不住 Claude 看到连接码，改成 `pair` 在 Claude Code 里拒绝显示，并在提示词里写明）。低危也修了：截图缩放比例保留三位小数、跳转时的报错措辞、html 模式和 `select_option` 仍取第一个匹配、商店和隐私政策里两处说法、`--takeover` 只给 `daemon` 用、命令提示重复了一截。另外修了一个时好时坏的端到端测试（插件首次安装时打开的设置页会占用空白标签页）。
+- v0.8（2026-11-08）：主人在 Chrome 应用商店后台建好条目，商店版插件 ID 是 `mbkadoolgknacadjkfjjajldmllbkdib`。版本 0.3.1。
+  - 商店版 ID 加进服务端内置白名单；`extensionIds` 改成「额外的 ID」（§4.4）。
+  - 商店图标另做一张：按商店的图片规范，图案 96×96、四周留 16 像素透明边（`store/images/store-icon-128.png`）。主人一开始找不到合适的商店图标（插件自己的图标在 `extension/icons/`，而且是铺满的），所以加了 `store/README.zh-CN.md`：后台每一格放哪个文件。

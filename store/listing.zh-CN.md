@@ -60,7 +60,7 @@ cctether 是独立项目，不是 Anthropic 做的，也与 Anthropic 无关联�
 简体中文（zh_CN）
 
 ### 图片
-store/images/ 下带 -zh 的版本：screenshot-1-zh.png、screenshot-2-zh.png、screenshot-3-zh.png、promo-small-zh.png（440x280）、marquee-zh.png（1400x560）。
+每一格放哪个文件，见 [store/README.zh-CN.md](README.zh-CN.md)。
 
 ## 隐私页答案的中文翻译（后台里填英文，这里只是给主人看）
 

@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { FailureLimiter, clientIp } from '../src/ratelimit.js';
 import { validate } from '../src/schema.js';
 import { encodePairingCode, decodePairingCode, keyFingerprint } from '../src/pairing.js';
-import { initConfig, loadConfig, saveConfig, configDir, isValidServerUrl, serverUrl, trustProxy, socketPath, ConfigError } from '../src/config.js';
+import { initConfig, loadConfig, saveConfig, configDir, isValidServerUrl, serverUrl, trustProxy, socketPath, ConfigError, DEFAULT_EXTENSION_IDS } from '../src/config.js';
 import { TOOLS, mcpToolList } from '../src/tools.js';
 import { parsePairingCode, keyFingerprint as extFingerprint, checkServerUrl, displayServer } from '../../extension/shared/pairing.js';
 
@@ -170,6 +170,24 @@ test('config: created with private permissions, round-trips, repairs loose permi
   writeFileSync(file, JSON.stringify({ ...raw, key: 'short' }));
   assert.throws(() => loadConfig(dir), ConfigError);
   writeFileSync(file, JSON.stringify({ ...raw, publicUrl: 'ws://remote.example/' }));
+  assert.throws(() => loadConfig(dir), ConfigError);
+});
+
+test('config: cctether’s own extension IDs are always allowed; config.json only adds extra ones', () => {
+  const dir = join(mkdtempSync(join(tmpdir(), 'cct-')), 'cfg');
+  const STORE = 'mbkadoolgknacadjkfjjajldmllbkdib';
+  const SELF = 'nfebjhhcnoilmfjacolkofphfekkjioh';
+  assert.deepEqual(DEFAULT_EXTENSION_IDS, [SELF, STORE]);
+  // A config file written by 0.3.0 and earlier lists the then-default ID explicitly.
+  const { cfg } = initConfig(dir);
+  const raw = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'));
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ ...raw, extensionIds: [SELF, 'abcdefghijklmnopabcdefghijklmnop'] }), { mode: 0o600 });
+  const loaded = loadConfig(dir);
+  assert.deepEqual(loaded.extensionIds, [SELF, STORE, 'abcdefghijklmnopabcdefghijklmnop'], 'the store build is accepted without editing the file');
+  saveConfig(dir, loaded);
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')).extensionIds, ['abcdefghijklmnopabcdefghijklmnop'], 'only extras are saved');
+  assert.deepEqual(cfg.extensionIds, [SELF, STORE]);
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ ...raw, extensionIds: ['not-an-id'] }), { mode: 0o600 });
   assert.throws(() => loadConfig(dir), ConfigError);
 });
 

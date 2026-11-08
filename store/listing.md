@@ -67,7 +67,7 @@ https://github.com/guchaorui/cctether/issues
 
 All files are in store/images/.
 
-- Store icon 128x128: extension/icons/icon-128.png (the dashboard asks for it separately)
+- Store icon 128x128: store-icon-128.png (96x96 artwork with a 16 px transparent margin, as the store's image guidelines ask)
 - Screenshots (1280x800 or 640x400, up to 5): screenshot-1-en.png, screenshot-2-en.png, screenshot-3-en.png
 - Small promo tile (440x280): promo-small-en.png
 - Marquee promo tile (1400x560): marquee-en.png

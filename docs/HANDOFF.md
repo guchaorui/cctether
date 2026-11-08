@@ -10,7 +10,7 @@
   2. [x] 公开仓库（2026-11-08）：发布前再查一遍 git 历史里有没有私人信息，然后 `gh repo edit --visibility public --accept-visibility-change-consequences`，再打开私下报告漏洞：`gh api -X PUT repos/guchaorui/cctether/private-vulnerability-reporting`。
   3. [x] 发 Release（2026-11-08，https://github.com/guchaorui/cctether/releases/tag/v0.3.0 ；GitHub 打的两个插件 zip 和开发机本地打的逐字节一样，npm 包和 npm 上的一样）：推 `v0.3.0` 标签，CI 跑完会建一个草稿（附自己加载用的 zip、商店用的 zip、npm 包、校验和），Claude 看过草稿再发布。
   4. [x] 升级服务器上主人在用的服务到 0.3.0（2026-11-08，从 npm 装；服务单元已加 `--takeover`，原文件备份为 `cctether.service.bak-0.2.0`），并给主人的服务单元 `ExecStart` 加上 `--takeover`（见 SPEC §8.1 第 4 步；主人的单元是第一阶段手写的，没有这个参数）。
-  5. [ ] Chrome 应用商店：主人注册开发者账号（一次性 5 美元）→ 新建条目、上传 `cctether-extension-0.3.0-store.zip` → 把商店给的插件 ID 告诉 Claude → Claude 把 ID 加进 `DEFAULT_EXTENSION_IDS`、发 0.3.1 到 npm → 主人照 `store/listing.zh-CN.md` 填好各项、提交审核。要填的内容和宣传图都在 `store/` 里。
+  5. [ ] Chrome 应用商店（2026-11-08 进度：主人已注册、建好草稿，商店版 ID `mbkadoolgknacadjkfjjajldmllbkdib`，已加进 0.3.1 的内置白名单；主人找不到商店图标，已补 `store/images/store-icon-128.png` 和每格放什么的 `store/README.zh-CN.md`。接下来：发 0.3.1 → 主人上传 0.3.1 的 store zip、照 store/README.zh-CN.md 填好、提请审核）：主人注册开发者账号（一次性 5 美元）→ 新建条目、上传 `cctether-extension-0.3.0-store.zip` → 把商店给的插件 ID 告诉 Claude → Claude 把 ID 加进 `DEFAULT_EXTENSION_IDS`、发 0.3.1 到 npm → 主人照 `store/listing.zh-CN.md` 填好各项、提交审核。要填的内容和宣传图都在 `store/` 里。
 - 主人的 Mac 上的插件还是 **0.1.1**。发了 Release 以后，照 `docs/install-mac.zh-CN.md` 第七节换成 0.3.0（以后上了商店，也可以改装商店版）。
 - **新窗口接手时**：看上面哪一步没打勾，从那里接着做。
 

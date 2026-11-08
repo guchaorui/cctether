@@ -6,7 +6,8 @@
 //   node scripts/store-images.mjs
 //
 // Output: store/images/ — screenshot-{1,2,3}-{en,zh}.png (1280×800), promo-small-{en,zh}.png
-// (440×280), marquee-{en,zh}.png (1400×560). Sizes are the ones the store asks for.
+// (440×280), marquee-{en,zh}.png (1400×560), store-icon-128.png. Sizes are the ones the store asks
+// for; everything but the icon is a 24-bit PNG without transparency, as the store requires.
 
 import { mkdir, readFile, writeFile, mkdtemp, rm, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -283,6 +284,17 @@ try {
     await tab.screenshot(join(OUT, name), { x: 0, y: 0, width: w, height: h });
     console.log(`store/images/${name}  ${w}×${h}`);
   }
+  // Store icon: 128×128, the artwork 96×96 in the middle with a transparent 16 px margin, as the
+  // Chrome Web Store image guidelines ask (the extension's own icon-128.png fills the whole square).
+  const iconFile = join(tmp, 'icon.html');
+  await writeFile(iconFile, `<!doctype html><html><head><style>html,body{margin:0;background:transparent}
+    svg{position:absolute;left:16px;top:16px;width:96px;height:96px}</style></head><body>${ICON}</body></html>`);
+  await tab.transparent();
+  await tab.viewport(128, 128, 1);
+  await tab.goto(pathToFileURL(iconFile).href);
+  await sleep(100);
+  await tab.screenshot(join(OUT, 'store-icon-128.png'), { x: 0, y: 0, width: 128, height: 128 });
+  console.log('store/images/store-icon-128.png  128×128');
 } finally {
   await chrome.close();
   await rm(tmp, { recursive: true, force: true });

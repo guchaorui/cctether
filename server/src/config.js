@@ -7,8 +7,11 @@ import { join } from 'node:path';
 
 export const DEFAULT_PORT = 27182;
 export const WS_PATH = '/cctether';
-/** Extension IDs accepted by default: the unpacked build (fixed by the manifest key). */
-export const DEFAULT_EXTENSION_IDS = ['nfebjhhcnoilmfjacolkofphfekkjioh'];
+/**
+ * cctether's own extension IDs, always accepted: the build people load themselves (fixed by the
+ * manifest key) and the Chrome Web Store build. "extensionIds" in config.json adds more.
+ */
+export const DEFAULT_EXTENSION_IDS = ['nfebjhhcnoilmfjacolkofphfekkjioh', 'mbkadoolgknacadjkfjjajldmllbkdib'];
 
 export function configDir(env = process.env) {
   if (env.CCTETHER_HOME) return env.CCTETHER_HOME;
@@ -62,7 +65,7 @@ function validate(raw) {
     key: Buffer.from(String(raw.key ?? ''), 'base64url'),
     port: raw.port ?? DEFAULT_PORT,
     publicUrl: raw.publicUrl ?? null,
-    extensionIds: raw.extensionIds ?? DEFAULT_EXTENSION_IDS,
+    extensionIds: raw.extensionIds ?? [],
     trustProxySetting: raw.trustProxy ?? null,
   };
   if (cfg.trustProxySetting !== null && typeof cfg.trustProxySetting !== 'boolean') {
@@ -76,6 +79,8 @@ function validate(raw) {
   if (!Array.isArray(cfg.extensionIds) || !cfg.extensionIds.every((id) => /^[a-p]{32}$/.test(id))) {
     throw new ConfigError('config.json: "extensionIds" must be a list of 32-letter extension IDs.');
   }
+  // Older config files list the built-in IDs explicitly; either way the built-in ones are included.
+  cfg.extensionIds = [...new Set([...DEFAULT_EXTENSION_IDS, ...cfg.extensionIds])];
   return cfg;
 }
 
@@ -131,7 +136,8 @@ export function saveConfig(dir, cfg) {
     key: cfg.key.toString('base64url'),
     port: cfg.port,
     publicUrl: cfg.publicUrl,
-    extensionIds: cfg.extensionIds,
+    // Only extra IDs are stored: the built-in ones can change with an update.
+    extensionIds: cfg.extensionIds.filter((id) => !DEFAULT_EXTENSION_IDS.includes(id)),
     trustProxy: cfg.trustProxySetting ?? null,
   };
   writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 });
@@ -151,7 +157,7 @@ export function initConfig(dir, { port, publicUrl } = {}) {
     key: newKey().toString('base64url'),
     port: port ?? DEFAULT_PORT,
     publicUrl: publicUrl ?? null,
-    extensionIds: DEFAULT_EXTENSION_IDS,
+    extensionIds: [],
   });
   saveConfig(dir, cfg);
   return { cfg, created: true };
