@@ -46,7 +46,7 @@ cctether 这些情况都能用，因为浏览器连的是你自己跑的服务�
    - 生成密钥；
    - 问你浏览器怎么连到这台电脑（见[几种连法](#几种连法)）；
    - 可选：装一个后台服务（Linux 上是 systemd 用户服务）；
-   - 把 cctether 加到 Claude Code（`claude mcp add -s user ...`）；
+   - 把 cctether 加到 Claude Code（`claude mcp add -s user ...`）；你愿意的话，还会让 Claude 以后遇到浏览器的事就自己用它；
    - 检查地址通不通；
    - 最后显示一个以 `cctether1:` 开头的连接码。
 
@@ -55,6 +55,8 @@ cctether 这些情况都能用，因为浏览器连的是你自己跑的服务�
 4. 如果 Claude Code 开着，重开一次，然后让它用浏览器。
 
 连接码要当密码对待，里面有密钥。
+
+想让 Claude 帮你装？把 [docs/setup-with-claude.zh-CN.md](docs/setup-with-claude.zh-CN.md) 里的提示词粘贴到 Claude Code 里就行。安装向导由 Claude 运行，你只需要自己把连接码粘贴到插件里。
 
 ## 安装插件
 
@@ -94,6 +96,7 @@ cctether 还没上 Chrome 应用商店，要自己加载，一分钟的事。
 - Claude 操作页面时，Chrome 顶部会出现“cctether”已开始调试此浏览器的提示条。这是正常的，是 Chrome 的规定，去不掉。在提示条上点**取消**，cctether 会暂停。
 - 随时可以点工具栏按钮里的**暂停**。暂停时 Claude 碰不了任何页面，点**继续**就恢复。
 - 弹窗里能看到最近的操作记录：Claude 点了什么、输入了什么、读了什么、截了什么图。
+- 如果安装时对「以后自己就用 cctether」选了「要」，任务需要浏览器时 Claude 会自己用 cctether；没选的话，跟它说一声就行（比如「用浏览器看看……」）。这个设置是 `~/.claude/CLAUDE.md` 里一小段带标记的说明，删掉就撤销了。
 
 ### 工具栏图标
 
@@ -118,12 +121,12 @@ cctether 还没上 Chrome 应用商店，要自己加载，一分钟的事。
 | `cctether check` | 测试插件用的地址能不能连到这台电脑上的服务。 |
 | `cctether status [--json]` | 服务在运行吗？有浏览器连着吗？ |
 | `cctether rotate` | 换一把新密钥，旧的连接码立刻失效。 |
-| `cctether daemon` | 在前台运行服务（systemd 用的就是它）。 |
+| `cctether daemon [--takeover]` | 在前台运行服务。systemd 后台服务用的是 `--takeover`：Claude Code 已经拉起过一个的话，由它接手。 |
 | `cctether stop` | 停掉正在运行的服务。 |
 | `cctether mcp` | 在 stdin/stdout 上提供 MCP（Claude Code 会运行它）。 |
 | `cctether version` | 显示版本号。 |
 
-选项：`--url URL` 是插件要连的地址（会记住，下次不用再给），`--port N` 是本机服务的端口（默认 27182）。要在脚本里跑 `setup`，还有 `--yes`、`--mode local|ssh|https`、`--no-install`、`--no-service`、`--no-mcp` 和 `--lang en|zh`。
+选项：`--url URL` 是插件要连的地址（会记住，下次不用再给），`--port N` 是本机服务的端口（默认 27182）。要在脚本里跑 `setup`，还有 `--yes`、`--mode local|ssh|https`、`--no-install`、`--no-service`、`--no-mcp`、`--claude-md` / `--no-claude-md` 和 `--lang en|zh`。
 
 设置存放在 `$CCTETHER_HOME`；没设的话是 `$XDG_CONFIG_HOME/cctether`；再没有就是 `~/.config/cctether`。
 
@@ -181,7 +184,7 @@ Claude 能用这 20 个工具：
 
 网页里可能藏着写给 AI 看的指令（提示词注入），而 Claude 是在你已经登录的浏览器里干活的。银行、邮箱、管理后台这类敏感页面不要放进 cctether 组，也留意弹窗里 Claude 在做什么。
 
-更多内容：[SECURITY.md](SECURITY.md) 和 [docs/PROTOCOL.md](docs/PROTOCOL.md)。
+更多内容：[SECURITY.md](SECURITY.md)、[PRIVACY.md](PRIVACY.md)（隐私政策，英文）和 [docs/PROTOCOL.md](docs/PROTOCOL.md)。
 
 ## 更新
 
@@ -202,6 +205,12 @@ Claude 能用这 20 个工具：
 - 「请更新插件」或「请更新服务器上的 cctether」：见[更新](#更新)。
 - 各种连法的更多细节：[docs/connect.zh-CN.md](docs/connect.zh-CN.md)。
 
+## 占用大吗？
+
+- **Claude 的上下文：** 20 个工具的说明一共约 4000 个 token，大约是 20 万上下文的 2%。新版 Claude Code 在 MCP 工具多的时候会按需加载：Claude 真正用到浏览器之前，上下文里只有工具名（约 150 个 token）和一小段说明（约 120 个 token）。
+- **跑 Claude Code 那台电脑的内存：** 服务本身约 75 MB；每开一个 Claude Code 窗口，多一个约 55 MB 的转接小进程。
+- **浏览器：** Claude 不用的时候插件什么也不做，只有每 10 秒一次很小的心跳。
+
 ## 已知的限制
 
 - 跨域 iframe 里的元素、控制台消息和网络请求拿不到。
@@ -220,7 +229,7 @@ Claude 能用这 20 个工具：
 
 ## 卸载
 
-1. `claude mcp remove -s user cctether`
+1. `claude mcp remove -s user cctether`；如果安装时加过，再删掉 `~/.claude/CLAUDE.md` 里那段 cctether 说明
 2. 如果装过后台服务：`systemctl --user disable --now cctether`，然后删掉 `~/.config/systemd/user/cctether.service`。
 3. `npm uninstall -g cctether`
 4. 删掉设置文件夹：`~/.config/cctether`（如果设过 `$CCTETHER_HOME`，就删那个）。

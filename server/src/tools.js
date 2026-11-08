@@ -4,7 +4,8 @@
 
 const tab = { type: 'integer', description: 'Tab id from list_tabs. Default: the current tab.' };
 const ref = { type: 'integer', minimum: 1, description: 'Element number from read_page (interactive mode) or find. Invalid after navigation.' };
-const selector = { type: 'string', minLength: 1, maxLength: 2000, description: 'CSS selector (first match).' };
+const selector = { type: 'string', minLength: 1, maxLength: 2000, description: 'CSS selector (the first visible match, else the first match).' };
+const selectorFirst = { type: 'string', minLength: 1, maxLength: 2000, description: 'CSS selector (the first match, visible or not).' };
 const x = { type: 'number', description: 'Viewport x in CSS pixels (= screenshot pixels unless the screenshot was scaled).' };
 const y = { type: 'number', description: 'Viewport y in CSS pixels.' };
 const timeout = (def, max) => ({ type: 'integer', minimum: 100, maximum: max, description: `Milliseconds, default ${def}.` });
@@ -69,7 +70,7 @@ export const TOOLS = [
       type: 'object',
       properties: {
         mode: { type: 'string', enum: ['text', 'interactive', 'html'] },
-        selector: { ...selector, description: 'Limit to this element (CSS selector).' },
+        selector: { ...selector, description: 'Limit to this element (CSS selector; the first visible match, or for "html" the first match).' },
         offset: { type: 'integer', minimum: 0, description: 'Character offset to continue from.' },
         max_chars: { type: 'integer', minimum: 500, maximum: 100000, description: 'Default 20000.' },
         tab,
@@ -194,7 +195,7 @@ export const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        ref, selector,
+        ref, selector: selectorFirst,
         value: { type: ['string', 'array'], items: { type: 'string' }, maxItems: 100, description: 'One value, or several for a multi-select.' },
         tab,
       },

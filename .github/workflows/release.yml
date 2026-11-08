@@ -1,4 +1,4 @@
-# Push a tag like v0.2.0 to make a draft GitHub Release with the extension zip and the npm package
+# Push a tag like v0.3.0 to make a draft GitHub Release with the extension zips and the npm package
 # (SPEC §8.3). The draft is published by hand after a look. Nothing is published to npm here.
 name: Release
 
@@ -35,6 +35,8 @@ jobs:
             exit 1
           fi
       - run: node scripts/pack-extension.mjs
+      - name: Chrome Web Store zip (files at the top level, no manifest key)
+        run: node scripts/pack-extension.mjs --flat
       - run: npm pack --pack-destination ../dist
         working-directory: server
       - name: Checksums

@@ -4,12 +4,24 @@
 
 ## 零、现在到哪了（先看这里）
 
-- **第二阶段（SPEC §10.2，给别人用）做完了，版本 0.2.0，等主人看过再往下走。** 主人 2026-11-08 说「开工，可以开始第二阶段了」。
-- 第一阶段主人 2026-11-08 已试用确认。那次试用提的问题（断网检测、设置页图标对齐）都改好了。
-- 主人的 Mac 上的插件还是 **0.1.1**（2026-11-08 用 `cctether check` 看到的），所以 0.1.2 的图标对齐主人还没看到。0.2.0 包含它，照 `docs/install-mac.zh-CN.md` 第七节更新插件就能看到。
-- 服务器上的 cctether 服务已经升级到 0.2.0（见下面「部署」）。插件 0.1.1 和服务端 0.2.0 的协议一样，能正常连。
-- **GitHub Actions 的两个文件（`.github/workflows/`）还没 push 上去**：服务器上 `gh` 的登录缺 `workflow` 权限，GitHub 拒收。它们在本地单独一个提交里（「Add GitHub Actions…」）。主人在 Claude Code 里运行 `! gh auth refresh -h github.com -s workflow`、照提示在浏览器里授权以后，`git push` 就行，然后看 CI 第一次跑的结果（`gh run list`）。
-- **新窗口接手时**：先问主人看过没有、有没有要改的；再按下面「主人要定的事」逐条问。没得到主人点头，不发 npm、不建 Release、不公开仓库。
+- **主人 2026-11-08 同意：发 npm、公开仓库、发第一个 Release、上 Chrome 应用商店。** 版本 0.3.0 已准备好（测试全过、审查完、修完）。
+- **发布进度**（按这个顺序，一步一步打勾；顺序的理由见下面「审查」第二条）：
+  1. [ ] 发 npm：等主人在 Claude Code 里运行 `! npm login`（没有 npm 账号要先在 npmjs.com 注册）。登录后 Claude 去掉 `server/package.json` 的 `"private": true`，跑测试，`npm publish`（开了两步验证的话，npm 会给一个网址让主人在浏览器里确认）。发完在隔离环境里真跑一遍 `npx cctether@latest setup`。
+  2. [ ] 公开仓库：发布前再查一遍 git 历史里有没有私人信息，然后 `gh repo edit --visibility public --accept-visibility-change-consequences`，再打开私下报告漏洞：`gh api -X PUT repos/guchaorui/cctether/private-vulnerability-reporting`。
+  3. [ ] 发 Release：推 `v0.3.0` 标签，CI 跑完会建一个草稿（附自己加载用的 zip、商店用的 zip、npm 包、校验和），Claude 看过草稿再发布。
+  4. [ ] 升级服务器上主人在用的服务到 0.3.0，并给主人的服务单元 `ExecStart` 加上 `--takeover`（见 SPEC §8.1 第 4 步；主人的单元是第一阶段手写的，没有这个参数）。
+  5. [ ] Chrome 应用商店：主人注册开发者账号（一次性 5 美元）→ 新建条目、上传 `cctether-extension-0.3.0-store.zip` → 把商店给的插件 ID 告诉 Claude → Claude 把 ID 加进 `DEFAULT_EXTENSION_IDS`、发 0.3.1 到 npm → 主人照 `store/listing.zh-CN.md` 填好各项、提交审核。要填的内容和宣传图都在 `store/` 里。
+- 主人的 Mac 上的插件还是 **0.1.1**。发了 Release 以后，照 `docs/install-mac.zh-CN.md` 第七节换成 0.3.0（以后上了商店，也可以改装商店版）。
+- **新窗口接手时**：看上面哪一步没打勾，从那里接着做。
+
+### 2026-11-08 第二轮：主人的问题、建议和实际使用的反馈
+
+- **占用**（主人问会不会挤占上下文）：20 个工具的说明约 4000 token（20 万上下文的 2%）；新版 Claude Code 工具多时按需加载，没用到时只占工具名约 150 token 加一小段说明。服务约 75 MB 内存，每个 Claude Code 窗口多一个约 55 MB 的转接进程。写进了 README「占用大吗？」。
+- **主人建议的「让 Claude 帮别人装」**：`docs/setup-with-claude.md`（中文版 `.zh-CN.md`），README 快速开始里有链接。setup 新增一问「以后要不要 Claude 自己就用 cctether」，要的话在 `~/.claude/CLAUDE.md` 末尾加一段带标记的说明（SPEC §8.1 第 5 步）。主人自己的 `~/.claude/CLAUDE.md` 还没加，要不要加问主人。
+- **另一个 Claude 实际用下来提的三处**，都修了并补了端到端测试（SPEC §5.2）：缩小了的截图说明前后矛盾，导致按图上坐标点错；选择器取到藏起来的副本；`evaluate` 中途页面跳转时报 Chrome 的原始错误。
+- **GitHub Actions 第一次跑**：端到端测试和打包在 GitHub 上都过了；服务端测试暴露出「靠 `INVOCATION_ID` 认 systemd」的问题，改成服务单元明确写 `daemon --takeover`。
+- **发布前的审查**（Opus subagent）：没有严重和高危；4 个中危、若干低危都修了，补了测试，细节在 SPEC §13 v0.7。其中一条改了行为：`cctether pair` 在 Claude Code 运行的命令里不再显示连接码（包括主人在 Claude Code 里用 `!` 运行），要在自己的终端里运行。
+- **Chrome 应用商店材料**：`store/listing.md`、`store/listing.zh-CN.md`（逐项要填的内容，Sonnet subagent 写、Claude 核对过）、`store/images/`（`scripts/store-images.mjs` 用真实界面拼的宣传图，中英各一套，Claude 逐张看过）、`PRIVACY.md`。审核可能会问 `debugger` 权限和 `evaluate` 算不算「远程代码」，`store/listing*.md` 末尾写了怎么答。
 
 ### 第二阶段做了什么
 
@@ -22,7 +34,7 @@
   - GitHub Actions：`ci.yml` 每次 push 跑单元测试（Node 22、24）、端到端测试（下载 Chrome for Testing）、打包；`release.yml` 在推 `v*` 标签时建一个 **Release 草稿**，附插件 zip、npm 包和校验和。Actions 都锁到具体提交。
   - npm 包准备好了（说明、许可证、关键词都齐了），`"private": true` 还留着防止误发。
 - **文档**：README 中英文、`docs/connect.md` 中英文（同机、SSH 隧道、Caddy、Cloudflare 隧道、nginx、WSL）、`SECURITY.md`（威胁模型、怎么报告漏洞）、`docs/PROTOCOL.md`（协议说明）。README 和连法文档是 Sonnet subagent 照代码写的，Claude 逐条核对过界面文字和命令。
-- **测试**：服务端 73 个（新增 21 个 setup/check/接手的）、端到端 46 个（1 个只能在有界面的 Chrome 里跑），全过。
+- **测试**：服务端 76 个、端到端 48 个（1 个只能在有界面的 Chrome 里跑），全过（2026-11-08 第二轮之后的数）。
 - **顺手修的**：服务端单元测试每跑一次会漏一个常驻服务进程在后台（清理顺序不对）。已修，并清掉了开发机上积攒的 10 个。
 - **审查**：派 Opus subagent 审查了第二阶段的全部改动，结果见下面「审查」一条。
 
@@ -44,14 +56,10 @@ Opus subagent 审查了第二阶段的全部改动（读代码，并在隔离环
 - 回退用的 0.1.0 包在 `/tmp/cctether-0.1.0.tgz`（`/tmp` 重启会清掉；要用时也可以从 git 历史重新打）。
 - 现在主人可以在服务器上直接跑 `cctether check` 自检。
 
-## 主人要定的事（SPEC §10.3）
+## 主人要定的事
 
-1. **要不要发 npm。** 发了别人才能用 `npx cctether@latest setup`。要用主人的 npm 账号：主人在服务器上运行 `! npm login` 登录，Claude 去掉 `"private": true`、跑一遍测试再发。发完要真跑一遍 `npx cctether@latest setup`（在隔离环境里）。
-2. **要不要建第一个 Release。** 推 `v0.2.0` 标签就会自动建一个草稿（仓库现在是私有的，草稿只有主人看得到）。看过再点发布。
-3. **要不要上 Chrome 应用商店。** 要以主人的名义注册开发者账号（一次性 5 美元），还要过审核。商店版的插件 ID 会不一样，到时候要加进服务端的白名单。不上也行：README 写的是从 Releases 下载、手动加载。
-4. **要不要公开仓库。** 公开前 Claude 再查一遍 git 历史（2026-11-08 查过：没有 IP、域名、个人路径、密钥；提交者都是 noreply 邮箱）。公开后要在仓库设置里打开「Private vulnerability reporting」，SECURITY.md 里写的报告漏洞的入口才能用。
-
-**顺序必须是：先发 npm（占住名字）→ 公开仓库 → 打开漏洞报告 → 推 v0.2.0 标签发 Release。** 理由见上面「审查」第二条。在发 npm 之前，0.2.0 的插件 zip 也不要发给别人。README 里的命令和下载链接要等这几步做完才对别人有效。
+- 要不要在主人自己的 `~/.claude/CLAUDE.md` 里加「浏览器的事用 cctether」那段说明。
+- 发布那几步里要主人亲手做的：`! npm login`；注册 Chrome 应用商店开发者账号、上传、提交审核。
 
 ## 开发机上测不了、还没专门确认过的
 
@@ -86,4 +94,6 @@ Opus subagent 审查了第二阶段的全部改动（读代码，并在隔离环
 - 端到端测试里别把插件版本写死，从 manifest 读（tools.test.mjs 里的 VERSION_RE）。
 - **在开发机上试 setup 要特别小心**：主人在用的服务就在这台机器上（端口 27182、`~/.config/cctether`、systemd 服务 `cctether`）。一定要设临时的 `CCTETHER_HOME`、换端口、加 `--no-service`；碰 `claude mcp` 时设临时的 `CLAUDE_CONFIG_DIR`。setup 起的服务记得 `cctether stop`。
 - 自己起的常驻服务要传对环境变量：`spawnDaemon` 不传 env 时用的是当前进程的环境，测试里会指到主人的真实配置（这次撞到过一次，因为主人的服务已经在跑，新起的那个自己退出了，没造成影响）。
+- 在开发机上跑测试时，Claude 的命令里有 `CLAUDECODE=1`，`cctether pair` 会拒绝显示连接码。测试里调用命令行的地方要把这个变量去掉（`termEnv()`）。
+- GitHub Actions 的机器上所有程序都带着 `INVOCATION_ID`：别拿环境变量判断「是不是 systemd 起的」。
 - 设置页里带 `backticks` 的说明文字不要用 `.note` 样式：它是 flex 布局，文字和代码块会被排成几列。用 `.step-hint` 那种普通段落。

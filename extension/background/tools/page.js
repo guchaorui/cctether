@@ -5,7 +5,7 @@ import { ToolError } from './errors.js';
 import { untrusted, q, page, sleep, normalizeUrl, imageSize } from './util.js';
 import { exceptionToText } from './format.js';
 import { isRestrictedUrl, restrictedMessage } from '../tabs.js';
-import { dialogError, CdpError } from '../debugger.js';
+import { dialogError, CdpError, isContextGone } from '../debugger.js';
 import { SERIALIZE_FN } from '../page-scripts.js';
 import { tabSummary, waitTabComplete } from './browser.js';
 
@@ -178,7 +178,8 @@ async function capture(s, tabId, params, hidden) {
   }
 }
 
-const round2 = (n) => Math.round(n * 100) / 100;
+/** Three decimals: at 2000 → 1568 px, 1.28 instead of 1.2755 would be 7 px off at the far edge. */
+const round3 = (n) => Math.round(n * 1000) / 1000;
 
 export async function screenshot({ tab, s }, args) {
   const format = args.format ?? 'jpeg';
@@ -235,16 +236,22 @@ export async function screenshot({ tab, s }, args) {
     r = await capture(s, tab.id, params, hidden);
     size = imageSize(r.data) ?? want;
   }
-  const ratio = round2(clip.width / size.width);
+  const ratio = round3(clip.width / size.width);
+  const scaled = Math.abs(ratio - 1) >= 0.01;
+  // Say exactly how image points map to the CSS pixels click/hover take: a scaled image whose
+  // coordinates are used as-is clicks the wrong place.
+  const k = (v) => (scaled ? `${v} × ${ratio}` : v);
   let desc = `${size.width}×${size.height} ${format.toUpperCase()}, ${mode}, `;
-  if (Math.abs(ratio - 1) < 0.01) {
-    desc += '1 px = 1 CSS px.';
-  } else {
-    desc += `scaled down to fit ${MAX_EDGE} px: 1 px = ${ratio} CSS px (multiply image coordinates by ${ratio}).`;
+  desc += scaled ? `scaled down to fit ${MAX_EDGE} px: 1 image px = ${ratio} CSS px.` : '1 px = 1 CSS px.';
+  if (mode === 'viewport') {
+    desc += scaled
+      ? ` Image coordinates are NOT click coordinates here: for click/hover at image point (x, y), pass x = ${k('x')}, y = ${k('y')}. Clicking by ref or selector needs no conversion.`
+      : ' Image coordinates are viewport coordinates for click/hover.';
+  } else if (mode === 'full page') {
+    desc += ` Page y = ${k('image y')}; the viewport is currently scrolled to y=${Math.round(m.scrollY)}.`;
+  } else if (origin) {
+    desc += ` Image point (x, y) is viewport (${origin.x} + ${k('x')}, ${origin.y} + ${k('y')}).`;
   }
-  if (mode === 'viewport') desc += ' Image coordinates are viewport coordinates for click/hover.';
-  else if (mode === 'full page') desc += ` Image y is page y; the viewport is currently scrolled to y=${Math.round(m.scrollY)}.`;
-  else if (origin) desc += ` The image's top-left corner is at viewport (${origin.x}, ${origin.y}).`;
   desc += cut;
   return {
     content: [
@@ -257,6 +264,11 @@ export async function screenshot({ tab, s }, args) {
 // ---- evaluate ----------------------------------------------------------------------------------
 
 const EVAL_MAX = 20000;
+
+/** The page went away around a running expression (Chrome: "Inspected target navigated or closed", ...). */
+const navigatedError = () => new ToolError('navigated', 'The page navigated or reloaded while the expression was running (or just as it was about to start), so there is no result. '
+  + 'If the expression itself navigated (clicked a link, submitted a form, changed location), that part probably worked. '
+  + 'Check the page with read_page or wait_for before running it again, in case it already had an effect.');
 
 export async function evaluate({ tab, s }, args) {
   const timeoutMs = args.timeout_ms ?? 10000;
@@ -274,13 +286,27 @@ export async function evaluate({ tab, s }, args) {
   const timeoutError = () => new ToolError('timeout', `The expression did not finish within ${timeoutMs} ms (a long loop, or a promise that never settles?). Pass a larger timeout_ms if it needs more time.`);
   let r;
   const t0 = Date.now();
-  try {
-    r = await s.raceDialog(s.send('Runtime.evaluate', params, { timeoutMs: timeoutMs + 500 }));
-  } catch (e) {
-    if (e instanceof ToolError && e.code === 'timeout') throw timeoutError();
-    // A script stopped by Runtime.evaluate's own `timeout` ends with a bare "Internal error".
-    if (e instanceof CdpError && Date.now() - t0 >= timeoutMs * 0.9) throw timeoutError();
-    throw e;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      r = await s.raceDialog(s.send('Runtime.evaluate', params, { timeoutMs: timeoutMs + 500 }));
+      break;
+    } catch (e) {
+      if (e instanceof ToolError && e.code === 'timeout') throw timeoutError();
+      if (isContextGone(e)) {
+        // "Cannot find context with specified id" comes back before anything runs: the isolated
+        // world we had is from a page that's gone. Safe to run once in the new page's world. (A
+        // script cut off by a navigation gets "Inspected target navigated or closed" instead.)
+        if (world === 'isolated' && attempt === 0 && /Cannot find context/i.test(e.cdpMessage)) {
+          s.resetWorld();
+          params.contextId = await s.guardDialog(s.world());
+          continue;
+        }
+        throw navigatedError();
+      }
+      // A script stopped by Runtime.evaluate's own `timeout` ends with a bare "Internal error".
+      if (e instanceof CdpError && Date.now() - t0 >= timeoutMs * 0.9) throw timeoutError();
+      throw e;
+    }
   }
   if (r.dialog) {
     return {
@@ -301,7 +327,7 @@ export async function evaluate({ tab, s }, args) {
     if (o.objectId) {
       const sr = await s.guardDialog(s.send('Runtime.callFunctionOn', {
         objectId: o.objectId, functionDeclaration: SERIALIZE_FN, arguments: [{ value: 20000 }], returnByValue: true,
-      }, { timeoutMs: 5000 }));
+      }, { timeoutMs: 5000 })).catch((e) => { throw isContextGone(e) ? navigatedError() : e; });
       json = sr.exceptionDetails ? `[could not serialise: ${exceptionToText(sr.exceptionDetails)}]` : String(sr.result.value);
       if (o.type === 'object' && o.className && !o.subtype && o.className !== 'Object') type = `object ${o.className}`;
     } else if (o.type === 'undefined') {

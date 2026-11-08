@@ -1,8 +1,8 @@
 // The resident service end to end: control socket, `cctether mcp`, admin commands, permissions.
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
-import { mkdtempSync, statSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, statSync, existsSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
@@ -22,8 +22,24 @@ async function freePort() {
   return p;
 }
 
+/** Temporary config folders, removed once every test (and its own cleanup) has finished. */
+const tempRoots = [];
+after(() => { for (const r of tempRoots) rmSync(r, { recursive: true, force: true }); });
+function tempHome() {
+  const root = mkdtempSync(join(tmpdir(), 'cct-'));
+  tempRoots.push(root);
+  return join(root, 'home');
+}
+
+/** The environment of a person's terminal (not a command Claude Code runs: no CLAUDECODE). */
+function termEnv(home, extra = {}) {
+  const env = { ...process.env, CCTETHER_HOME: home, ...extra };
+  delete env.CLAUDECODE;
+  return env;
+}
+
 function cli(home, ...args) {
-  return run(process.execPath, [CLI, ...args], { env: { ...process.env, CCTETHER_HOME: home } }).catch((e) => e);
+  return run(process.execPath, [CLI, ...args], { env: termEnv(home) }).catch((e) => e);
 }
 
 /** Talk MCP to `cctether mcp` over stdio. */
@@ -58,7 +74,7 @@ function mcpClient(home) {
 }
 
 test('cctether mcp starts the service, which serves MCP and admin commands', async (t) => {
-  const home = join(mkdtempSync(join(tmpdir(), 'cct-')), 'home');
+  const home = tempHome();
   const port = await freePort();
   const init = await cli(home, 'init', '--port', String(port));
   assert.match(init.stdout, /Created/);
@@ -122,7 +138,7 @@ test('cctether mcp starts the service, which serves MCP and admin commands', asy
 });
 
 test('cctether mcp survives a service restart', async (t) => {
-  const home = join(mkdtempSync(join(tmpdir(), 'cct-')), 'home');
+  const home = tempHome();
   const port = await freePort();
   await cli(home, 'init', '--port', String(port));
   const mcp = mcpClient(home);
@@ -138,7 +154,7 @@ test('cctether mcp survives a service restart', async (t) => {
 });
 
 test('pair --url saves a public address; bad URLs are refused', async () => {
-  const home = join(mkdtempSync(join(tmpdir(), 'cct-')), 'home');
+  const home = tempHome();
   const bad = await cli(home, 'pair', '--url', 'ws://browser.example.com/cctether');
   assert.equal(bad.code, 2);
   assert.match(bad.stderr, /wss:\/\//);
@@ -151,13 +167,14 @@ test('pair --url saves a public address; bad URLs are refused', async () => {
 });
 
 test('a service started by systemd takes over from one Claude Code started', async (t) => {
-  const home = join(mkdtempSync(join(tmpdir(), 'cct-')), 'home');
+  const home = tempHome();
   const port = await freePort();
   await cli(home, 'init', '--port', String(port));
   t.after(() => cli(home, 'stop'));
-  const start = (env = {}) => {
-    const p = spawn(process.execPath, [CLI, 'daemon'], { env: { ...process.env, CCTETHER_HOME: home, ...env }, stdio: 'ignore', detached: true });
-    p.unref();
+  // INVOCATION_ID set on purpose: it leaks into everything a systemd service starts (CI runners
+  // too), so it must not be what makes a service take over.
+  const start = (args = []) => {
+    const p = spawn(process.execPath, [CLI, 'daemon', ...args], { env: { ...process.env, CCTETHER_HOME: home, INVOCATION_ID: 'inherited' }, stdio: 'ignore', detached: true });
     return p;
   };
   const status = async () => { const r = await cli(home, 'status', '--json'); return JSON.parse(r.stdout); };
@@ -165,11 +182,13 @@ test('a service started by systemd takes over from one Claude Code started', asy
   for (let i = 0; i < 50 && !(await status()).running; i++) await sleep(100);
   assert.equal((await status()).pid, stray.pid);
 
-  // Without INVOCATION_ID a second copy just leaves; with it (systemd), it takes over.
+  stray.unref();
+  // Without --takeover a second copy just leaves; with it (the systemd service), it takes over.
   const plain = start();
   await new Promise((r) => plain.on('exit', r));
   assert.equal((await status()).pid, stray.pid);
-  const managed = start({ INVOCATION_ID: 'test' });
+  const managed = start(['--takeover']);
+  managed.unref();
   let st;
   for (let i = 0; i < 60; i++) {
     st = await status();

@@ -21,7 +21,8 @@ Commands:
   check                         Test that the extension's address reaches this service
   status [--json]               Is the service running? Is a browser connected?
   rotate                        Make a new key; the old connection code stops working at once
-  daemon                        Run the service in the foreground (systemd uses this)
+  daemon [--takeover]           Run the service in the foreground. With --takeover (the systemd service
+                                uses it), replace a copy that Claude Code started instead of exiting
   stop                          Stop the running service
   mcp                           MCP server on stdin/stdout (Claude Code runs this)
   version                       Print the version
@@ -36,6 +37,8 @@ Setup options (to run it from a script, give --yes and how the browser connects)
   --yes, -y                     Don't ask; take the defaults
   --mode local|ssh|https        Browser on this computer / through an SSH tunnel / over HTTPS
   --no-install --no-service --no-mcp   Skip installing, the background service, or adding to Claude Code
+  --claude-md, --no-claude-md   Do / don't tell Claude (in ~/.claude/CLAUDE.md) to use cctether by itself
+                                for every browser task (asked when run in a terminal)
   --lang en|zh                  Language of setup and check (default: from LANG)
 
 Settings live in ${'$'}CCTETHER_HOME, else ${'$'}XDG_CONFIG_HOME/cctether, else ~/.config/cctether.
@@ -46,9 +49,10 @@ function parseArgs(argv) {
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--json' || a === '-h' || a === '--help') opts[a.replace(/^-+/, '')] = true;
+    if (a === '--json' || a === '-h' || a === '--help' || a === '--takeover') opts[a.replace(/^-+/, '')] = true;
     else if (a === '--yes' || a === '-y') opts.yes = true;
     else if (a === '--no-install' || a === '--no-service' || a === '--no-mcp') opts[a.slice(5)] = false;
+    else if (a === '--claude-md' || a === '--no-claude-md') opts.claudeMd = a === '--claude-md';
     else if (a === '--url' || a === '--port' || a === '--mode' || a === '--lang') {
       if (i + 1 >= argv.length) throw new ConfigError(`${a} needs a value`);
       opts[a.slice(2)] = argv[++i];
@@ -97,6 +101,13 @@ export async function main(argv) {
   }
   const { opts, rest } = parsed;
   const cmd = rest[0] ?? (opts.h || opts.help ? 'help' : undefined);
+  if (opts.takeover && cmd !== 'daemon') {
+    err('--takeover only goes with `cctether daemon`.');
+    return 2;
+  }
+  // Claude Code sets CLAUDECODE=1 for the commands it runs (also for `! command` lines): anything
+  // printed there ends up in the conversation, so the connection code must not be printed.
+  const insideClaude = !!process.env.CLAUDECODE;
   const dir = configDir();
   const P = paths(dir);
 
@@ -119,6 +130,11 @@ export async function main(argv) {
       }
 
       case 'pair': {
+        if (insideClaude) {
+          err('The connection code contains the secret key, so cctether doesn’t print it inside Claude Code:');
+          err('it would end up in the conversation. Run `cctether pair` in a terminal of your own instead.');
+          return 2;
+        }
         let { cfg } = initConfig(dir, { port: opts.port, publicUrl: opts.url });
         if (opts.url !== undefined && opts.url !== cfg.publicUrl) {
           cfg.publicUrl = opts.url;
@@ -200,7 +216,7 @@ export async function main(argv) {
         return runSetup({
           dir, version: VERSION, cliPath: CLI_PATH, opts, write: out, ask, interactive,
           // The code is a secret: only show it on a terminal, not in logs or another program's output.
-          showCode: !!process.stdout.isTTY,
+          showCode: !!process.stdout.isTTY && !insideClaude,
           color: interactive && !process.env.NO_COLOR,
         });
       }
@@ -213,8 +229,9 @@ export async function main(argv) {
       case 'daemon': {
         const log = createLogger();
         const { runDaemon } = await import('./daemon.js');
-        // INVOCATION_ID is set by systemd for the services it runs.
-        const r = await runDaemon({ dir, version: VERSION, log, port: opts.port, takeOver: !!process.env.INVOCATION_ID });
+        // --takeover: only the systemd service passes it (see renderUnit). Not an environment check:
+        // INVOCATION_ID, for one, is inherited by everything a systemd service starts.
+        const r = await runDaemon({ dir, version: VERSION, log, port: opts.port, takeOver: !!opts.takeover });
         if (r.alreadyRunning) return 0;
         return new Promise(() => {}); // runs until a signal
       }

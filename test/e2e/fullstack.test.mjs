@@ -30,7 +30,9 @@ async function freePort() {
   return p;
 }
 
-const cli = (...args) => run(process.execPath, [CLI, ...args], { env: { ...process.env, CCTETHER_HOME: home } }).catch((e) => e);
+// A person's terminal, not a command Claude Code runs (there `pair` refuses to print the code).
+const termEnv = () => { const env = { ...process.env, CCTETHER_HOME: home }; delete env.CLAUDECODE; return env; };
+const cli = (...args) => run(process.execPath, [CLI, ...args], { env: termEnv() }).catch((e) => e);
 
 function mcpClient() {
   const p = spawn(process.execPath, [CLI, 'mcp'], { env: { ...process.env, CCTETHER_HOME: home }, stdio: ['pipe', 'pipe', 'inherit'] });

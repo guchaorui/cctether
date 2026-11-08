@@ -627,7 +627,8 @@ test('screenshot: viewport at CSS pixels, scaling, element, full page', async ()
     await page.send('Emulation.setDeviceMetricsOverride', { width: 2000, height: 1000, deviceScaleFactor: 2, mobile: false });
     const big = await ok('screenshot', {});
     assert.deepEqual(jpegSize(big.images[0].data), { width: 1568, height: 784 });
-    assert.match(big.text, /scaled down to fit 1568 px: 1 px = 1\.28 CSS px/);
+    assert.match(big.text, /scaled down to fit 1568 px: 1 image px = 1\.276 CSS px\. Image coordinates are NOT click coordinates here: for click\/hover at image point \(x, y\), pass x = x × 1\.276, y = y × 1\.276/);
+    assert.doesNotMatch(big.text, /Image coordinates are viewport coordinates/, 'no contradicting hint when scaled');
     await page.send('Emulation.clearDeviceMetricsOverride');
   } finally {
     await page.detach();
@@ -768,4 +769,62 @@ test('screenshot with a real devicePixelRatio of 2 (like a Retina Mac)', async (
   } finally {
     await hi.close();
   }
+});
+
+// ---- fixes from real use (2026-11-08) ------------------------------------------------------------
+
+test('a selector clicks the first visible match, not a hidden copy before it', async () => {
+  const tab = await openShared('/pages/form.html');
+  await pageEval(tab, `(() => {
+    const mk = (hidden, label) => {
+      const b = document.createElement('button');
+      b.className = 'dup';
+      b.textContent = label;
+      if (hidden) b.style.display = 'none';
+      b.onclick = () => { document.getElementById('out').textContent = label + ' clicked'; };
+      return b;
+    };
+    document.body.prepend(mk(false, 'Shown copy'));
+    document.body.prepend(mk(true, 'Hidden copy'));
+    return 0;
+  })()`);
+  const r = await ok('click', { tab, selector: '.dup' });
+  assert.match(r.text, /Clicked button "Shown copy"/);
+  assert.equal(await pageEval(tab, 'document.getElementById("out").textContent'), 'Shown copy clicked');
+  // When nothing matching is visible, the first match is still the one reported.
+  await pageEval(tab, 'document.querySelectorAll(".dup").forEach((b) => { b.style.display = "none"; }); 0');
+  const e = await fails('click', { tab, selector: '.dup' }, 'no_element');
+  assert.match(e.message, /"Hidden copy" is not visible/);
+  // select_option keeps document order: custom dropdowns hide the real <select> they drive.
+  await pageEval(tab, `(() => {
+    const mk = (hidden) => {
+      const s = document.createElement('select');
+      s.className = 'dupsel';
+      s.innerHTML = '<option value="a">A</option><option value="b">B</option>';
+      if (hidden) s.style.display = 'none';
+      return s;
+    };
+    document.body.prepend(mk(false));
+    document.body.prepend(mk(true));
+    return 0;
+  })()`);
+  await ok('select_option', { tab, selector: '.dupsel', value: 'b' });
+  assert.deepEqual(await pageEval(tab, '[...document.querySelectorAll(".dupsel")].map((s) => s.value)'), ['b', 'a']);
+  await ok('close_tab', { tab });
+});
+
+test('evaluate: a navigation in the middle of a script gives a clear error', async () => {
+  const tab = await openShared('/pages/nav-a.html');
+  const e = await fails('evaluate', {
+    tab,
+    expression: 'setTimeout(() => { location.href = "nav-b.html"; }, 50); await new Promise((r) => setTimeout(r, 3000)); 1',
+    timeout_ms: 8000,
+  }, 'navigated');
+  assert.match(e.message, /navigated or reloaded while the expression was running/);
+  assert.doesNotMatch(e.message, /Cannot find context/);
+  // The isolated world follows the page to its new document.
+  await ok('wait_for', { tab, text: 'Page B' }).catch(() => {});
+  const iso = await ok('evaluate', { tab, expression: 'location.pathname', world: 'isolated' });
+  assert.match(iso.text, /nav-b\.html/);
+  await ok('close_tab', { tab });
 });

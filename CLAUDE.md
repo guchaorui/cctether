@@ -14,7 +14,7 @@
   - 全程走用户自己的连接，不经过 Anthropic 的中转服务器。
 - 起因：官方 Claude in Chrome 插件要经过 Anthropic 中转。主人的 Mac 有时连不上 Claude，这条链就断了。
 - 要开源（MIT），给有同样需求的人用。所以不能写死主人的环境，界面和 README 都要中英双语。
-- **当前：第二阶段（给别人用）做完待主人确认，版本 0.2.0（SPEC §13 v0.6）。新对话从 `docs/HANDOFF.md` 第零节开始。**
+- **当前：第二阶段做完，主人同意发布（npm、公开仓库、Release、Chrome 应用商店），版本 0.3.0（SPEC §13 v0.7）。正按 `docs/HANDOFF.md` 第零节的步骤发布，新对话从那里开始。**
 
 ## 仓库结构
 
@@ -33,7 +33,8 @@ docs/               SPEC（施工图）、HANDOFF（交接）、install-mac.zh-C
                     connect.md / connect.zh-CN.md（各种连法）、PROTOCOL.md（协议说明，英文）
 deploy/             通用部署示例（Caddy、systemd），不放主人的真实配置
 scripts/            icons.mjs（生成图标）、screenshots.mjs（界面批量截图，输出到 screenshots/，不进仓库）、
-                    pack-extension.mjs（打插件 zip 到 dist/，可复现）
+                    pack-extension.mjs（打插件 zip 到 dist/，可复现；--flat 打商店用的）、store-images.mjs（商店宣传图）
+store/              Chrome 应用商店要填的内容（listing.md 中英）和宣传图（images/）
 .github/workflows/  ci.yml（每次 push 跑测试和打包）、release.yml（推 v* 标签建 Release 草稿）
 README.md / README.zh-CN.md / SECURITY.md   给用户看的说明（README 中英文，SECURITY 英文）
 ```

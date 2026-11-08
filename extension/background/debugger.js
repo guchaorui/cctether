@@ -118,7 +118,7 @@ function consoleText(type, args) {
   return text;
 }
 
-function isContextGone(e) {
+export function isContextGone(e) {
   return e instanceof CdpError && /Cannot find context|context was destroyed|Execution context|Inspected target navigated|No frame/i.test(e.cdpMessage);
 }
 

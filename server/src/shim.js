@@ -12,14 +12,14 @@ import { createMcpSession, lineSplitter } from './mcp.js';
 const PREAMBLE = JSON.stringify({ cctether: 1, mode: 'mcp' }) + '\n';
 const LOG_MAX = 1024 * 1024;
 
-export function spawnDaemon(P, cliPath, env = process.env) {
+export function spawnDaemon(P, cliPath, env = process.env, extraArgs = []) {
   mkdirSync(P.dir, { recursive: true, mode: 0o700 });
   try {
     if (statSync(P.log).size > LOG_MAX) renameSync(P.log, P.log + '.1');
   } catch {}
   const fd = openSync(P.log, 'a', 0o600);
   try { chmodSync(P.log, 0o600); } catch {}
-  const child = spawn(process.execPath, [cliPath, 'daemon'], {
+  const child = spawn(process.execPath, [cliPath, 'daemon', ...extraArgs], {
     detached: true,
     stdio: ['ignore', fd, fd],
     env,

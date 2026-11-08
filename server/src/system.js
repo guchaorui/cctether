@@ -3,7 +3,7 @@
 // `run` so tests can fake it.
 
 import { spawnSync } from 'node:child_process';
-import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { delimiter, dirname, join, sep } from 'node:path';
 
@@ -122,6 +122,80 @@ export function claudeRegistration(env = process.env) {
   return { command: s.command, args: Array.isArray(s.args) ? s.args : [], env: s.env ?? {} };
 }
 
+/** Claude Code's personal instructions file (its "user memory"), read by every session. */
+export function claudeMdFile(env = process.env) {
+  return env.CLAUDE_CONFIG_DIR ? join(env.CLAUDE_CONFIG_DIR, 'CLAUDE.md') : join(homedir(), '.claude', 'CLAUDE.md');
+}
+
+const MD_START_LINE = /^<!-- cctether:start\b.*-->\s*$/;
+const MD_END_LINE = /^<!-- cctether:end -->\s*$/;
+
+/**
+ * Where the cctether note is in CLAUDE.md text. Markers only count as whole lines, and only one
+ * start line followed by one end line is a note; anything else is left alone ('ambiguous').
+ * @returns {{ state: 'absent'|'present'|'empty'|'ambiguous', lines: string[], eol: string, start?: number, end?: number }}
+ */
+export function findClaudeMdNote(text) {
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  const lines = text.split(/\r?\n/);
+  const starts = [];
+  const ends = [];
+  lines.forEach((l, i) => {
+    if (MD_START_LINE.test(l)) starts.push(i);
+    else if (MD_END_LINE.test(l)) ends.push(i);
+  });
+  if (!starts.length && !ends.length) return { state: 'absent', lines, eol };
+  if (starts.length !== 1 || ends.length !== 1 || ends[0] < starts[0]) return { state: 'ambiguous', lines, eol };
+  const [start] = starts;
+  const [end] = ends;
+  const inside = lines.slice(start + 1, end).some((l) => l.trim());
+  // A block someone emptied means "no thanks": it is only filled again when asked to.
+  return { state: inside ? 'present' : 'empty', lines, eol, start, end };
+}
+
+/** Read CLAUDE.md as text; '' if it doesn't exist. Throws if it isn't valid UTF-8 (we'd damage it). */
+export function readClaudeMd(path) {
+  let buf;
+  try {
+    buf = readFileSync(path);
+  } catch (e) {
+    if (e.code === 'ENOENT') return '';
+    throw e;
+  }
+  return new TextDecoder('utf-8', { fatal: true }).decode(buf);
+}
+
+/**
+ * Add or refresh the marked cctether note in CLAUDE.md, keeping everything else exactly as it is.
+ * Written in place (not via a temporary file), so a symlink, hard links and the file's permissions
+ * stay as they were, and a read-only file fails instead of being replaced.
+ * @returns {'added'|'updated'|'same'|'ambiguous'|'optedOut'}
+ */
+export function upsertClaudeMdNote(path, body, comment, { force = false } = {}) {
+  const text = readClaudeMd(path);
+  const note = findClaudeMdNote(text);
+  if (note.state === 'ambiguous') return 'ambiguous';
+  if (note.state === 'empty' && !force) return 'optedOut';
+  const block = [`<!-- cctether:start ${comment} -->`, ...body.trim().split('\n'), '<!-- cctether:end -->'];
+  let lines;
+  let result;
+  if (note.state === 'absent') {
+    lines = text ? [...note.lines] : [];
+    while (lines.length && !lines.at(-1).trim()) lines.pop();
+    if (lines.length) lines.push('');
+    lines.push(...block, '');
+    result = 'added';
+  } else {
+    lines = [...note.lines.slice(0, note.start), ...block, ...note.lines.slice(note.end + 1)];
+    result = 'updated';
+  }
+  const next = lines.join(note.eol);
+  if (next === text) return 'same';
+  if (!text) mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, next);
+  return result;
+}
+
 // --- systemd -------------------------------------------------------------------------------
 
 export const UNIT_NAME = 'cctether';
@@ -173,7 +247,8 @@ export function renderUnit({ nodePath, cliPath, configDir, socketPath, sandbox =
     '',
     '[Service]',
     'Type=exec',
-    `ExecStart=${sdQuote(nodePath, { exec: true })} ${sdQuote(cliPath, { exec: true })} daemon`,
+    // --takeover: if Claude Code already started a copy, this one replaces it (see daemon.js).
+    `ExecStart=${sdQuote(nodePath, { exec: true })} ${sdQuote(cliPath, { exec: true })} daemon --takeover`,
     // Always explicit: the service must use the same folder (and key) as this setup run.
     `Environment=${sdQuote(`CCTETHER_HOME=${configDir}`)}`,
     'Restart=always',

@@ -9,7 +9,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 /**
  * @param {object} o
- * @param {boolean} [o.takeOver]  started by systemd: if a copy started by Claude Code (`cctether mcp`)
+ * @param {boolean} [o.takeOver]  the systemd service (`daemon --takeover`): if a copy started by Claude Code (`cctether mcp`)
  *   holds the port, stop it and take its place instead of exiting. Otherwise systemd would restart
  *   this service every few seconds until it gave up, and the stray copy would stay in charge.
  */

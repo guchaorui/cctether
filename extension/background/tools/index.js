@@ -3,7 +3,7 @@
 // runTool(name, args) → { content: [{type:'text', text} | {type:'image', data, mimeType}], tab? }
 // Expected failures throw ToolError(code, message) with these codes:
 //   no_tab, not_shared, restricted_url, dialog_open, debugger_busy, no_element, stale_ref,
-//   timeout, js_error, bad_args, not_found, internal
+//   timeout, js_error, navigated, bad_args, not_found, internal
 // ("paused" and "not connected" are handled by the caller.) When the failing call had resolved
 // a tab, the error carries it as `error.tab` ({ id, title, url }).
 

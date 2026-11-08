@@ -61,6 +61,17 @@ const ACTIVITY = [
   { tool: 'list_tabs', tab: null, ok: true, ago: 700 },
 ].map(({ ago, ...e }) => ({ ...e, t: NOW - ago * 1000 }));
 
+/** For the Chrome Web Store images (scripts/store-images.mjs): everything went fine. */
+const STORE_ACTIVITY = [
+  { tool: 'screenshot', tab: GH, ok: true, ago: 8 },
+  { tool: 'click', tab: GH, ok: true, ago: 21 },
+  { tool: 'type', tab: GH, ok: true, ago: 40 },
+  { tool: 'read_page', tab: GH, ok: true, ago: 64 },
+  { tool: 'navigate', tab: GH, ok: true, ago: 95 },
+  { tool: 'console_messages', tab: VITE, ok: true, ago: 260 },
+  { tool: 'reload_extension', tab: null, ok: true, ago: 300 },
+].map(({ ago, ...e }) => ({ ...e, t: NOW - ago * 1000 }));
+
 const connected = { conn: 'connected', server: SERVER, since: NOW - 3600e3, error: null, retryAt: null, serverVersion: '0.1.0', sharedTabs: 2, attachedTabs: 1 };
 const disc = (code, retryIn = 12000, detail) => ({
   ...connected, conn: 'disconnected', attachedTabs: 0,
@@ -73,6 +84,7 @@ const POPUP = {
   unpaired: { status: { conn: 'unpaired', server: null, sharedTabs: 0, attachedTabs: 0 }, pairing: null, activity: [] },
   connecting: { status: { ...connected, conn: 'connecting', attachedTabs: 0 }, activity: ACTIVITY },
   connected: { status: connected, activity: ACTIVITY },
+  store: { status: connected, activity: STORE_ACTIVITY },
   'connected-shared': { status: connected, activity: ACTIVITY, tabInfo: { ok: true, shared: true, restricted: false } },
   'connected-restricted': { status: { ...connected, attachedTabs: 0 }, activity: ACTIVITY.slice(0, 3), tab: 'restricted', tabInfo: { ok: true, shared: false, restricted: true } },
   'connected-empty': { status: { ...connected, sharedTabs: 0, attachedTabs: 0 }, activity: [] },

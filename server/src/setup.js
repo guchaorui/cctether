@@ -243,6 +243,9 @@ export async function runSetup(c) {
       out.line(t('claude.missing', { cmd: addLine, json }));
     } else if (!(await registerWithClaude({ t, out, yn, runFn, env, cmd, dir: c.dir, customHome, yes: !!opts.yes }))) {
       problems = true;
+    } else {
+      // Only once Claude Code has the tools: the note tells Claude to use them.
+      await claudeMdStep({ t, out, yn, env, opts });
     }
 
     // 6. Check --------------------------------------------------------------------------------
@@ -482,6 +485,43 @@ async function registerWithClaude({ t, out, yn, runFn, env, cmd, dir, customHome
   }
   out.line(t('claude.failed', { detail: (r.stderr || r.stdout || r.error?.message || '').trim().split('\n')[0] }));
   return false;
+}
+
+/** Optionally tell Claude, in its personal CLAUDE.md, to use cctether for browser tasks by itself. */
+async function claudeMdStep({ t, out, yn, env, opts }) {
+  if (opts.claudeMd === false) return;
+  const path = sys.claudeMdFile(env);
+  let state;
+  try {
+    state = sys.findClaudeMdNote(sys.readClaudeMd(path)).state;
+  } catch (e) {
+    out.line(t('claude.mdFailed', { path, detail: e.message }));
+    return;
+  }
+  if (state === 'ambiguous') {
+    out.line(t('claude.mdAmbiguous', { path }));
+    return;
+  }
+  // Someone emptied the note: they don't want it. Only --claude-md fills it again.
+  if (state === 'empty' && opts.claudeMd !== true) return;
+  // The note is cctether's own: refresh it if it's there; otherwise only add it when asked to.
+  if (state === 'absent' && opts.claudeMd !== true) {
+    if (opts.yes) {
+      out.line(t('claude.mdHint'));
+      return;
+    }
+    if (!(await yn(t('claude.mdAsk', { path }), true))) {
+      out.line(t('claude.mdDeclined'));
+      return;
+    }
+  }
+  try {
+    const r = sys.upsertClaudeMdNote(path, t('claude.mdBody'), t('claude.mdComment'), { force: opts.claudeMd === true });
+    const key = { added: 'claude.mdAdded', updated: 'claude.mdUpdated', same: 'claude.mdSame', ambiguous: 'claude.mdAmbiguous' }[r];
+    if (key) out.line(t(key, { path }));
+  } catch (e) {
+    out.line(t('claude.mdFailed', { path, detail: e.code === 'EACCES' || e.code === 'EPERM' ? t('claude.mdReadOnly') : e.message }));
+  }
 }
 
 async function waitFor(pred, ms) {

@@ -46,7 +46,7 @@ You need Node.js 22 or newer on the computer that runs Claude Code.
    - makes a key;
    - asks how your browser will reach this computer (see [Ways to connect](#ways-to-connect));
    - optionally installs a background service (systemd user service on Linux);
-   - adds cctether to Claude Code (`claude mcp add -s user ...`);
+   - adds cctether to Claude Code (`claude mcp add -s user ...`), and if you like, tells Claude to use it by itself for every browser task;
    - checks that the address works;
    - prints a connection code that starts with `cctether1:`.
 
@@ -55,6 +55,8 @@ You need Node.js 22 or newer on the computer that runs Claude Code.
 4. Restart Claude Code if it was open, and ask it to use the browser.
 
 Treat the connection code like a password. It contains the key.
+
+Rather have Claude do it? Paste the prompt from [docs/setup-with-claude.md](docs/setup-with-claude.md) into Claude Code. Claude runs setup, and you only paste the connection code into the extension yourself.
 
 ## Install the extension
 
@@ -94,6 +96,7 @@ Step-by-step instructions for each are in [docs/connect.md](docs/connect.md).
 - While Claude works on a page, Chrome shows a bar: "“cctether” started debugging this browser". That is normal. Chrome requires it and it can't be hidden. If you click **Cancel** on that bar, cctether pauses.
 - You can **Pause** at any time from the toolbar button. While paused, Claude can't touch any page. Click **Resume** to continue.
 - The popup lists recent activity: what Claude clicked, typed, read or captured.
+- If you answered yes to "use cctether by itself" in setup, Claude reaches for cctether whenever a task needs a browser. Otherwise, ask it to ("use the browser to check…"). The setting is a short marked note in `~/.claude/CLAUDE.md`; delete it to undo.
 
 ### The toolbar icon
 
@@ -118,12 +121,12 @@ Run `cctether help` for the full text.
 | `cctether check` | Tests that the extension's address reaches this computer's service. |
 | `cctether status [--json]` | Is the service running? Is a browser connected? |
 | `cctether rotate` | Makes a new key. The old connection code stops working at once. |
-| `cctether daemon` | Runs the service in the foreground (the systemd service uses this). |
+| `cctether daemon [--takeover]` | Runs the service in the foreground. The systemd service runs it with `--takeover`, so it replaces a copy that Claude Code started. |
 | `cctether stop` | Stops the running service. |
 | `cctether mcp` | MCP server on stdin/stdout. Claude Code runs this. |
 | `cctether version` | Prints the version. |
 
-Options: `--url URL` is the address the extension should connect to (saved for next time), `--port N` is the local port (default 27182). For scripts, `setup` also takes `--yes`, `--mode local|ssh|https`, `--no-install`, `--no-service`, `--no-mcp` and `--lang en|zh`.
+Options: `--url URL` is the address the extension should connect to (saved for next time), `--port N` is the local port (default 27182). For scripts, `setup` also takes `--yes`, `--mode local|ssh|https`, `--no-install`, `--no-service`, `--no-mcp`, `--claude-md` / `--no-claude-md` and `--lang en|zh`.
 
 Settings live in `$CCTETHER_HOME`, else `$XDG_CONFIG_HOME/cctether`, else `~/.config/cctether`.
 
@@ -181,7 +184,7 @@ It does not ask for website access ("Read and change your data on all websites")
 
 Web pages can contain hidden instructions meant for an AI (prompt injection), and Claude acts in your logged-in browser. Keep sensitive tabs (banking, email, admin panels) out of the cctether group, and look at what Claude is doing in the popup.
 
-More: [SECURITY.md](SECURITY.md) and [docs/PROTOCOL.md](docs/PROTOCOL.md).
+More: [SECURITY.md](SECURITY.md), [PRIVACY.md](PRIVACY.md) and [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
 ## Updating
 
@@ -202,6 +205,12 @@ Your pairing is kept. If the two versions can't talk to each other, the popup te
 - "Please update the extension" or "Please update cctether on your server": see [Updating](#updating).
 - More about each connection setup: [docs/connect.md](docs/connect.md).
 
+## Does it cost much?
+
+- **Claude's context:** the 20 tool descriptions take about 4,000 tokens, around 2% of a 200k context. Recent Claude Code versions load MCP tools on demand when there are many of them, so until Claude actually uses the browser, only the tool names (about 150 tokens) and a short note (about 120 tokens) sit in the context.
+- **Memory on the Claude Code computer:** the service uses about 75 MB, and each open Claude Code window adds a small relay process of about 55 MB.
+- **The browser:** the extension does nothing while Claude isn't using it, apart from a tiny heartbeat every 10 seconds.
+
 ## Known limitations
 
 - Elements, console messages and network requests inside cross-origin iframes aren't available.
@@ -220,7 +229,7 @@ Both should work, but nobody has tried them yet. Feedback is welcome: [open an i
 
 ## Uninstall
 
-1. `claude mcp remove -s user cctether`
+1. `claude mcp remove -s user cctether`, and if setup added it, the cctether note in `~/.claude/CLAUDE.md`
 2. If you installed the background service: `systemctl --user disable --now cctether`, then delete `~/.config/systemd/user/cctether.service`.
 3. `npm uninstall -g cctether`
 4. Delete the config folder: `~/.config/cctether` (or `$CCTETHER_HOME` if you set it).

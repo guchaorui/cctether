@@ -28,7 +28,12 @@ export function cctetherPageLib() {
   const ERR = (code, message) => ({ __error: { code, message } });
   const AGAIN = 'Call read_page (mode "interactive") or find again to get fresh numbers.';
 
-  function resolve(t) {
+  /**
+   * The element a tool means. A selector picks the first visible match (pages often keep hidden
+   * copies: mobile menus, templates), else the first match; with { firstMatch: true }, the first
+   * match in document order (for reading HTML, and for native selects that custom dropdowns hide).
+   */
+  function resolve(t, { firstMatch = false } = {}) {
     if (t && t.ref != null) {
       const el = refs.get(t.ref)?.deref();
       if (!el) {
@@ -38,12 +43,13 @@ export function cctetherPageLib() {
       return el;
     }
     if (t && t.selector != null) {
-      let el;
-      try { el = document.querySelector(t.selector); } catch (e) {
+      let list;
+      try { list = document.querySelectorAll(t.selector); } catch (e) {
         return ERR('bad_args', `Invalid CSS selector ${JSON.stringify(t.selector)}: ${e.message}`);
       }
-      if (!el) return ERR('no_element', `No element matches the selector ${JSON.stringify(t.selector)}. Check it with find, or use wait_for if it appears later.`);
-      return el;
+      if (!list.length) return ERR('no_element', `No element matches the selector ${JSON.stringify(t.selector)}. Check it with find, or use wait_for if it appears later.`);
+      if (!firstMatch) for (const el of list) if (rendered(el)) return el;
+      return list[0];
     }
     return ERR('bad_args', 'Pass ref or selector to say which element.');
   }
@@ -336,7 +342,7 @@ export function cctetherPageLib() {
   }
 
   function html(o) {
-    const root = o.selector ? resolve({ selector: o.selector }) : (document.body || document.documentElement);
+    const root = o.selector ? resolve({ selector: o.selector }, { firstMatch: true }) : (document.body || document.documentElement);
     if (root.__error) return root;
     // Work on a copy inside an inert document: nothing in it loads or runs.
     const doc = document.implementation.createHTMLDocument('');
@@ -552,7 +558,7 @@ export function cctetherPageLib() {
 
   // ---- select_option ---------------------------------------------------------------------------
   function selectOption(o) {
-    const el = resolve(o);
+    const el = resolve(o, { firstMatch: true });
     if (el.__error) return el;
     if (el.localName !== 'select') {
       return ERR('bad_args', `${label(el)} is a <${el.localName}>, not a <select>. For a custom dropdown, click it to open it, then click the option (read_page mode "interactive" lists them).`);

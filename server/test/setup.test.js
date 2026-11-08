@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, existsSync, rmSync, statSync, lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -110,7 +110,7 @@ test('setup: the systemd unit quotes paths and can drop the sandbox', () => {
   assert.throws(() => sdQuote('/a\nExecStartPre=/bin/evil'), UnitError);
   const unit = renderUnit({ nodePath: '/opt/node 22/bin/node', cliPath: '/x/cli.js', configDir: '/h/.config/cctether', socketPath: '/h/.config/cctether/control.sock' });
   assert.ok(unit.startsWith(UNIT_HEADER));
-  assert.match(unit, /^ExecStart="\/opt\/node 22\/bin\/node" "\/x\/cli.js" daemon$/m);
+  assert.match(unit, /^ExecStart="\/opt\/node 22\/bin\/node" "\/x\/cli.js" daemon --takeover$/m);
   assert.match(unit, /^ReadWritePaths="\/h\/.config\/cctether"$/m);
   assert.match(unit, /^ProtectSystem=strict$/m);
   assert.match(unit, /^Environment="CCTETHER_HOME=\/h\/.config\/cctether"$/m, 'always explicit');
@@ -158,8 +158,8 @@ async function sandbox(t, { claude = true, systemd = true, linger = false, failS
     const unit = readFileSync(unitPath, 'utf8');
     if (failStart) return { status: 1, stdout: '', stderr: 'Job for cctether.service failed.' };
     if (sandboxRejected && unit.includes('ProtectSystem')) { lastStatus = 226; return { status: 1, stdout: '', stderr: 'Job failed.' }; }
-    // Like systemd: INVOCATION_ID is set, so the service takes over from a copy started elsewhere.
-    mainPid = spawnDaemon(P, CLI, { ...process.env, ...env, INVOCATION_ID: 'test' });
+    // Like the unit setup writes: --takeover, so it replaces a copy started elsewhere.
+    mainPid = spawnDaemon(P, CLI, { ...process.env, ...env }, ['--takeover']);
     active = true;
     lastStatus = 0;
     return { status: 0, stdout: '', stderr: '' };
@@ -227,15 +227,17 @@ test('setup over HTTPS: asks, writes the service, adds to Claude Code, checks, p
   const sb = await sandbox(t);
   const r = await sb.setup({}, ['3', 'cctether-test.invalid', '', '']);
   assert.equal(r.code, 0, r.out);
-  // Questions: mode, address, background service (default yes); nothing else
-  assert.equal(r.prompts.length, 3, r.prompts.join('\n'));
+  // Questions: mode, address, background service, the CLAUDE.md note (defaults: yes); nothing else
+  assert.equal(r.prompts.length, 4, r.prompts.join('\n'));
+  assert.match(r.prompts[3], /use cctether by itself whenever a task needs a browser/);
+  assert.match(readFileSync(join(sb.env.CLAUDE_CONFIG_DIR, 'CLAUDE.md'), 'utf8'), /^<!-- cctether:start .*-->\n## Browser \(cctether\)\n[\s\S]*mcp__cctether__\*[\s\S]*<!-- cctether:end -->\n$/);
 
   const cfg = loadConfig(sb.dir);
   assert.equal(cfg.publicUrl, 'wss://cctether-test.invalid/cctether');
   assert.equal(cfg.port, sb.port);
 
   const unit = readFileSync(sb.unitPath, 'utf8');
-  assert.match(unit, new RegExp(`ExecStart=".*node.*" "${CLI.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}" daemon`));
+  assert.match(unit, new RegExp(`ExecStart=".*node.*" "${CLI.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}" daemon --takeover`));
   assert.match(unit, /Environment="CCTETHER_HOME=/);
   assert.ok(sb.calls.includes('systemctl --user enable cctether'));
   assert.ok(sb.calls.includes('systemctl --user start cctether'));
@@ -284,11 +286,12 @@ test('setup keeps a hand-written service unit unless told otherwise; replaces a 
   writeFileSync(sb.unitPath, mine);
   writeFileSync(sb.claudeJson, JSON.stringify({ mcpServers: { cctether: { type: 'stdio', command: 'npx', args: ['cctether', 'mcp'], env: {} } } }));
 
-  // mode 2 (ssh), service yes, overwrite? (default no), replace Claude entry? (default yes)
-  const r = await sb.setup({ service: false }, ['2', '']);
+  // mode 2 (ssh), replace Claude entry? (default yes), CLAUDE.md note? (no)
+  const r = await sb.setup({ service: false }, ['2', '', 'n']);
   assert.equal(r.code, 0, r.out);
   assert.equal(readFileSync(sb.unitPath, 'utf8'), mine, '--no-service leaves it alone');
-  assert.match(r.prompts.at(-1), /Replace it with/);
+  assert.match(r.prompts.at(-2), /Replace it with/);
+  assert.match(r.out, /No note added/);
   assert.equal(sb.readClaude().mcpServers.cctether.command, join(sb.root, 'global', 'bin', 'cctether'));
 
   const r2 = await sb.setup({ yes: true });
@@ -331,7 +334,7 @@ test('setup switches from HTTPS back to local, and refuses bad input', async (t)
   const spin = await sb.setup({}, Array(50).fill('banana'));
   assert.equal(spin.code, 2);
   assert.match(spin.out, /too many answers/);
-  const r = await sb.setup({}, ['7', '3', 'http://nope', 'wss://cctether-test.invalid/x']);
+  const r = await sb.setup({}, ['7', '3', 'http://nope', 'wss://cctether-test.invalid/x', 'n']);
   assert.equal(r.code, 0, r.out);
   assert.match(r.out, /Type 1, 2 or 3/);
   assert.match(r.out, /must start with wss:\/\//);
@@ -513,13 +516,115 @@ test('cctether check on its own: reports the service, the addresses and the brow
 test('cli: setup flags are parsed and checked', async () => {
   const { spawnSync } = await import('node:child_process');
   const home = mkdtempSync(join(tmpdir(), 'cct-cli-'));
-  const run = (...a) => spawnSync(process.execPath, [CLI, ...a], { encoding: 'utf8', env: { ...process.env, CCTETHER_HOME: home }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const env = { ...process.env, CCTETHER_HOME: home };
+  delete env.CLAUDECODE;
+  const run = (...a) => spawnSync(process.execPath, [CLI, ...a], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] });
   assert.match(run('setup', '--mode', 'tunnel').stderr, /--mode must be local, ssh or https/);
   assert.match(run('setup', '--lang', 'fr').stderr, /--lang must be en or zh/);
   const r = run('setup'); // stdin is not a terminal
   assert.equal(r.status, 2);
   assert.match(r.stdout, /pass --yes/);
   assert.match(run('help').stdout, /setup .*start here/);
+  assert.match(run('setup', '--takeover').stderr, /--takeover only goes with `cctether daemon`/);
+  // Inside Claude Code (CLAUDECODE=1), pair won't print the code: it would land in the conversation.
+  const inClaude = spawnSync(process.execPath, [CLI, 'pair'], { encoding: 'utf8', env: { ...env, CLAUDECODE: '1' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  assert.equal(inClaude.status, 2);
+  assert.equal(inClaude.stdout, '');
+  assert.match(inClaude.stderr, /doesn’t print it inside Claude Code/);
+  assert.match(run('pair').stdout, /^cctether1:/, 'in a terminal of your own it does');
   rmSync(home, { recursive: true, force: true });
 });
 
+test('setup can tell Claude (in its CLAUDE.md) to use cctether by itself; keeps the rest of the file', async (t) => {
+  const sb = await sandbox(t, { systemd: false });
+  const md = join(sb.env.CLAUDE_CONFIG_DIR, 'CLAUDE.md');
+  const mine = '# My rules\n\n- Be brief.\n';
+  writeFileSync(md, mine, { mode: 0o600 });
+
+  // --yes alone doesn't touch it, but says how
+  const quiet = await sb.setup({ yes: true, mode: 'local' });
+  assert.match(quiet.out, /run setup again with --claude-md/);
+  assert.equal(readFileSync(md, 'utf8'), mine);
+
+  const add = await sb.setup({ yes: true, mode: 'local', claudeMd: true });
+  assert.match(add.out, /Added a note to/);
+  const text = readFileSync(md, 'utf8');
+  assert.ok(text.startsWith(mine + '\n<!-- cctether:start'), text);
+  assert.equal(statSync(md).mode & 0o777, 0o600, 'file mode kept');
+
+  // Again: nothing changes; in Chinese the note is refreshed in place, not added twice
+  assert.match((await sb.setup({ yes: true, mode: 'local' })).out, /already tells Claude/);
+  const zh = await sb.setup({ yes: true, mode: 'local', lang: 'zh' });
+  assert.match(zh.out, /更新了/);
+  const after = readFileSync(md, 'utf8');
+  assert.equal(after.split('cctether:start').length, 2, 'one note only');
+  assert.match(after, /## 浏览器（cctether）/);
+  assert.ok(after.startsWith(mine));
+
+  // --no-claude-md: not even a hint
+  const no = await sb.setup({ yes: true, mode: 'local', claudeMd: false });
+  assert.doesNotMatch(no.out, /CLAUDE\.md|--claude-md/);
+});
+
+test('the CLAUDE.md note never damages the rest of the file', async (t) => {
+  const { upsertClaudeMdNote, findClaudeMdNote } = await import('../src/system.js');
+  const dir = mkdtempSync(join(tmpdir(), 'cct-md-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const md = join(dir, 'CLAUDE.md');
+  const body = '## Browser\nUse cctether.';
+  const note = (c) => upsertClaudeMdNote(md, body, 'test', c);
+
+  // A leftover start line (the user deleted the rest): left alone, not matched across user text
+  writeFileSync(md, '# Mine\n<!-- cctether:start old -->\n## My later notes\n- important A\n');
+  assert.equal(note(), 'ambiguous');
+  assert.equal(readFileSync(md, 'utf8'), '# Mine\n<!-- cctether:start old -->\n## My later notes\n- important A\n');
+
+  // Markers that aren't whole lines don't count; "$&" in the file is kept literally
+  writeFileSync(md, '# Mine $& `<!-- cctether:start x -->` and `<!-- cctether:end -->`\n');
+  assert.equal(note(), 'added');
+  assert.ok(readFileSync(md, 'utf8').startsWith('# Mine $& `<!-- cctether:start x -->` and `<!-- cctether:end -->`\n\n<!-- cctether:start test -->\n'));
+  assert.equal(note(), 'same');
+
+  // An emptied note means "no thanks": kept empty unless forced
+  writeFileSync(md, '# Mine\n\n<!-- cctether:start test -->\n<!-- cctether:end -->\n\n# After\n');
+  assert.equal(findClaudeMdNote(readFileSync(md, 'utf8')).state, 'empty');
+  assert.equal(note(), 'optedOut');
+  assert.equal(note({ force: true }), 'updated');
+  assert.match(readFileSync(md, 'utf8'), /^# Mine\n\n<!-- cctether:start test -->\n## Browser\nUse cctether\.\n<!-- cctether:end -->\n\n# After\n$/);
+
+  // CRLF stays CRLF, and the note is found again (not added twice)
+  writeFileSync(md, '# Mine\r\n- a\r\n');
+  assert.equal(note(), 'added');
+  assert.equal(note(), 'same');
+  const crlf = readFileSync(md, 'utf8');
+  assert.equal(crlf.split('cctether:start').length, 2);
+  assert.ok(!/[^\r]\n/.test(crlf), 'every line ends with CRLF');
+
+  // A symlink stays a symlink; the real file gets the note
+  const real = join(dir, 'dotfiles-CLAUDE.md');
+  writeFileSync(real, '# Dotfiles\n');
+  const link = join(dir, 'link.md');
+  symlinkSync(real, link);
+  assert.equal(upsertClaudeMdNote(link, body, 'test'), 'added');
+  assert.ok(lstatSync(link).isSymbolicLink());
+  assert.match(readFileSync(real, 'utf8'), /cctether:start/);
+
+  // Read-only: refused, not replaced; not UTF-8: refused
+  const ro = join(dir, 'ro.md');
+  writeFileSync(ro, '# Read only\n', { mode: 0o444 });
+  if (process.getuid?.() !== 0) assert.throws(() => upsertClaudeMdNote(ro, body, 'test'), /EACCES|EPERM/);
+  assert.equal(readFileSync(ro, 'utf8'), '# Read only\n');
+  const bin = join(dir, 'bin.md');
+  writeFileSync(bin, Buffer.from([0x23, 0x20, 0xff, 0xfe, 0x0a]));
+  assert.throws(() => upsertClaudeMdNote(bin, body, 'test'));
+  assert.deepEqual([...readFileSync(bin)], [0x23, 0x20, 0xff, 0xfe, 0x0a]);
+});
+
+test('setup skips the CLAUDE.md note when Claude Code isn’t set up, and prints commands once', async (t) => {
+  const sb = await sandbox(t, { systemd: false });
+  const r = await sb.setup({ yes: true, mode: 'local', mcp: false, claudeMd: true });
+  assert.equal(r.code, 0, r.out);
+  assert.ok(!existsSync(join(sb.env.CLAUDE_CONFIG_DIR, 'CLAUDE.md')), 'no note about tools that aren’t registered');
+  assert.equal(r.out.split('claude mcp add').length, 2, r.out);
+  assert.match(r.out, /To add it later:\n\s+claude mcp add -s user cctether -e CCTETHER_HOME=\S+ -- \S+ mcp\n/);
+});
