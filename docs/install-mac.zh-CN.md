@@ -5,9 +5,9 @@
 
 ## 一、下载插件文件
 
-1. 用浏览器打开 cctether 的 GitHub 页面，点绿色的 **Code** 按钮，再点 **Download ZIP**。
-2. 双击下载好的 zip，解压出一个 `cctether-main` 文件夹。
-3. 把里面的 **`extension`** 文件夹拖到「文稿」里，改名叫 `cctether-extension`。
+1. 用浏览器打开 https://github.com/guchaorui/cctether/releases ，在最新版本下面点 **`cctether-extension-<版本号>.zip`** 下载（不要下带 `-store` 的那个，那是给应用商店用的）。
+2. 双击下载好的 zip，解压出一个 `cctether-extension` 文件夹。
+3. 把这个文件夹拖到「文稿」里。
    - Chrome 每次启动都要从这个文件夹读插件，**以后别删、别挪**。
 
 ## 二、装进 Chrome
@@ -60,8 +60,8 @@
 
 ## 七、更新插件
 
-1. 照第一步重新下载、解压。
-2. 用新的 `extension` 文件夹里的内容，替换掉「文稿」里 `cctether-extension` 的内容。
+1. 照第一步下载新版本的 zip、解压。
+2. 用新解压出来的 `cctether-extension` 文件夹里的内容，替换掉「文稿」里 `cctether-extension` 的内容。
 3. 打开 `chrome://extensions`，点 cctether 卡片上的重新加载按钮（圆形箭头）。
 
 配对信息会保留，不用重新配对。
