@@ -17,7 +17,7 @@
 ### 2026-11-08 第二轮：主人的问题、建议和实际使用的反馈
 
 - **占用**（主人问会不会挤占上下文）：20 个工具的说明约 4000 token（20 万上下文的 2%）；新版 Claude Code 工具多时按需加载，没用到时只占工具名约 150 token 加一小段说明。服务约 75 MB 内存，每个 Claude Code 窗口多一个约 55 MB 的转接进程。写进了 README「占用大吗？」。
-- **主人建议的「让 Claude 帮别人装」**：`docs/setup-with-claude.md`（中文版 `.zh-CN.md`），README 快速开始里有链接。setup 新增一问「以后要不要 Claude 自己就用 cctether」，要的话在 `~/.claude/CLAUDE.md` 末尾加一段带标记的说明（SPEC §8.1 第 5 步）。主人自己的 `~/.claude/CLAUDE.md` 还没加，要不要加问主人。
+- **主人建议的「让 Claude 帮别人装」**：`docs/setup-with-claude.md`（中文版 `.zh-CN.md`），README 快速开始里有链接。setup 新增一问「以后要不要 Claude 自己就用 cctether」，要的话在 `~/.claude/CLAUDE.md` 末尾加一段带标记的说明（SPEC §8.1 第 5 步）。主人同意后，2026-11-08 已加到主人自己的 `~/.claude/CLAUDE.md`（备份 `~/.claude/CLAUDE.md.bak-before-cctether`）。
 - **另一个 Claude 实际用下来提的三处**，都修了并补了端到端测试（SPEC §5.2）：缩小了的截图说明前后矛盾，导致按图上坐标点错；选择器取到藏起来的副本；`evaluate` 中途页面跳转时报 Chrome 的原始错误。
 - **GitHub Actions 第一次跑**：端到端测试和打包在 GitHub 上都过了；服务端测试暴露出「靠 `INVOCATION_ID` 认 systemd」的问题，改成服务单元明确写 `daemon --takeover`。
 - **发布前的审查**（Opus subagent）：没有严重和高危；4 个中危、若干低危都修了，补了测试，细节在 SPEC §13 v0.7。其中一条改了行为：`cctether pair` 在 Claude Code 运行的命令里不再显示连接码（包括主人在 Claude Code 里用 `!` 运行），要在自己的终端里运行。
@@ -58,7 +58,6 @@ Opus subagent 审查了第二阶段的全部改动（读代码，并在隔离环
 
 ## 主人要定的事
 
-- 要不要在主人自己的 `~/.claude/CLAUDE.md` 里加「浏览器的事用 cctether」那段说明。
 - 发布那几步里要主人亲手做的：`! npm login`；注册 Chrome 应用商店开发者账号、上传、提交审核。
 
 ## 开发机上测不了、还没专门确认过的
