@@ -6,7 +6,7 @@
 
 - **主人 2026-11-08 同意：发 npm、公开仓库、发第一个 Release、上 Chrome 应用商店。** 版本 0.3.0 已准备好（测试全过、审查完、修完）。
 - **发布进度**（按这个顺序，一步一步打勾；顺序的理由见下面「审查」第二条）：
-  1. [ ] 发 npm：等主人在 Claude Code 里运行 `! npm login`（没有 npm 账号要先在 npmjs.com 注册）。登录后 Claude 去掉 `server/package.json` 的 `"private": true`，跑测试，`npm publish`（开了两步验证的话，npm 会给一个网址让主人在浏览器里确认）。发完在隔离环境里真跑一遍 `npx cctether@latest setup`。
+  1. [x] 发 npm：2026-11-08 主人开了两步验证后发出 cctether 0.3.0（npm 账号 `guchaorui.com`）。npm 现在是「暂存发布」：先出现一个 `0.0.0-stage` 占位，几分钟后才有正式版本。以后发布：`cd server && script -qfc "npm publish --access public" /tmp/x.log`（要有终端，npm 才会打出确认网址并等待），把网址给主人在浏览器里确认。
   2. [ ] 公开仓库：发布前再查一遍 git 历史里有没有私人信息，然后 `gh repo edit --visibility public --accept-visibility-change-consequences`，再打开私下报告漏洞：`gh api -X PUT repos/guchaorui/cctether/private-vulnerability-reporting`。
   3. [ ] 发 Release：推 `v0.3.0` 标签，CI 跑完会建一个草稿（附自己加载用的 zip、商店用的 zip、npm 包、校验和），Claude 看过草稿再发布。
   4. [ ] 升级服务器上主人在用的服务到 0.3.0，并给主人的服务单元 `ExecStart` 加上 `--takeover`（见 SPEC §8.1 第 4 步；主人的单元是第一阶段手写的，没有这个参数）。

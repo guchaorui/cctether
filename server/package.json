@@ -19,7 +19,6 @@
   },
   "author": "guchaorui",
   "license": "MIT",
-  "private": true,
   "type": "module",
   "bin": {
     "cctether": "bin/cctether.js"
