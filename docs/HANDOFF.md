@@ -5,16 +5,16 @@
 ## 零、现在到哪了（先看这里）
 
 - **第二阶段全部做完，已经公开发布。** 主人 2026-11-08 同意的四件事都做完了：
-  - npm：`cctether` 0.3.1（主人的 npm 账号，开了两步验证）。
-  - GitHub：仓库已公开，打开了私下报告漏洞；Release 到 v0.3.1。
+  - npm：`cctether` 0.3.2（主人的 npm 账号，开了两步验证）。
+  - GitHub：仓库已公开，打开了私下报告漏洞；Release 到 v0.3.2。
   - Chrome 应用商店：**已上架**，https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib（插件 ID `mbkadoolgknacadjkfjjajldmllbkdib`，2026-11-08 提交，约一天过审）。
     - 2026-11-09 下载商店里的包和 v0.3.1 逐文件核对过：55 个文件里 54 个一字不差；manifest 只差 `key`（我们打包时去掉的）和 `update_url`（商店加的）；另外多了商店的签名文件 `_metadata/`。权限没变。
-  - 主人的服务器跑 0.3.1（从 npm 装）。
+  - 主人的服务器跑 0.3.2（从 npm 装）。商店里还是 0.3.1，见下面待办。
 - **主人 2026-11-09 确认：Mac 合盖再打开没问题，连接恢复得很快。**
 - **主人 2026-11-09 换成了商店版**，`list_extensions` 确认过（ID 是商店版、不再标 unpacked），连接正常。商店版第一次真正连上服务端，整条链走通了。
-- **Mac 快捷键 2026-11-09 实测过**（主人同意后，在主人的真 Chrome 里，后台标签页）：常用的都对（清单在 SPEC §13 v0.10）。发现两处，代码已修，版本号已到 0.3.2：⌘⇧ 加方向键没反应；`Control+A` 这类在 Mac 上静悄悄没效果，现在会提醒。
+- **Mac 快捷键 2026-11-09 实测过**（主人同意后，在主人的真 Chrome 里，后台标签页）：常用的都对（清单在 SPEC §13 v0.10）。发现两处，0.3.2 已修（npm 和 Release 都发了）：⌘⇧ 加方向键没反应；`Control+A` 这类在 Mac 上静悄悄没效果，现在会提醒。这两处的新代码只在 Linux 的 Chrome 上测过（走的是 Mac 的代码路径），商店版更新到 0.3.2 以后可以在主人的 Mac 上复查一次。
 - **待办**：
-  1. 0.3.2 还没发布，等主人同意（步骤见下）。main 上还带着 setup 结尾直达商店的链接、npm 页面提到商店。
+  1. 主人把 `cctether-extension-0.3.2-store.zip` 传到商店后台、提请审核（`store/README.zh-CN.md` 末尾）。过审后商店版自己更新。
   2. 主页卡片：交给了 site-ops，等主人确认预览；确认以后对它说「主人已确认，发布」。
   3. 中英文介绍：Claude 写了草稿给主人，发不发、发到哪由主人定。Claude 不代发。
 - **新窗口接手时**：看上面待办还有哪些没做完，问主人。
@@ -22,7 +22,7 @@
 ### 以后发新版本的步骤
 
 1. `server/package.json`、`server/package-lock.json`、`extension/manifest.json` 的版本号一起加；测试全过；提交、push，等 CI 过。
-2. 发 npm：`cd server && script -qfc "npm publish --access public" <日志文件>`，放后台跑（要有终端，npm 才会打出确认网址并等待）。把日志里的 `https://www.npmjs.com/auth/cli/...` 给主人，在浏览器里确认。确认后约半分钟 npm 上才有新版本。
+2. 发 npm：先跑 `npm whoami`。报 401 就让主人在 Claude Code 里运行 `! npm login`（npm 的登录有效期很短，2026-11-09 隔了不到一天就过期了）。然后 `cd server && script -qfc "npm publish --access public" <日志文件>`，放后台跑（要有终端，npm 才会打出确认网址并等待）。把日志里的 `https://www.npmjs.com/auth/cli/...` 给主人，在浏览器里确认。确认后约半分钟 npm 上才有新版本。
 3. 推 `v<版本号>` 标签，GitHub Actions 建 Release 草稿。核对：`SHA256SUMS` 和本地 `node scripts/pack-extension.mjs`、`--flat` 打出来的一样，npm 包的 sha1 和 `npm view cctether@<版本号> dist.shasum` 一样。写说明，发布：`gh release edit v<版本号> --notes-file ... --draft=false --latest`。
 4. 插件代码改了的话：让主人照 `store/README.zh-CN.md` 末尾上传新的 `-store.zip`、提交审核。只改了服务端就不用。
 5. 升级主人的服务器（`CLAUDE.local.md`），跑 `cctether check`。

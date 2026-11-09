@@ -14,7 +14,7 @@
   - 全程走用户自己的连接，不经过 Anthropic 的中转服务器。
 - 起因：官方 Claude in Chrome 插件要经过 Anthropic 中转。主人的 Mac 有时连不上 Claude，这条链就断了。
 - 要开源（MIT），给有同样需求的人用。所以不能写死主人的环境，界面和 README 都要中英双语。
-- **当前：第二阶段全部做完，已公开发布（npm、GitHub、Chrome 应用商店），线上版本 0.3.1，main 上是待发布的 0.3.2（SPEC §13 v0.10）。新对话从 `docs/HANDOFF.md` 第零节开始。**
+- **当前：第二阶段全部做完，已公开发布（npm、GitHub、Chrome 应用商店），版本 0.3.2（SPEC §13 v0.10）。新对话从 `docs/HANDOFF.md` 第零节开始。**
 
 ## 仓库结构
 
