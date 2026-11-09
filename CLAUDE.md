@@ -14,7 +14,7 @@
   - 全程走用户自己的连接，不经过 Anthropic 的中转服务器。
 - 起因：官方 Claude in Chrome 插件要经过 Anthropic 中转。主人的 Mac 有时连不上 Claude，这条链就断了。
 - 要开源（MIT），给有同样需求的人用。所以不能写死主人的环境，界面和 README 都要中英双语。
-- **当前：第二阶段全部做完，已公开发布（npm、GitHub、Chrome 应用商店），版本 0.3.3（SPEC §13 v0.11）。新对话从 `docs/HANDOFF.md` 第零节开始。**
+- **当前：第二阶段全部做完，已公开发布（npm、GitHub、Chrome 应用商店），版本 0.3.3（SPEC §13 v0.12）。主人 2026-11-09 说先做到这里。新对话从 `docs/HANDOFF.md` 第零节开始，后续优化的候选清单在第二节。**
 
 ## 仓库结构
 
@@ -30,12 +30,13 @@ server/             npm 包 cctether：bin/cctether.js 命令行；src/ 里 gate
                     setup（安装向导）、check（自检）、system（探测 npm/systemd/claude）、text（setup 和 check 的中英文案）
 test/e2e/           端到端测试：无界面 Chrome for Testing + 插件 + 服务；lib/ 是自写的 CDP 客户端和 Chrome 启动器
 docs/               SPEC（施工图）、HANDOFF（交接）、install-mac.zh-CN.md（Mac 安装步骤）、
-                    connect.md / connect.zh-CN.md（各种连法）、PROTOCOL.md（协议说明，英文）
+                    connect.md / connect.zh-CN.md（各种连法）、setup-with-claude.md / .zh-CN.md（让 Claude 帮别人装的提示词）、
+                    PROTOCOL.md（协议说明，英文）
 deploy/             通用部署示例（Caddy、systemd），不放主人的真实配置
 scripts/            icons.mjs（生成图标）、screenshots.mjs（界面批量截图，输出到 screenshots/，不进仓库）、
                     pack-extension.mjs（打插件 zip 到 dist/，可复现；--flat 打商店用的）、store-images.mjs（商店宣传图）
 store/              Chrome 应用商店要填的内容（listing.md 中英）和宣传图（images/）
-.github/workflows/  ci.yml（每次 push 跑测试和打包）、release.yml（推 v* 标签建 Release 草稿）
+.github/workflows/  ci.yml（每次 push 跑测试和打包）、release.yml（推 v* 标签：跑测试、发 npm、建 Release 草稿）
 README.md / README.zh-CN.md / SECURITY.md / PRIVACY.md   给用户看的说明（README 中英文，其余英文）
 ```
 
@@ -59,7 +60,8 @@ README.md / README.zh-CN.md / SECURITY.md / PRIVACY.md   给用户看的说明�
   - 未配对、连接中、已连接、已暂停、出错这几种状态也都要看。
   - 挑完毛病、改到满意，再给主人看。
 - **语言**：
-  - 给主人看的文档用简体中文大白话，包括本文件和 docs/ 下的 SPEC、HANDOFF。
+  - 和主人对话一律用简体中文大白话。
+  - 给主人看的文档也一样，包括本文件和 docs/ 下的 SPEC、HANDOFF。
   - 代码、注释、提交信息、日志用英文，因为是开源项目。
   - 界面文字一律走语言包，代码里不写死。
   - README 以英文为主，另附 README.zh-CN.md。
@@ -69,7 +71,7 @@ README.md / README.zh-CN.md / SECURITY.md / PRIVACY.md   给用户看的说明�
   - 改认证、连接、权限、标签页范围相关的代码，必须配测试。
   - 拿不准就停下来问。
 - **改需求、架构、协议或阶段范围**：先改 docs/SPEC.md，在 §13 记一笔，再改代码。
-- **版本号**：`server/package.json` 和 `extension/manifest.json` 永远一致（SPEC §8.3）。改了哪一边，两边一起加。发新版本的步骤在 HANDOFF 第零节。
+- **版本号**：`server/package.json` 和 `extension/manifest.json` 永远一致（SPEC §8.3）。改了哪一边，两边一起加。发新版本的步骤在 HANDOFF 第三节。
 - **依赖越少越好**。
   - 插件零依赖、不打包，用户能直接审读源码。
   - 服务端只用必要的包，并锁精确版本。
