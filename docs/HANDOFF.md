@@ -22,11 +22,13 @@
 
 ### 以后发新版本的步骤
 
-1. `server/package.json`、`server/package-lock.json`、`extension/manifest.json` 的版本号一起加；测试全过；提交、push，等 CI 过。
-2. 发 npm：先跑 `npm whoami`。报 401 就让主人在 Claude Code 里运行 `! npm login`（npm 的登录有效期很短，2026-11-09 隔了不到一天就过期了）。然后 `cd server && script -qfc "npm publish --access public" <日志文件>`，放后台跑（要有终端，npm 才会打出确认网址并等待）。把日志里的 `https://www.npmjs.com/auth/cli/...` 给主人，在浏览器里确认。确认后约半分钟 npm 上才有新版本。
-3. 推 `v<版本号>` 标签，GitHub Actions 建 Release 草稿。核对：`SHA256SUMS` 和本地 `node scripts/pack-extension.mjs`、`--flat` 打出来的一样，npm 包的 sha1 和 `npm view cctether@<版本号> dist.shasum` 一样。写说明，发布：`gh release edit v<版本号> --notes-file ... --draft=false --latest`。
-4. 插件代码改了的话：让主人照 `store/README.zh-CN.md` 末尾上传新的 `-store.zip`、提交审核。只改了服务端就不用。
+1. `server/package.json`、`server/package-lock.json`、`extension/manifest.json` 的版本号一起加；测试全过；提交、push。
+2. **先问主人。** 同意后推标签：`git tag -a v<版本号> -m "cctether <版本号>" && git push origin v<版本号>`。这一推就会发布：GitHub Actions 跑全部测试，通过后用可信发布发到 npm（不用登录，也不用点确认），再建 Release 草稿。
+3. 核对：`SHA256SUMS` 和本地 `node scripts/pack-extension.mjs`、`--flat` 打出来的一样，npm 包的 sha1 和 `npm view cctether@<版本号> dist.shasum` 一样。写说明，发布：`gh release edit v<版本号> --notes-file ... --draft=false --latest`。
+4. 插件代码改了的话：让主人照 `store/README.zh-CN.md` 末尾上传新的 `-store.zip`、提交审核。只改了服务端就不用，商店版可以落后。
 5. 升级主人的服务器（`CLAUDE.local.md`），跑 `cctether check`。
+
+可信发布出问题时的备用办法：让主人 `! npm login`，然后 `cd server && script -qfc "npm publish --access public" <日志文件>` 放后台跑（要有终端，npm 才会打出确认网址并等待），把网址给主人确认。再重跑那次 Release 运行，已经发过的版本会自动跳过 npm 这一步。
 
 ### 2026-11-08 第二轮：主人的问题、建议和实际使用的反馈
 
