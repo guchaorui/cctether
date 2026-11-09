@@ -2,6 +2,8 @@
 
 [English](README.md) | 简体中文
 
+[Chrome 应用商店](https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib) · [npm](https://www.npmjs.com/package/cctether) · [Releases](https://github.com/guchaorui/cctether/releases)
+
 cctether 让 Claude Code（或者任何 MCP 客户端）用上你自己的 Chrome 浏览器。它由两部分组成：一个 Chrome 插件，和一个跑在 Claude Code 所在电脑上的小服务。插件主动连到这个服务，服务再通过 MCP 把浏览器的本领交给 Claude：读页面、截图、点击、输入，还能看控制台和网络请求。全程走你自己的连接，中间没有 Anthropic 或任何第三方的中转服务器。
 
 ## 为什么做这个
@@ -50,7 +52,7 @@ cctether 这些情况都能用，因为浏览器连的是你自己跑的服务�
    - 检查地址通不通；
    - 最后显示一个以 `cctether1:` 开头的连接码。
 
-2. 在 Chrome 里[安装插件](#安装插件)。
+2. [从 Chrome 应用商店安装插件](https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib)。[详细步骤见下面](#安装插件)。
 3. 打开插件的设置页，粘贴连接码。
 4. 如果 Claude Code 开着，重开一次，然后让它用浏览器。
 
@@ -60,22 +62,31 @@ cctether 这些情况都能用，因为浏览器连的是你自己跑的服务�
 
 ## 安装插件
 
-cctether 还没上 Chrome 应用商店，要自己加载，一分钟的事。
+1. 打开 **[Chrome 应用商店里的 cctether](https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib)**，点**添加至 Chrome**。Chrome 会列出这个插件能做什么，其中有一条听着很吓人的提示，是调试权限带来的，见[权限](#权限)。确认以后，插件的设置页会自动打开，先别关。
+2. 点 Chrome 右上角的拼图图标，在 cctether 旁边点图钉，把按钮固定在工具栏上。纯灰色的图标说明还没配对。
+3. 在设置页的「和服务器配对」里，把 `cctether setup`（或 `cctether pair`）显示的连接码整行粘贴进去，点**配对**。
+4. 设置页顶部显示「已连接」，工具栏图标变成青绿色，就成功了。
 
-1. 到 [GitHub Releases 页面](https://github.com/guchaorui/cctether/releases)下载 `cctether-extension-<版本号>.zip`。
-2. 解压，得到一个叫 `cctether-extension` 的文件夹。
-3. 把它放在一个固定的地方，比如「文稿」。Chrome 每次启动都要从这里读插件，**以后别删、别挪**。
-4. 在 Chrome 地址栏输入 `chrome://extensions`，回车。
-5. 打开右上角的**开发者模式**开关。
-6. 点**加载已解压的扩展程序**，选 `cctether-extension` 文件夹。页面上会出现 cctether 的卡片，同时自动打开插件的设置页，先别关。
-7. 点 Chrome 右上角的拼图图标，在 cctether 旁边点图钉，把按钮固定在工具栏上。纯灰色的图标说明还没配对。
-8. 在设置页的「和服务器配对」里，把 `cctether setup`（或 `cctether pair`）显示的连接码整行粘贴进去，点**配对**。
-9. 设置页顶部显示「已连接」，工具栏图标变成青绿色，就成功了。
+商店版以后会自己更新。
 
 说明：
 
 - Edge 等 Chromium 内核的浏览器多半也能用，但没测过。不支持 Firefox 和 Safari。
 - 如果浏览器那台电脑上开着 Clash 之类的代理软件，给你的服务器域名加一条「直连」规则。不然代理出问题时，cctether 也会跟着断。
+
+### 也可以自己加载
+
+用不了应用商店，或者想用某个发布版本里的文件时：
+
+1. 到 [GitHub Releases 页面](https://github.com/guchaorui/cctether/releases)下载 `cctether-extension-<版本号>.zip`（不是结尾带 `-store` 的那个）。
+2. 解压，得到一个叫 `cctether-extension` 的文件夹。
+3. 把它放在一个固定的地方，比如「文稿」。Chrome 每次启动都要从这里读插件，**以后别删、别挪**。
+4. 在 Chrome 地址栏输入 `chrome://extensions`，回车。
+5. 打开右上角的**开发者模式**开关。
+6. 点**加载已解压的扩展程序**，选 `cctether-extension` 文件夹。页面上会出现 cctether 的卡片，同时自动打开插件的设置页。
+7. 照上面第 2 到第 4 步固定按钮、配对。
+
+两种只留一种。它们不共用配对信息，同时装着还会抢同一条连接（其中一个会显示「另一个浏览器连上了」）。要换的话：先在 `chrome://extensions` 里移除旧的，装上新的，再配对一次（`cctether pair` 显示的还是同一个连接码）。
 
 ## 几种连法
 
@@ -170,7 +181,7 @@ Claude 能用这 20 个工具：
 | `alarms` | 定时检查连接，断了自己连回去。 |
 | `management` | 列出和重载插件（`list_extensions`、`reload_extension`）。 |
 
-它不申请网站权限，也就是没有「读取和更改您在所有网站上的数据」。页面操作都走调试器，读页面用的代码是插件自带的。
+安装时 Chrome 会提示这个插件可以「读取和更改您在所有网站上的所有数据」「访问页面调试程序后端」。凡是带 `debugger` 权限的插件，Chrome 都会这样提示，因为这个权限确实很大。真正的限制在 cctether 自己的代码里：每个操作页面的工具，都会先检查这个标签页在不在 cctether 标签组里（[extension/background/tabs.js](extension/background/tabs.js)）。代码没有压缩，你可以自己看。插件没有另外申请网站权限，也不会往网页里放常驻的脚本：读页面用的代码是插件自带的，只在调用工具时才运行。
 
 ## 安全和隐私
 
@@ -188,13 +199,16 @@ Claude 能用这 20 个工具：
 
 ## 更新
 
-服务和插件用同一个版本号，两边都要更新。
+**从 Chrome 应用商店装的插件会自己更新。** 新版本要过了商店审核才会推送，所以它可能比服务稍微落后一点。这没关系：两边真的配合不了时，弹窗会告诉你该更新哪一边。
 
-1. 在跑 Claude Code 的电脑上：`npm install -g cctether@latest`。
+**服务**要你自己更新，在跑 Claude Code 的电脑上：
+
+1. `npm install -g cctether@latest`
 2. 重启服务。装了后台服务的：`systemctl --user restart cctether`。没装的：`cctether stop`，Claude Code 下次用到时它会自己再启动。
-3. 插件：下载新的 zip，用新文件替换 `cctether-extension` 文件夹里的内容，然后在 `chrome://extensions` 里点 cctether 卡片上的重新加载按钮。
 
-配对信息会保留。如果两边版本对不上，弹窗会告诉你该更新哪一边。
+**自己加载的插件**：下载新的 zip，用新文件替换 `cctether-extension` 文件夹里的内容，然后在 `chrome://extensions` 里点 cctether 卡片上的重新加载按钮。
+
+配对信息都会保留。
 
 ## 出问题时
 
@@ -233,7 +247,7 @@ Claude 能用这 20 个工具：
 2. 如果装过后台服务：`systemctl --user disable --now cctether`，然后删掉 `~/.config/systemd/user/cctether.service`。
 3. `npm uninstall -g cctether`
 4. 删掉设置文件夹：`~/.config/cctether`（如果设过 `$CCTETHER_HOME`，就删那个）。
-5. 在 Chrome 的 `chrome://extensions` 里移除插件，并删掉 `cctether-extension` 文件夹。
+5. 在 Chrome 的 `chrome://extensions` 里移除插件。如果是自己加载的，再删掉 `cctether-extension` 文件夹。
 
 ## 开发
 
@@ -243,7 +257,8 @@ server/      npm 包 cctether：命令行、服务、MCP
 test/e2e/    端到端测试：无界面 Chrome for Testing + 插件 + 服务
 docs/        设计文档（SPEC）、连接指南
 deploy/      Caddyfile 和 systemd 服务的示例
-scripts/     图标、截图、插件打包
+scripts/     图标、截图、插件打包、商店宣传图
+store/       Chrome 应用商店的上架文字和图片
 ```
 
 - 服务端单元测试：`cd server && npm test`

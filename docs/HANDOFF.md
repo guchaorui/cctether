@@ -1,18 +1,30 @@
 # 交接
 
-> 2026-11-08 更新。新对话读 `CLAUDE.md`、`CLAUDE.local.md`、`docs/SPEC.md` 和本文第零节，就能接上。
+> 2026-11-09 更新。新对话读 `CLAUDE.md`、`CLAUDE.local.md`、`docs/SPEC.md` 和本文第零节，就能接上。
 
 ## 零、现在到哪了（先看这里）
 
-- **主人 2026-11-08 同意：发 npm、公开仓库、发第一个 Release、上 Chrome 应用商店。** 版本 0.3.0 已准备好（测试全过、审查完、修完）。
-- **发布进度**（按这个顺序，一步一步打勾；顺序的理由见下面「审查」第二条）：
-  1. [x] 发 npm：2026-11-08 主人开了两步验证后发出 cctether 0.3.0（用主人的 npm 账号）。npm 现在是「暂存发布」：先出现一个 `0.0.0-stage` 占位，几分钟后才有正式版本。以后发布：`cd server && script -qfc "npm publish --access public" /tmp/x.log`（要有终端，npm 才会打出确认网址并等待），把网址给主人在浏览器里确认。
-  2. [x] 公开仓库（2026-11-08）：发布前再查一遍 git 历史里有没有私人信息，然后 `gh repo edit --visibility public --accept-visibility-change-consequences`，再打开私下报告漏洞：`gh api -X PUT repos/guchaorui/cctether/private-vulnerability-reporting`。
-  3. [x] 发 Release（2026-11-08，https://github.com/guchaorui/cctether/releases/tag/v0.3.0 ；GitHub 打的两个插件 zip 和开发机本地打的逐字节一样，npm 包和 npm 上的一样）：推 `v0.3.0` 标签，CI 跑完会建一个草稿（附自己加载用的 zip、商店用的 zip、npm 包、校验和），Claude 看过草稿再发布。
-  4. [x] 升级服务器上主人在用的服务到 0.3.0（2026-11-08，从 npm 装；服务单元已加 `--takeover`，原文件备份为 `cctether.service.bak-0.2.0`），并给主人的服务单元 `ExecStart` 加上 `--takeover`（见 SPEC §8.1 第 4 步；主人的单元是第一阶段手写的，没有这个参数）。
-  5. [ ] Chrome 应用商店（2026-11-08 进度：主人已注册、建好草稿，商店版 ID `mbkadoolgknacadjkfjjajldmllbkdib`，已加进 0.3.1 的内置白名单；主人找不到商店图标，已补 `store/images/store-icon-128.png` 和每格放什么的 `store/README.zh-CN.md`。0.3.1 已发 npm 和 Release，服务器已升级，经公网地址实测商店版 ID 能连、陌生 ID 被拒。主人 2026-11-08 已上传 0.3.1、填好、提请审核。等审核结果：通过了就把 README 里的安装方式改成以商店为主（附商店链接），自己加载的方式留作备选；被拒了就照拒绝理由改）：主人注册开发者账号（一次性 5 美元）→ 新建条目、上传 `cctether-extension-0.3.0-store.zip` → 把商店给的插件 ID 告诉 Claude → Claude 把 ID 加进 `DEFAULT_EXTENSION_IDS`、发 0.3.1 到 npm → 主人照 `store/listing.zh-CN.md` 填好各项、提交审核。要填的内容和宣传图都在 `store/` 里。
-- 主人的 Mac 上的插件 2026-11-08 已更新到 0.3.0（服务端 0.3.1，协议一样，能连）。以前是 **0.1.1**。发了 Release 以后，照 `docs/install-mac.zh-CN.md` 第七节换成 0.3.0（以后上了商店，也可以改装商店版）。
-- **新窗口接手时**：看上面哪一步没打勾，从那里接着做。
+- **第二阶段全部做完，已经公开发布。** 主人 2026-11-08 同意的四件事都做完了：
+  - npm：`cctether` 0.3.1（主人的 npm 账号，开了两步验证）。
+  - GitHub：仓库已公开，打开了私下报告漏洞；Release 到 v0.3.1。
+  - Chrome 应用商店：**已上架**，https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib（插件 ID `mbkadoolgknacadjkfjjajldmllbkdib`，2026-11-08 提交，约一天过审）。
+    - 2026-11-09 下载商店里的包和 v0.3.1 逐文件核对过：55 个文件里 54 个一字不差；manifest 只差 `key`（我们打包时去掉的）和 `update_url`（商店加的）；另外多了商店的签名文件 `_metadata/`。权限没变。
+  - 主人的服务器跑 0.3.1（从 npm 装）。
+- **主人 2026-11-09 确认：Mac 合盖再打开没问题，连接恢复得很快。**
+- **还等主人的**（都不急，主人不提就别催）：
+  1. 把 Mac 上自己加载的 0.3.0 换成商店版（`docs/install-mac.zh-CN.md` 第七节）。这也是商店版第一次真正连服务端：经公网地址实测过服务端接受这个 ID，但整条链还没走过。换完可以用 `list_extensions` 确认：id 是商店版的、不再标 unpacked。
+  2. Mac 上的快捷键（⌘A/⌘C/⌘V）还没验证。主人说一声 Claude 就能测。没有擅自测，因为会出现调试提示条，⌘C 还会覆盖一次主人的剪贴板。
+  3. 可选：把 cctether 加到主页（交给 site-ops）、写一段介绍发到社区。主人还没回话。
+- **main 比 npm 新一点，不影响用户，等下次发版带上**：setup 结尾的链接直达商店（现在 0.3.1 里的链接到 README，也能到商店）；npm 页面的说明提到商店。版本号没加。
+- **新窗口接手时**：问主人这次想做什么。
+
+### 以后发新版本的步骤
+
+1. `server/package.json`、`server/package-lock.json`、`extension/manifest.json` 的版本号一起加；测试全过；提交、push，等 CI 过。
+2. 发 npm：`cd server && script -qfc "npm publish --access public" <日志文件>`，放后台跑（要有终端，npm 才会打出确认网址并等待）。把日志里的 `https://www.npmjs.com/auth/cli/...` 给主人，在浏览器里确认。确认后约半分钟 npm 上才有新版本。
+3. 推 `v<版本号>` 标签，GitHub Actions 建 Release 草稿。核对：`SHA256SUMS` 和本地 `node scripts/pack-extension.mjs`、`--flat` 打出来的一样，npm 包的 sha1 和 `npm view cctether@<版本号> dist.shasum` 一样。写说明，发布：`gh release edit v<版本号> --notes-file ... --draft=false --latest`。
+4. 插件代码改了的话：让主人照 `store/README.zh-CN.md` 末尾上传新的 `-store.zip`、提交审核。只改了服务端就不用。
+5. 升级主人的服务器（`CLAUDE.local.md`），跑 `cctether check`。
 
 ### 2026-11-08 第二轮：主人的问题、建议和实际使用的反馈
 
@@ -32,7 +44,7 @@
   - 服务端和插件统一成同一个版本号（0.2.0）。
   - `scripts/pack-extension.mjs` 打插件 zip：零依赖，同一份源码每次打出来字节都一样。
   - GitHub Actions：`ci.yml` 每次 push 跑单元测试（Node 22、24）、端到端测试（下载 Chrome for Testing）、打包；`release.yml` 在推 `v*` 标签时建一个 **Release 草稿**，附插件 zip、npm 包和校验和。Actions 都锁到具体提交。
-  - npm 包准备好了（说明、许可证、关键词都齐了），`"private": true` 还留着防止误发。
+  - npm 包的说明、许可证、关键词都齐了（2026-11-08 已发布，去掉了 `"private": true`）。
 - **文档**：README 中英文、`docs/connect.md` 中英文（同机、SSH 隧道、Caddy、Cloudflare 隧道、nginx、WSL）、`SECURITY.md`（威胁模型、怎么报告漏洞）、`docs/PROTOCOL.md`（协议说明）。README 和连法文档是 Sonnet subagent 照代码写的，Claude 逐条核对过界面文字和命令。
 - **测试**：服务端 76 个、端到端 48 个（1 个只能在有界面的 Chrome 里跑），全过（2026-11-08 第二轮之后的数）。
 - **顺手修的**：服务端单元测试每跑一次会漏一个常驻服务进程在后台（清理顺序不对）。已修，并清掉了开发机上积攒的 10 个。
@@ -56,19 +68,12 @@ Opus subagent 审查了第二阶段的全部改动（读代码，并在隔离环
 - 回退用的 0.1.0 包在 `/tmp/cctether-0.1.0.tgz`（`/tmp` 重启会清掉；要用时也可以从 git 历史重新打）。
 - 现在主人可以在服务器上直接跑 `cctether check` 自检。
 
-## 主人要定的事
-
-- 发布那几步里要主人亲手做的：`! npm login`；注册 Chrome 应用商店开发者账号、上传、提交审核。
-
 ## 开发机上测不了、还没专门确认过的
 
-- Mac 合盖再打开以后多久能自己连回（SPEC §11 第 1 条）。
 - 真实断网时，扩展后台收不收得到 offline/online 事件（收不到也没关系，每秒会读一次联网状态）。
 - Mac 上的快捷键（Meta+A/C/V 等）有没有按对。
 - 界面在 Mac 上的样子：开发机没有苹方字体，截图里中文标题是常规粗细。
-- `npx cctether@latest setup` 从 npm 装的那一步：包还没发，只用假的 npm 和本地打的包测过。发 npm 以后要真跑一遍。
 - systemd 那几步只用假的 systemctl 测过（真的会碰到主人在用的服务）；生成的服务文件用 `systemd-analyze --user verify` 验过。
-- GitHub Actions 的 Release 流程：要推标签才会跑，还没跑过。CI 流程 push 以后会跑，结果见下面。
 - macOS 和 WSL 当服务端：文档里写了「没测过，欢迎反馈」。
 
 ## 已知的限制（文档里已经写了）
@@ -88,11 +93,14 @@ Opus subagent 审查了第二阶段的全部改动（读代码，并在隔离环
 - 配置目录路径太长时 Unix socket 建不起来，会改用 `$XDG_RUNTIME_DIR`（SPEC §4.5）。临时测试目录尽量用短路径。
 - systemd 用户服务的 PATH 里没有 `~/.local/bin`，服务单元里要写 node 的完整路径（setup 生成的就是完整路径）。
 - 改了服务端代码，要重新打包安装再重启服务，主人在用的才会变（见 `CLAUDE.local.md`）。
-- 改了插件，要让主人在 Mac 上重新下载、替换文件夹、点重新加载；版本号两边一起加一（SPEC §8.3），主人能在设置页底部看到版本。
+- 改了插件：版本号两边一起加（SPEC §8.3），主人能在设置页底部看到版本。商店版要上传、过审才到用户手里。想让主人马上试，就让主人临时自己加载（要先移除商店版，两个版本不能同时装着，配对也要重来）。
 - 扩展后台里 Chrome 的断网模拟只改 navigator.onLine，不发 offline 事件。测断网要靠读联网状态，不能只听事件。
 - 端到端测试里别把插件版本写死，从 manifest 读（tools.test.mjs 里的 VERSION_RE）。
 - **在开发机上试 setup 要特别小心**：主人在用的服务就在这台机器上（端口 27182、`~/.config/cctether`、systemd 服务 `cctether`）。一定要设临时的 `CCTETHER_HOME`、换端口、加 `--no-service`；碰 `claude mcp` 时设临时的 `CLAUDE_CONFIG_DIR`。setup 起的服务记得 `cctether stop`。
 - 自己起的常驻服务要传对环境变量：`spawnDaemon` 不传 env 时用的是当前进程的环境，测试里会指到主人的真实配置（这次撞到过一次，因为主人的服务已经在跑，新起的那个自己退出了，没造成影响）。
 - 在开发机上跑测试时，Claude 的命令里有 `CLAUDECODE=1`，`cctether pair` 会拒绝显示连接码。测试里调用命令行的地方要把这个变量去掉（`termEnv()`）。
 - GitHub Actions 的机器上所有程序都带着 `INVOCATION_ID`：别拿环境变量判断「是不是 systemd 起的」。
+- Chrome 不让任何插件操作应用商店页面，cctether 打开它会直接报 restricted。要看商店页面：`curl` 取（页面是服务端渲染的），或者让主人截图。
+- 想知道用户安装时 Chrome 会提示什么：在测试 Chrome 的插件后台调 `chrome.management.getPermissionWarningsByManifest(manifest 字符串)`，`--lang=zh-CN` 能看中文。
+- 想核对商店里的包：`curl -L "https://clients2.google.com/service/update2/crx?response=redirect&prodversion=156.0.0.0&acceptformat=crx3&x=id%3Dmbkadoolgknacadjkfjjajldmllbkdib%26uc"` 下载 CRX，跳过文件头（4 字节 `Cr24` + 4 字节版本 + 4 字节头长度 + 头）后面就是 zip。
 - 设置页里带 `backticks` 的说明文字不要用 `.note` 样式：它是 flex 布局，文字和代码块会被排成几列。用 `.step-hint` 那种普通段落。

@@ -36,11 +36,11 @@ You stay in control: the toolbar icon shows the connection state, the popup list
 
 ## Hardening in the code
 
-- The extension has no dependencies and isn't bundled or minified, so you can read exactly what runs. It asks for no website access permissions; it works through Chrome's debugger API, only on tabs in the group.
+- The extension has no dependencies and isn't bundled or minified, so you can read exactly what runs. It asks for no separate website (host) permissions and has no content scripts; it works through Chrome's debugger API. That permission is powerful, and Chrome's install dialog says so ("Read and change all your data on all websites"). Keeping to the tab group is enforced by the extension's own code, which checks it on every call ([extension/background/tabs.js](extension/background/tabs.js)).
 - The extension runs only tools from its fixed list, checks every argument, and never runs code it receives inside the extension itself: `evaluate` code goes to the web page.
 - The service has one dependency, [`ws`](https://github.com/websockets/ws), pinned to an exact version. Its MCP layer is written by hand instead of pulling in an SDK.
 - Keys, proofs and connection codes are never written to logs, error messages or `cctether status`.
-- The extension zip is reproducible: `node scripts/pack-extension.mjs` on the same commit produces the same bytes, so you can compare it with a release. The GitHub Actions used to build releases are pinned to exact commits.
+- The extension zip is reproducible: `node scripts/pack-extension.mjs` on the same commit produces the same bytes, so you can compare it with a release. The Chrome Web Store version is the `-store` zip of the same release (`--flat`), which has no `key` in its manifest; the store adds its update address and signature. The GitHub Actions used to build releases are pinned to exact commits.
 
 ## Reviews
 

@@ -2,14 +2,15 @@
 // short and technical and stay English-only.
 
 export const REPO_URL = 'https://github.com/guchaorui/cctether';
+const STORE_URL = 'https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib';
 
 const LINKS = {
   en: {
-    extension: `${REPO_URL}#install-the-extension`,
+    extension: STORE_URL,
     connect: `${REPO_URL}/blob/main/docs/connect.md`,
   },
   zh: {
-    extension: `${REPO_URL}/blob/main/README.zh-CN.md#安装插件`,
+    extension: STORE_URL, // the store page follows the browser's language
     connect: `${REPO_URL}/blob/main/docs/connect.zh-CN.md`,
   },
 };

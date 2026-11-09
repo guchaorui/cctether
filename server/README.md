@@ -12,9 +12,9 @@ On the computer that runs Claude Code (Node.js 22 or newer):
 npx cctether@latest setup
 ```
 
-Setup installs cctether, makes a key, asks how your browser will reach this computer (same computer, SSH tunnel, or HTTPS with your own domain), can install a background service, adds cctether to Claude Code, checks the connection, and prints a connection code. Then install the extension and paste the code into its settings.
+Setup installs cctether, makes a key, asks how your browser will reach this computer (same computer, SSH tunnel, or HTTPS with your own domain), can install a background service, adds cctether to Claude Code, checks the connection, and prints a connection code. Then install the [extension from the Chrome Web Store](https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib) and paste the code into its settings.
 
-Full documentation, the extension, and how each connection method works: **https://github.com/guchaorui/cctether**
+Full documentation and how each connection method works: **https://github.com/guchaorui/cctether**
 
 ## Commands
 

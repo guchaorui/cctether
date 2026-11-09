@@ -16,7 +16,7 @@ Please set up cctether for me. It lets you use my own Chrome browser over my own
 5. If it printed a command that needs sudo, give it to me to run myself.
 6. Run `cctether check` and help me fix whatever it reports.
 7. Then tell me what's left, step by step:
-   - install the cctether extension in Chrome (README, section "Install the extension");
+   - install the cctether extension in Chrome: https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib ;
    - in a terminal of my own, not through you, run `cctether pair` and paste the code it prints into the extension's settings.
    Don't ask me to paste the connection code into this chat: it contains a secret key.
 8. Remind me to restart Claude Code afterwards, so the cctether tools show up.

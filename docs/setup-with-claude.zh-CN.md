@@ -16,7 +16,7 @@
 5. 输出里如果有要 sudo 的命令，交给我自己运行。
 6. 运行 `cctether check`，它报什么问题就帮我解决。
 7. 然后一步一步告诉我还剩什么：
-   - 在 Chrome 里装 cctether 插件（README.zh-CN.md 的「安装插件」一节）；
+   - 在 Chrome 里装 cctether 插件：https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib ；
    - 在我自己开的终端里（不要通过你）运行 `cctether pair`，把它显示的连接码粘贴到插件的设置页。
    不要让我把连接码贴到这里：里面有密钥。
 8. 最后提醒我重开 Claude Code，这样才能看到 cctether 的工具。

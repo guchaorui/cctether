@@ -2,6 +2,8 @@
 
 English | [简体中文](README.zh-CN.md)
 
+[Chrome Web Store](https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib) · [npm](https://www.npmjs.com/package/cctether) · [Releases](https://github.com/guchaorui/cctether/releases)
+
 cctether lets Claude Code (or any MCP client) read and drive your own Chrome browser. A Chrome extension connects out to a small server that runs on the computer where Claude Code runs. The server gives Claude browser tools over MCP: read pages, take screenshots, click, type, and look at the console and network requests. Everything goes over your own connection. There is no Anthropic or third-party relay in between.
 
 ## Why it exists
@@ -50,7 +52,7 @@ You need Node.js 22 or newer on the computer that runs Claude Code.
    - checks that the address works;
    - prints a connection code that starts with `cctether1:`.
 
-2. [Install the extension](#install-the-extension) in Chrome.
+2. [Install the extension from the Chrome Web Store](https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib). [More on this below](#install-the-extension).
 3. Open the extension's settings and paste the connection code.
 4. Restart Claude Code if it was open, and ask it to use the browser.
 
@@ -60,22 +62,31 @@ Rather have Claude do it? Paste the prompt from [docs/setup-with-claude.md](docs
 
 ## Install the extension
 
-cctether is not on the Chrome Web Store yet, so you load it by hand. It takes a minute.
+1. Open **[cctether on the Chrome Web Store](https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib)** and click **Add to Chrome**. Chrome lists what the extension may do, including a strong-sounding warning that comes with its debugger permission: see [Permissions](#permissions). After you confirm, the extension's settings page opens by itself. Leave it open.
+2. Click the puzzle-piece icon in Chrome's toolbar, then the pin next to cctether, so the button stays visible. A plain grey icon means you haven't paired yet.
+3. On the settings page, paste the connection code from `cctether setup` (or from `cctether pair`) into the box under "Pair with your server" and click **Pair**.
+4. The page shows "Connected" and the toolbar icon turns teal. Done.
 
-1. Download `cctether-extension-<version>.zip` from the [GitHub Releases page](https://github.com/guchaorui/cctether/releases).
-2. Unzip it. You get a folder called `cctether-extension`.
-3. Put that folder somewhere permanent, such as your Documents folder. Chrome reads the extension from there every time it starts, so don't delete or move it.
-4. In Chrome, open `chrome://extensions`.
-5. Turn on **Developer mode** (top right).
-6. Click **Load unpacked** and pick the `cctether-extension` folder. A cctether card appears, and the extension's settings page opens. Leave it open.
-7. Click the puzzle-piece icon in Chrome's toolbar, then the pin next to cctether, so the button stays visible. A plain grey icon means you haven't paired yet.
-8. On the settings page, paste the connection code from `cctether setup` (or from `cctether pair`) into the box under "Pair with your server" and click **Pair**.
-9. The page shows "Connected" and the toolbar icon turns teal. Done.
+The store version updates itself.
 
 Notes:
 
 - Edge and other Chromium browsers probably work, but they aren't tested. Firefox and Safari are not supported.
 - If a proxy app (Clash and similar) runs on the browser computer, add a direct rule for your server's domain. Otherwise a proxy problem also cuts cctether.
+
+### Or load it yourself
+
+If you can't use the store, or want to run exactly the files from a release:
+
+1. Download `cctether-extension-<version>.zip` from the [GitHub Releases page](https://github.com/guchaorui/cctether/releases) (not the one ending in `-store`).
+2. Unzip it. You get a folder called `cctether-extension`.
+3. Put that folder somewhere permanent, such as your Documents folder. Chrome reads the extension from there every time it starts, so don't delete or move it.
+4. In Chrome, open `chrome://extensions`.
+5. Turn on **Developer mode** (top right).
+6. Click **Load unpacked** and pick the `cctether-extension` folder. A cctether card appears, and the extension's settings page opens.
+7. Pin the button and pair, as in steps 2 to 4 above.
+
+Keep only one of the two installed. They don't share their pairing, and two copies in one browser compete for the same connection (one of them shows "Another browser took over"). To switch, remove the old one on `chrome://extensions`, install the new one, and pair again: `cctether pair` shows the same code.
 
 ## Ways to connect
 
@@ -170,7 +181,7 @@ The extension asks for these Chrome permissions, and nothing else:
 | `alarms` | Check the connection on a timer and reconnect by itself. |
 | `management` | List and reload extensions (`list_extensions`, `reload_extension`). |
 
-It does not ask for website access ("Read and change your data on all websites"). Page work goes through the debugger, and the code that reads pages ships inside the extension.
+When you install it, Chrome warns that the extension can "Read and change all your data on all websites" and "Access the page debugger backend". Chrome shows this for any extension with the `debugger` permission, because that permission really is that powerful. The limit is in cctether's own code: every tool that works on a page first checks that the tab is in the cctether tab group ([extension/background/tabs.js](extension/background/tabs.js)). The code isn't minified, so you can read it. The extension asks for no separate website (host) permissions and has no content scripts: the code that reads pages ships inside the extension and only runs when a tool is called.
 
 ## Security and privacy
 
@@ -188,13 +199,16 @@ More: [SECURITY.md](SECURITY.md), [PRIVACY.md](PRIVACY.md) and [docs/PROTOCOL.md
 
 ## Updating
 
-The service and the extension use the same version number. Update both.
+**The extension from the Chrome Web Store updates itself.** New versions reach the store after its review, so it can be a little behind the service. That's fine: if the two can't work together, the popup says which side to update.
 
-1. On the Claude Code computer: `npm install -g cctether@latest`.
-2. Restart the service. With the background service: `systemctl --user restart cctether`. Without it: `cctether stop`. It starts again by itself when Claude Code needs it.
-3. Extension: download the new zip, replace the contents of your `cctether-extension` folder with the new files, then click the reload button on the cctether card at `chrome://extensions`.
+**The service** you update yourself, on the Claude Code computer:
 
-Your pairing is kept. If the two versions can't talk to each other, the popup tells you which side to update.
+1. `npm install -g cctether@latest`
+2. Restart it. With the background service: `systemctl --user restart cctether`. Without it: `cctether stop`. It starts again by itself when Claude Code needs it.
+
+**If you loaded the extension yourself:** download the new zip, replace the contents of your `cctether-extension` folder with the new files, then click the reload button on the cctether card at `chrome://extensions`.
+
+Your pairing is kept either way.
 
 ## Troubleshooting
 
@@ -233,7 +247,7 @@ Both should work, but nobody has tried them yet. Feedback is welcome: [open an i
 2. If you installed the background service: `systemctl --user disable --now cctether`, then delete `~/.config/systemd/user/cctether.service`.
 3. `npm uninstall -g cctether`
 4. Delete the config folder: `~/.config/cctether` (or `$CCTETHER_HOME` if you set it).
-5. In Chrome, remove the extension on `chrome://extensions`, and delete the `cctether-extension` folder.
+5. In Chrome, remove the extension on `chrome://extensions`. If you loaded it yourself, also delete the `cctether-extension` folder.
 
 ## Development
 
@@ -243,7 +257,8 @@ server/      the npm package "cctether": CLI, service, MCP
 test/e2e/    end-to-end tests: headless Chrome for Testing + extension + service
 docs/        design (SPEC), connection guides
 deploy/      example Caddyfile and systemd unit
-scripts/     icons, screenshots, extension packaging
+scripts/     icons, screenshots, extension packaging, store images
+store/       Chrome Web Store listing text and images
 ```
 
 - Server unit tests: `cd server && npm test`

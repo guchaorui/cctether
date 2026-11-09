@@ -14,7 +14,7 @@
   - 全程走用户自己的连接，不经过 Anthropic 的中转服务器。
 - 起因：官方 Claude in Chrome 插件要经过 Anthropic 中转。主人的 Mac 有时连不上 Claude，这条链就断了。
 - 要开源（MIT），给有同样需求的人用。所以不能写死主人的环境，界面和 README 都要中英双语。
-- **当前：第二阶段做完，主人同意发布（npm、公开仓库、Release、Chrome 应用商店），版本 0.3.0（SPEC §13 v0.7）。正按 `docs/HANDOFF.md` 第零节的步骤发布，新对话从那里开始。**
+- **当前：第二阶段全部做完，已公开发布（npm、GitHub、Chrome 应用商店），版本 0.3.1（SPEC §13 v0.9）。新对话从 `docs/HANDOFF.md` 第零节开始。**
 
 ## 仓库结构
 
@@ -36,7 +36,7 @@ scripts/            icons.mjs（生成图标）、screenshots.mjs（界面批量
                     pack-extension.mjs（打插件 zip 到 dist/，可复现；--flat 打商店用的）、store-images.mjs（商店宣传图）
 store/              Chrome 应用商店要填的内容（listing.md 中英）和宣传图（images/）
 .github/workflows/  ci.yml（每次 push 跑测试和打包）、release.yml（推 v* 标签建 Release 草稿）
-README.md / README.zh-CN.md / SECURITY.md   给用户看的说明（README 中英文，SECURITY 英文）
+README.md / README.zh-CN.md / SECURITY.md / PRIVACY.md   给用户看的说明（README 中英文，其余英文）
 ```
 
 ## 命令
@@ -63,20 +63,20 @@ README.md / README.zh-CN.md / SECURITY.md   给用户看的说明（README 中�
   - 代码、注释、提交信息、日志用英文，因为是开源项目。
   - 界面文字一律走语言包，代码里不写死。
   - README 以英文为主，另附 README.zh-CN.md。
-- **仓库里不放主人的私人信息**：服务器 IP、域名、主机名、个人路径、密钥，一律写进 `CLAUDE.local.md`。仓库以后要公开，git 历史里也不能有这些。每次提交前看一眼 diff。
+- **仓库里不放主人的私人信息**：服务器 IP、域名、主机名、个人路径、密钥，一律写进 `CLAUDE.local.md`。仓库已经公开，push 上去别人马上能看到，git 历史里也不能有这些。每次提交前看一眼 diff。
 - **连接码和密钥不进对话**：要配对时，让主人自己在终端里跑命令、复制结果。Claude 不把它们打印出来，也不贴进对话。
 - **安全是这个项目的命根子**（SPEC §6）。
   - 改认证、连接、权限、标签页范围相关的代码，必须配测试。
   - 拿不准就停下来问。
 - **改需求、架构、协议或阶段范围**：先改 docs/SPEC.md，在 §13 记一笔，再改代码。
-- **版本号**：`server/package.json` 和 `extension/manifest.json` 永远一致（SPEC §8.3）。改了哪一边，两边一起加。
+- **版本号**：`server/package.json` 和 `extension/manifest.json` 永远一致（SPEC §8.3）。改了哪一边，两边一起加。发新版本的步骤在 HANDOFF 第零节。
 - **依赖越少越好**。
   - 插件零依赖、不打包，用户能直接审读源码。
   - 服务端只用必要的包，并锁精确版本。
   - 新增依赖先在 SPEC 里写明理由。
 - **git**：
-  - 提交后直接 push 到私有仓库 guchaorui/cctether。
-  - 改成公开、删仓库、改已经 push 的历史，都要先问主人。
+  - 提交后直接 push 到 guchaorui/cctether（2026-11-08 起公开）。
+  - 改回私有、删仓库、改已经 push 的历史、发布新版本（npm、Release、商店），都要先问主人。
 - **派 subagent** 按全局 CLAUDE.md：写关键逻辑和做审查用 Opus，文档和清单明确的小改用 Sonnet，机械杂活用 Haiku。
 - **主人的 Mac 不一定连得上 claude.ai**。要主人定的事都写在对话里，Artifact 链接只能当补充。
 - **每个阶段收尾**：测试全过 → 审查 → 修 → 提交并 push → 更新 HANDOFF → 停下来等主人试用确认。

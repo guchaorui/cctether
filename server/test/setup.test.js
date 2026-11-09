@@ -354,7 +354,7 @@ test('setup needs a terminal or --yes; refuses Windows; speaks Chinese when aske
   assert.equal(zh.code, 0);
   assert.match(zh.out, /cctether 安装向导/);
   assert.match(zh.out, /有回应，是这台电脑上的 cctether/);
-  assert.match(zh.out, /README\.zh-CN\.md#安装插件/);
+  assert.match(zh.out, /在 Chrome 里装上 cctether 插件：https:\/\/chromewebstore\.google\.com\/detail\/cctether\/mbkadoolgknacadjkfjjajldmllbkdib/);
 });
 
 test('setup from npx installs cctether first (or explains why it can’t)', async (t) => {
