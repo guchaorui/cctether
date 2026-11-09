@@ -156,7 +156,7 @@ Claude gets these 20 tools:
 | `screenshot` | Screenshots the visible area, the full page, or one element. |
 | `click` | Clicks an element or a point with real mouse events. |
 | `type` | Types text into an element or the focused element. |
-| `press_key` | Presses a key or combination, such as `Enter` or `Control+A`. |
+| `press_key` | Presses a key or combination, such as `Enter` or `Control+A` (`Meta+A` when the browser is on a Mac). |
 | `scroll` | Scrolls the page, or scrolls an element into view. |
 | `hover` | Moves the mouse over an element or a point. |
 | `select_option` | Chooses options in a `<select>`. |

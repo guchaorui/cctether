@@ -151,7 +151,7 @@ export const TOOLS = [
   {
     name: 'press_key',
     title: 'Press key',
-    description: 'Press a key or combination, e.g. "Enter", "Escape", "Tab", "ArrowDown", "Control+A", "Meta+Shift+P".',
+    description: 'Press a key or combination, e.g. "Enter", "Escape", "Tab", "ArrowDown", "Control+A", "Meta+Shift+P". If the browser is on macOS (list_tabs says), editing shortcuts use Meta: Meta+A, Meta+C, Meta+V.',
     inputSchema: {
       type: 'object',
       properties: {

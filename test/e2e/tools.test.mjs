@@ -197,6 +197,11 @@ test('tool names and arguments match the server definitions', async () => {
     assert.equal(input.parseKey('cmd+a').bits, 4);
     assert.throws(() => input.parseKey('Hyper+A'), /modifier/);
     assert.throws(() => input.parseKey('NoSuchKey'), /Unknown key/);
+    // On a Mac, shortcuts from other systems get a hint.
+    assert.match(input.macHint(input.parseKey('Control+A'), 'Control+A'), /macOS, where Control\+A .*Did you mean Meta\+A\?/);
+    assert.match(input.macHint(input.parseKey('ctrl+shift+z'), 'ctrl+shift+z'), /where ctrl\+shift\+z .*Meta\+Shift\+Z/);
+    assert.match(input.macHint(input.parseKey('Control+Backspace'), 'Control+Backspace'), /Alt\+Backspace/);
+    for (const key of ['Meta+A', 'Control+K', 'Control', 'a', 'Control+Meta+A']) assert.equal(input.macHint(input.parseKey(key), key), null, key);
   } finally {
     globalThis.chrome = saved;
   }
@@ -826,5 +831,46 @@ test('evaluate: a navigation in the middle of a script gives a clear error', asy
   await ok('wait_for', { tab, text: 'Page B' }).catch(() => {});
   const iso = await ok('evaluate', { tab, expression: 'location.pathname', world: 'isolated' });
   assert.match(iso.text, /nav-b\.html/);
+  await ok('close_tab', { tab });
+});
+
+test('macOS shortcuts: the editing commands behind them work (Mac code path, on this computer)', async () => {
+  // input.js touches chrome.* at load time: give it an inert stub.
+  const inert = new Proxy(function () {}, { get: (_t, k) => (k === 'then' ? undefined : inert), apply: () => inert });
+  const saved = globalThis.chrome;
+  globalThis.chrome = inert;
+  let input;
+  try {
+    input = await import(join(EXT, 'background', 'tools', 'input.js'));
+  } finally {
+    globalThis.chrome = saved;
+  }
+  const tab = await openShared('/pages/form.html?mac');
+  const target = await targetFor('form.html?mac');
+  const page = await browser.cdp.attach(target.targetId);
+  try {
+    await pageEval(tab, `(() => { const t = document.createElement('textarea'); t.id = 'mac'; t.value = 'one two three\\nfour five six'; document.body.prepend(t); return 0; })()`);
+    const LEN = 27;
+    const LINE2 = 14;
+    const cases = [
+      ['Meta+ArrowLeft', LEN, [LINE2, LINE2]],
+      ['Meta+ArrowRight', LINE2, [LEN, LEN]],
+      ['Meta+ArrowUp', LEN, [0, 0]],
+      ['Meta+ArrowDown', 0, [LEN, LEN]],
+      ['Meta+Shift+ArrowLeft', LEN, [LINE2, LEN]],
+      ['Meta+Shift+ArrowRight', LINE2, [LINE2, LEN]],
+      ['Meta+Shift+ArrowUp', LEN, [0, LEN]],
+      ['Meta+Shift+ArrowDown', 0, [0, LEN]],
+      ['Meta+A', 5, [0, LEN]],
+    ];
+    for (const [key, from, expected] of cases) {
+      await pageEval(tab, `(() => { const t = document.getElementById('mac'); t.focus(); t.setSelectionRange(${from}, ${from}); return 0; })()`);
+      await input.pressCombo({ send: (m, p) => page.send(m, p) }, input.parseKey(key), true);
+      assert.deepEqual(await pageEval(tab, `(() => { const t = document.getElementById('mac'); return [t.selectionStart, t.selectionEnd]; })()`), expected, key);
+    }
+    for (const name of Object.keys(input.MAC_COMMANDS)) assert.ok(input.MAC_COMMANDS[name].length, name);
+  } finally {
+    await page.detach();
+  }
   await ok('close_tab', { tab });
 });

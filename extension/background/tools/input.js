@@ -245,19 +245,36 @@ export function parseKey(spec) {
 
 // Editing shortcuts that macOS handles in the browser UI layer, so synthetic key events need an
 // explicit editing command (CDP Input.dispatchKeyEvent `commands`).
-const MAC_COMMANDS = {
+export const MAC_COMMANDS = {
   'Meta+KeyA': ['selectAll'], 'Meta+KeyC': ['copy'], 'Meta+KeyX': ['cut'], 'Meta+KeyV': ['paste'],
   'Meta+KeyZ': ['undo'], 'Meta+Shift+KeyZ': ['redo'],
   'Meta+ArrowLeft': ['moveToBeginningOfLine'], 'Meta+ArrowRight': ['moveToEndOfLine'],
   'Meta+ArrowUp': ['moveToBeginningOfDocument'], 'Meta+ArrowDown': ['moveToEndOfDocument'],
+  'Meta+Shift+ArrowLeft': ['moveToBeginningOfLineAndModifySelection'], 'Meta+Shift+ArrowRight': ['moveToEndOfLineAndModifySelection'],
+  'Meta+Shift+ArrowUp': ['moveToBeginningOfDocumentAndModifySelection'], 'Meta+Shift+ArrowDown': ['moveToEndOfDocumentAndModifySelection'],
   'Alt+ArrowLeft': ['moveWordLeft'], 'Alt+ArrowRight': ['moveWordRight'],
   'Alt+Backspace': ['deleteWordBackward'], 'Meta+Backspace': ['deleteToBeginningOfLine'],
 };
 
+const comboName = (bits, def) => [bits & MOD_BITS.Control && 'Control', bits & MOD_BITS.Meta && 'Meta', bits & MOD_BITS.Alt && 'Alt', bits & MOD_BITS.Shift && 'Shift', def.code]
+  .filter(Boolean).join('+');
+
 function macCommands(bits, def) {
-  const name = [bits & MOD_BITS.Meta && 'Meta', bits & MOD_BITS.Alt && 'Alt', bits & MOD_BITS.Shift && 'Shift', def.code]
-    .filter(Boolean).join('+');
-  return MAC_COMMANDS[name];
+  return MAC_COMMANDS[comboName(bits, def)];
+}
+
+// Windows and Linux habits that do nothing useful on a Mac. Claude Code often runs on Linux while the
+// browser is on a Mac, and on a real test Control+A just silently didn't select anything.
+const MAC_INSTEAD = {
+  'Control+KeyA': 'Meta+A', 'Control+KeyC': 'Meta+C', 'Control+KeyX': 'Meta+X', 'Control+KeyV': 'Meta+V',
+  'Control+KeyZ': 'Meta+Z', 'Control+Shift+KeyZ': 'Meta+Shift+Z', 'Control+KeyY': 'Meta+Shift+Z',
+  'Control+ArrowLeft': 'Alt+ArrowLeft', 'Control+ArrowRight': 'Alt+ArrowRight', 'Control+Backspace': 'Alt+Backspace',
+};
+
+/** On a Mac: the sentence to add when `pressed` looks like a shortcut from another system, else null. */
+export function macHint({ bits, def, modifierOnly }, pressed) {
+  const instead = modifierOnly ? null : MAC_INSTEAD[comboName(bits, def)];
+  return instead ? `This browser is on macOS, where ${pressed} isn't an editing shortcut. Did you mean ${instead}?` : null;
 }
 
 function keyEvent(s, type, def, modifiers, { txt, commands } = {}) {
@@ -315,6 +332,8 @@ export async function pressKey({ tab, s }, args) {
         lines.push(a.none ? 'Nothing is focused now.' : `Focus is on ${a.desc}.`);
       } catch { /* page busy: skip */ }
     }
+    const hint = isMac() ? macHint(combo, args.key) : null;
+    if (hint) lines.push(hint);
     return { content: [text(lines.join(' '))] };
   } finally {
     w.stop();

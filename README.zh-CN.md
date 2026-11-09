@@ -156,7 +156,7 @@ Claude 能用这 20 个工具：
 | `screenshot` | 截可见区域、整页或某个元素。 |
 | `click` | 点击某个元素或某个位置，用的是真实的鼠标事件。 |
 | `type` | 在元素或当前焦点处输入文字。 |
-| `press_key` | 按键或组合键，比如 `Enter`、`Control+A`。 |
+| `press_key` | 按键或组合键，比如 `Enter`、`Control+A`（浏览器在 Mac 上时是 `Meta+A`）。 |
 | `scroll` | 滚动页面，或者滚到某个元素。 |
 | `hover` | 鼠标悬停在元素或某个位置上。 |
 | `select_option` | 在 `<select>` 下拉框里选值。 |

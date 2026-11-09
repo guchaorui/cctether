@@ -11,12 +11,13 @@
     - 2026-11-09 下载商店里的包和 v0.3.1 逐文件核对过：55 个文件里 54 个一字不差；manifest 只差 `key`（我们打包时去掉的）和 `update_url`（商店加的）；另外多了商店的签名文件 `_metadata/`。权限没变。
   - 主人的服务器跑 0.3.1（从 npm 装）。
 - **主人 2026-11-09 确认：Mac 合盖再打开没问题，连接恢复得很快。**
-- **还等主人的**（都不急，主人不提就别催）：
-  1. 把 Mac 上自己加载的 0.3.0 换成商店版（`docs/install-mac.zh-CN.md` 第七节）。这也是商店版第一次真正连服务端：经公网地址实测过服务端接受这个 ID，但整条链还没走过。换完可以用 `list_extensions` 确认：id 是商店版的、不再标 unpacked。
-  2. Mac 上的快捷键（⌘A/⌘C/⌘V）还没验证。主人说一声 Claude 就能测。没有擅自测，因为会出现调试提示条，⌘C 还会覆盖一次主人的剪贴板。
-  3. 可选：把 cctether 加到主页（交给 site-ops）、写一段介绍发到社区。主人还没回话。
-- **main 比 npm 新一点，不影响用户，等下次发版带上**：setup 结尾的链接直达商店（现在 0.3.1 里的链接到 README，也能到商店）；npm 页面的说明提到商店。版本号没加。
-- **新窗口接手时**：问主人这次想做什么。
+- **主人 2026-11-09 换成了商店版**，`list_extensions` 确认过（ID 是商店版、不再标 unpacked），连接正常。商店版第一次真正连上服务端，整条链走通了。
+- **Mac 快捷键 2026-11-09 实测过**（主人同意后，在主人的真 Chrome 里，后台标签页）：常用的都对（清单在 SPEC §13 v0.10）。发现两处，代码已修，版本号已到 0.3.2：⌘⇧ 加方向键没反应；`Control+A` 这类在 Mac 上静悄悄没效果，现在会提醒。
+- **待办**：
+  1. 0.3.2 还没发布，等主人同意（步骤见下）。main 上还带着 setup 结尾直达商店的链接、npm 页面提到商店。
+  2. 主页卡片：交给了 site-ops，等主人确认预览；确认以后对它说「主人已确认，发布」。
+  3. 中英文介绍：Claude 写了草稿给主人，发不发、发到哪由主人定。Claude 不代发。
+- **新窗口接手时**：看上面待办还有哪些没做完，问主人。
 
 ### 以后发新版本的步骤
 
@@ -71,7 +72,6 @@ Opus subagent 审查了第二阶段的全部改动（读代码，并在隔离环
 ## 开发机上测不了、还没专门确认过的
 
 - 真实断网时，扩展后台收不收得到 offline/online 事件（收不到也没关系，每秒会读一次联网状态）。
-- Mac 上的快捷键（Meta+A/C/V 等）有没有按对。
 - 界面在 Mac 上的样子：开发机没有苹方字体，截图里中文标题是常规粗细。
 - systemd 那几步只用假的 systemctl 测过（真的会碰到主人在用的服务）；生成的服务文件用 `systemd-analyze --user verify` 验过。
 - macOS 和 WSL 当服务端：文档里写了「没测过，欢迎反馈」。
@@ -101,6 +101,7 @@ Opus subagent 审查了第二阶段的全部改动（读代码，并在隔离环
 - 在开发机上跑测试时，Claude 的命令里有 `CLAUDECODE=1`，`cctether pair` 会拒绝显示连接码。测试里调用命令行的地方要把这个变量去掉（`termEnv()`）。
 - GitHub Actions 的机器上所有程序都带着 `INVOCATION_ID`：别拿环境变量判断「是不是 systemd 起的」。
 - Chrome 不让任何插件操作应用商店页面，cctether 打开它会直接报 restricted。要看商店页面：`curl` 取（页面是服务端渲染的），或者让主人截图。
+- 在主人的 Chrome 里测粘贴要先防一手：粘贴会把主人剪贴板里原来的内容读出来（可能是密码）。先确认复制真的成功了，并在页面上挂 `paste` 监听，内容不是测试文字就拦下，只记长度。
 - 想知道用户安装时 Chrome 会提示什么：在测试 Chrome 的插件后台调 `chrome.management.getPermissionWarningsByManifest(manifest 字符串)`，`--lang=zh-CN` 能看中文。
 - 想核对商店里的包：`curl -L "https://clients2.google.com/service/update2/crx?response=redirect&prodversion=156.0.0.0&acceptformat=crx3&x=id%3Dmbkadoolgknacadjkfjjajldmllbkdib%26uc"` 下载 CRX，跳过文件头（4 字节 `Cr24` + 4 字节版本 + 4 字节头长度 + 头）后面就是 zip。
 - 设置页里带 `backticks` 的说明文字不要用 `.note` 样式：它是 flex 布局，文字和代码块会被排成几列。用 `.step-hint` 那种普通段落。
