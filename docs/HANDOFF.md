@@ -14,8 +14,8 @@
 - **主人 2026-11-09 换成了商店版**，`list_extensions` 确认过（ID 是商店版、不再标 unpacked），连接正常。商店版第一次真正连上服务端，整条链走通了。
 - **Mac 快捷键 2026-11-09 实测过**（主人同意后，在主人的真 Chrome 里，后台标签页）：常用的都对（清单在 SPEC §13 v0.10）。发现两处，0.3.2 已修（npm 和 Release 都发了）：⌘⇧ 加方向键没反应；`Control+A` 这类在 Mac 上静悄悄没效果，现在会提醒。这两处的新代码只在 Linux 的 Chrome 上测过（走的是 Mac 的代码路径），商店版更新到 0.3.2 以后可以在主人的 Mac 上复查一次。
 - **待办**：
-  1. 主人把 `cctether-extension-0.3.2-store.zip` 传到商店后台、提请审核（`store/README.zh-CN.md` 末尾）。过审后商店版自己更新。
-  2. 主页卡片：交给了 site-ops，等主人确认预览；确认以后对它说「主人已确认，发布」。
+  1. 主人把 `cctether-extension-0.3.2-store.zip` 传到商店后台、提请审核（`store/README.zh-CN.md` 末尾）。过审后商店版自己更新，再到主人的 Mac 上复查 ⌘⇧ 加方向键和 Control+A 的提醒。2026-11-09 第一次提交被拒，报「无法访问隐私权政策链接」：当时 GitHub 出故障，没登录的访问大量返回 504（Google 的检查程序不登录），不是链接的问题，恢复后重新提交。
+  2. 主页卡片：2026-11-09 已发布到主页（site-ops 做的，主人确认过预览）。以后要改卡片也交给 site-ops。
   3. 中英文介绍：Claude 写了草稿给主人，发不发、发到哪由主人定。Claude 不代发。
 - **新窗口接手时**：看上面待办还有哪些没做完，问主人。
 
@@ -102,6 +102,7 @@ Opus subagent 审查了第二阶段的全部改动（读代码，并在隔离环
 - GitHub Actions 的机器上所有程序都带着 `INVOCATION_ID`：别拿环境变量判断「是不是 systemd 起的」。
 - Chrome 不让任何插件操作应用商店页面，cctether 打开它会直接报 restricted。要看商店页面：`curl` 取（页面是服务端渲染的），或者让主人截图。
 - 在主人的 Chrome 里测粘贴要先防一手：粘贴会把主人剪贴板里原来的内容读出来（可能是密码）。先确认复制真的成功了，并在页面上挂 `paste` 监听，内容不是测试文字就拦下，只记长度。
+- 商店报「无法访问隐私权政策链接」时，先用没登录的方式查（`curl`，或无痕窗口）。GitHub 故障时登录的人打得开、没登录的打不开；查 `https://www.githubstatus.com/api/v2/incidents/unresolved.json`。
 - 想知道用户安装时 Chrome 会提示什么：在测试 Chrome 的插件后台调 `chrome.management.getPermissionWarningsByManifest(manifest 字符串)`，`--lang=zh-CN` 能看中文。
 - 想核对商店里的包：`curl -L "https://clients2.google.com/service/update2/crx?response=redirect&prodversion=156.0.0.0&acceptformat=crx3&x=id%3Dmbkadoolgknacadjkfjjajldmllbkdib%26uc"` 下载 CRX，跳过文件头（4 字节 `Cr24` + 4 字节版本 + 4 字节头长度 + 头）后面就是 zip。
 - 设置页里带 `backticks` 的说明文字不要用 `.note` 样式：它是 flex 布局，文字和代码块会被排成几列。用 `.step-hint` 那种普通段落。
