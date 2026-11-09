@@ -41,6 +41,7 @@ You stay in control: the toolbar icon shows the connection state, the popup list
 - The service has one dependency, [`ws`](https://github.com/websockets/ws), pinned to an exact version. Its MCP layer is written by hand instead of pulling in an SDK.
 - Keys, proofs and connection codes are never written to logs, error messages or `cctether status`.
 - The extension zip is reproducible: `node scripts/pack-extension.mjs` on the same commit produces the same bytes, so you can compare it with a release. The Chrome Web Store version is the `-store` zip of the same release (`--flat`), which has no `key` in its manifest; the store adds its update address and signature. The GitHub Actions used to build releases are pinned to exact commits.
+- Since 0.3.3 the npm package is published by those GitHub Actions through npm trusted publishing: no long-lived token exists, and each version carries a provenance statement naming the commit and the run that built it. `npm audit signatures` verifies it.
 
 ## Reviews
 
