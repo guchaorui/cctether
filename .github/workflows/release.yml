@@ -1,5 +1,9 @@
-# Push a tag like v0.3.0 to make a draft GitHub Release with the extension zips and the npm package
-# (SPEC §8.3). The draft is published by hand after a look. Nothing is published to npm here.
+# Push a tag like v0.3.0 to release (SPEC §8.3): run the tests, publish to npm, and make a draft
+# GitHub Release with the extension zips and the npm package. The draft is published by hand after
+# a look.
+#
+# Pushing such a tag publishes to npm, with no further confirmation. npm trusts this workflow by its
+# file name (trusted publishing, no stored token), so don't rename this file.
 name: Release
 
 on:
@@ -13,9 +17,44 @@ jobs:
   test:
     uses: ./.github/workflows/ci.yml
 
+  npm:
+    name: Publish to npm
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write # lets npm check that this is release.yml in this repository
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Check that the tag matches both versions
+        run: |
+          node scripts/pack-extension.mjs --check
+          version=$(node -p "require('./server/package.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME doesn't match version $version" >&2
+            exit 1
+          fi
+      - name: Publish, unless this version is already there
+        working-directory: server
+        run: |
+          echo "npm $(npm --version)"
+          version=$(node -p "require('./package.json').version")
+          if [ "$(npm view "cctether@$version" version 2>/dev/null)" = "$version" ]; then
+            echo "cctether@$version is already on npm."
+          else
+            npm publish
+          fi
+
   release:
     name: Draft release
-    needs: test
+    needs: npm
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -26,14 +65,6 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-      - name: Check that the tag matches both versions
-        run: |
-          node scripts/pack-extension.mjs --check
-          version=$(node -p "require('./server/package.json').version")
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "Tag $GITHUB_REF_NAME doesn't match version $version" >&2
-            exit 1
-          fi
       - run: node scripts/pack-extension.mjs
       - name: Chrome Web Store zip (files at the top level, no manifest key)
         run: node scripts/pack-extension.mjs --flat

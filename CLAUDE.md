@@ -77,6 +77,7 @@ README.md / README.zh-CN.md / SECURITY.md / PRIVACY.md   给用户看的说明�
 - **git**：
   - 提交后直接 push 到 guchaorui/cctether（2026-11-08 起公开）。
   - 改回私有、删仓库、改已经 push 的历史、发布新版本（npm、Release、商店），都要先问主人。
+  - **推 `v*` 标签就等于发布到 npm**，没有第二道确认（SPEC §8.3），推之前一定先问主人。
 - **派 subagent** 按全局 CLAUDE.md：写关键逻辑和做审查用 Opus，文档和清单明确的小改用 Sonnet，机械杂活用 Haiku。
 - **主人的 Mac 不一定连得上 claude.ai**。要主人定的事都写在对话里，Artifact 链接只能当补充。
 - **每个阶段收尾**：测试全过 → 审查 → 修 → 提交并 push → 更新 HANDOFF → 停下来等主人试用确认。

@@ -380,9 +380,13 @@ cctether 由一个浏览器插件和一个常驻服务组成，常驻服务跑�
 - 插件 zip 用自己写的打包脚本 `scripts/pack-extension.mjs` 生成：零依赖，文件顺序和时间戳固定，同样的源码每次打出来的 zip 一模一样，别人能自己打一份核对。zip 里是一个 `cctether-extension/` 文件夹，解压后直接「加载已解压的扩展程序」。
 - GitHub Actions：
   - 每次 push 和 PR：Node 22、24 跑服务端单元测试；下载 Chrome for Testing 跑端到端测试；打一次插件 zip，检查能打包。
-  - 推 `v<版本号>` 标签时：检查标签和两边的版本号一致，跑测试，打插件 zip 和 npm 包，建 GitHub Release 并附上这两个文件。
+  - 推 `v<版本号>` 标签时：跑测试；检查标签和两边的版本号一致；**发布到 npm**（可信发布，见下）；打插件 zip 和 npm 包，建 GitHub Release 草稿并附上这些文件。
   - 用到的 Actions 都锁到具体的提交（SHA），防止别人改了 Action 的代码影响这里。
-- 发 npm：`package.json` 里的 `"private": true` 先留着，防止误发。主人同意发布以后，主人登录自己的 npm 账号（`npm login`），去掉这一行再发。第一次发布不放进 Actions（要配 npm 的令牌或可信发布，以后再说）。
+- 发 npm：2026-11-09 起用 npm 的「可信发布」（trusted publishing），主人要求的，为了不用每次登录、点确认链接。
+  - npm 那边记着「只信 guchaorui/cctether 仓库里的 `release.yml`」。发布时 GitHub 给这次运行开一张临时证明，npm 核对后放行。不存任何长期密钥。所以这个文件不能改名。
+  - npm 会自动附上来源证明（provenance）：谁都能查到这个版本是哪次提交、哪次运行打出来的。
+  - **取舍**：推 `v*` 标签就等于发布到 npm，少了主人在浏览器里确认那一步。能推标签的只有主人的 GitHub 账号和开发机上的 GitHub 登录，这些凭据现在就等于能发 npm。所以 Claude 推版本标签前必须先问主人。主人想留一道人工确认的话，可以在 GitHub 上加「发布前审批」。
+  - npm 规定：新建的可信发布配置，2 天内要成功发布一次，否则作废，要删掉重建。
 - **顺序（安全审查提出，2026-11-08）**：插件和文档里写着 `npx cctether@latest setup`。npm 上 `cctether` 这个名字现在还没人占，要是仓库先公开、或者 0.2.0 的插件先发出去，别人就可能抢先发一个同名的包，照着说明做的用户就会跑别人的代码。所以**先在 npm 上发布（占住名字），再公开仓库、发 Release**。
 - `pack-extension.mjs --flat` 打给 Chrome 应用商店用的包（`cctether-extension-<版本>-store.zip`）：文件在 zip 最外层，并且去掉 manifest 里的 `key`（商店会分配自己的插件 ID，带着 key 上传会被拒）。Release 里也附上它。
 - 上架商店要的材料放在仓库里：`store/listing.md`、`store/listing.zh-CN.md`（逐项要填的内容）、`store/images/`（`scripts/store-images.mjs` 用真实界面截图拼出来的宣传图，中英各一套）、`PRIVACY.md`（隐私政策）。
@@ -542,3 +546,4 @@ cctether 由一个浏览器插件和一个常驻服务组成，常驻服务跑�
   - 通过：⌘A/⌘C/⌘V/⌘X/⌘Z/⌘⇧Z；⌘ 加四个方向键；⌥←/⌥→；⌥⌫、⌘⌫、⌥Delete；⇧←、⌥⇧←/→；普通输入框、单行输入框、可编辑区域、页面文字都试过；网页能收到真实的按键事件（比如 ⌘⇧P）。
   - 修：⌘⇧ 加方向键（选到行首行尾、文首文尾）原来没反应，补上了。`Control+A` 这类在 Mac 上不起作用的组合键，结果里加提醒（§5.2）。
   - 商店版 0.3.2 过审后，在主人的 Mac 上复查：⌘⇧ 加四个方向键都能选中；`Control+A`、`Control+Backspace` 都有提醒。商店里的包和 v0.3.2 逐文件核对过。
+- v0.11（2026-11-09）：主人要求配 npm 可信发布，以后推版本标签由 GitHub Actions 自动发 npm，不用再登录和点确认（§8.3，含取舍）。
