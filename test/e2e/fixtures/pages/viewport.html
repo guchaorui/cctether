@@ -1,0 +1,22 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Viewport fixture</title>
+<style>
+  html, body { margin: 0; }
+  /* Blue when wide, red when the viewport is at most 600 px wide. */
+  #bar { position: fixed; top: 0; left: 0; right: 0; height: 40px; background: rgb(0, 0, 255); }
+  @media (max-width: 600px) { #bar { background: rgb(255, 0, 0); } }
+  #press { position: absolute; left: 20px; top: 100px; width: 120px; height: 40px; }
+  #out { position: absolute; left: 20px; top: 160px; margin: 0; }
+</style></head>
+<body>
+<div id="bar"></div>
+<button id="press" type="button">Press</button>
+<p id="out">Viewport fixture</p>
+<script>
+  window.clicks = 0;
+  document.getElementById('press').addEventListener('click', () => {
+    window.clicks++;
+    document.getElementById('out').textContent = `pressed ${window.clicks}`;
+  });
+</script>
+</body></html>

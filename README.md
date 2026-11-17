@@ -143,7 +143,7 @@ Settings live in `$CCTETHER_HOME`, else `$XDG_CONFIG_HOME/cctether`, else `~/.co
 
 ## Tools
 
-Claude gets these 20 tools:
+Claude gets these 21 tools:
 
 | Tool | What it does |
 |---|---|
@@ -154,6 +154,7 @@ Claude gets these 20 tools:
 | `read_page` | Reads the page: visible text, a numbered list of interactive elements, or the HTML of a selector. Long output is split. |
 | `find` | Finds elements by CSS selector. |
 | `screenshot` | Screenshots the visible area, the full page, or one element. |
+| `resize_viewport` | Resizes a tab's viewport (for example to a phone width) without resizing the browser window. |
 | `click` | Clicks an element or a point with real mouse events. |
 | `type` | Types text into an element or the focused element. |
 | `press_key` | Presses a key or combination, such as `Enter` or `Control+A` (`Meta+A` when the browser is on a Mac). |
@@ -221,7 +222,7 @@ Your pairing is kept either way.
 
 ## Does it cost much?
 
-- **Claude's context:** the 20 tool descriptions take about 4,000 tokens, around 2% of a 200k context. Recent Claude Code versions load MCP tools on demand when there are many of them, so until Claude actually uses the browser, only the tool names (about 150 tokens) and a short note (about 120 tokens) sit in the context.
+- **Claude's context:** the 21 tool descriptions take about 4,000 tokens, around 2% of a 200k context. Recent Claude Code versions load MCP tools on demand when there are many of them, so until Claude actually uses the browser, only the tool names (about 150 tokens) and a short note (about 120 tokens) sit in the context.
 - **Memory on the Claude Code computer:** the service uses about 75 MB, and each open Claude Code window adds a small relay process of about 55 MB.
 - **The browser:** the extension does nothing while Claude isn't using it, apart from a tiny heartbeat every 10 seconds.
 
@@ -231,6 +232,7 @@ Your pairing is kept either way.
 - CSS selectors don't reach into shadow DOM. The interactive list from `read_page` does see inside.
 - `reload_extension` applies code changes, but not `manifest.json` changes. For those, click reload on `chrome://extensions` yourself.
 - Very long full-page screenshots are scaled down (to stay under the image size limit), so they come out narrow.
+- `resize_viewport` gives a narrow desktop viewport, not a phone emulation: the user agent, touch and pixel ratio stay as they are, so it checks the layout at that width, not everything a real phone does.
 - One browser per service at a time.
 - The service doesn't run on Windows directly. Use WSL.
 

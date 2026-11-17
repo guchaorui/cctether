@@ -1,11 +1,15 @@
-// Tools that read or drive a page as a whole: navigate, read_page, find, screenshot, evaluate,
-// wait_for. Each gets ctx = { tab, s } where s is the tab's debugger session (debugger.js).
+// Tools that read or drive a page as a whole: navigate, read_page, find, screenshot,
+// resize_viewport, evaluate, wait_for. Each gets ctx = { tab, s } where s is the tab's debugger
+// session (debugger.js).
 
 import { ToolError } from './errors.js';
-import { untrusted, q, page, sleep, normalizeUrl, imageSize } from './util.js';
+import { untrusted, q, page, sleep, normalizeUrl, imageSize, withTimeout } from './util.js';
 import { exceptionToText } from './format.js';
 import { isRestrictedUrl, restrictedMessage } from '../tabs.js';
-import { dialogError, CdpError, isContextGone } from '../debugger.js';
+import {
+  dialogError, CdpError, isContextGone, detachedError,
+  viewportsReady, saveViewports, clearLostViewport,
+} from '../debugger.js';
 import { SERIALIZE_FN } from '../page-scripts.js';
 import { tabSummary, waitTabComplete } from './browser.js';
 
@@ -160,6 +164,7 @@ async function capture(s, tabId, params, hidden) {
   // A hidden (background) tab only paints a fresh frame when something asks for frames; without
   // this a capture after the page changed can stall for seconds. A tiny screencast keeps it
   // painting while we capture, without bringing the tab to the front.
+  s.capturing++; // tells a resize_viewport reset not to stop the screencast under us
   if (hidden) {
     const frame = s.waitFor((m) => m === 'Page.screencastFrame', 1000);
     await s.send('Page.startScreencast', { format: 'jpeg', quality: 1, maxWidth: 16, maxHeight: 16, everyNthFrame: 1 }, { timeoutMs: 3000 }).catch(() => {});
@@ -174,6 +179,7 @@ async function capture(s, tabId, params, hidden) {
     await sleep(300);
     return s.guardDialog(s.send('Page.captureScreenshot', params, { timeoutMs: 15000 }));
   } finally {
+    s.capturing--;
     if (hidden) s.send('Page.stopScreencast', {}, { timeoutMs: 3000 }).catch(() => {});
   }
 }
@@ -253,12 +259,196 @@ export async function screenshot({ tab, s }, args) {
     desc += ` Image point (x, y) is viewport (${origin.x} + ${k('x')}, ${origin.y} + ${k('y')}).`;
   }
   desc += cut;
+  // The size measured for this capture, not the requested one: a resize running at the same
+  // time may or may not have happened yet.
+  if (s.viewport) desc += ` Viewport: ${m.vw}×${m.vh} CSS px (resize_viewport override).`;
   return {
     content: [
       { type: 'image', data: r.data, mimeType: `image/${format}` },
       text(desc),
     ],
   };
+}
+
+// ---- resize_viewport ---------------------------------------------------------------------------
+//
+// Emulates a viewport size for this one tab (Emulation.setDeviceMetricsOverride): the browser
+// window is not resized and the tab is not brought to the front. A desktop viewport, not a phone
+// (mobile: false; the device pixel ratio stays). Chrome drops the override when the debugger
+// detaches; debugger.js records that and tools/index.js tells Claude on the next call.
+
+const VIEWPORT_MIN = 200;
+const VIEWPORT_MAX = 3840;
+const SET_SETTLE_MS = 1500;
+const RESET_SETTLE_MS = 1000;
+const POLL_MS = 75;
+
+/** Run resize_viewport calls on one tab one after another: two width-only calls must not race. */
+function queued(s, fn) {
+  const run = s.viewportQueue.then(fn);
+  s.viewportQueue = run.catch(() => {}); // a failed call must not block the next one
+  return run;
+}
+
+async function pageZoom(tabId) {
+  try {
+    const z = await chrome.tabs.getZoom(tabId);
+    return z > 0 ? z : 1;
+  } catch {
+    return 1;
+  }
+}
+
+/**
+ * Read the page's viewport size until done(metrics) or ms pass. Errors are ignored (the page may
+ * be navigating). Returns the last reading, or null if there was none.
+ */
+async function pollViewport(s, done, ms) {
+  const deadline = Date.now() + ms;
+  let last = null;
+  for (;;) {
+    const left = deadline - Date.now();
+    try {
+      last = await withTimeout(s.lib('metrics'), Math.max(100, left), () => new Error('timeout'));
+      if (done(last)) return last;
+    } catch { /* navigating or busy: try again */ }
+    if (s.closed || Date.now() + POLL_MS >= deadline) return last;
+    await sleep(POLL_MS);
+  }
+}
+
+export async function resizeViewport(ctx, args) {
+  const reset = args.reset === true;
+  const sized = args.width != null || args.height != null;
+  if (reset && sized) throw new ToolError('bad_args', 'Pass either reset: true, or width/height, not both.');
+  if (!reset && !sized) throw new ToolError('bad_args', 'Pass width and/or height, or reset: true.');
+  return queued(ctx.s, async () => {
+    // The stored records of an earlier worker instance must be in place before this call
+    // changes or clears them.
+    await viewportsReady();
+    return reset ? resetViewport(ctx) : setViewport(ctx, args);
+  });
+}
+
+async function setViewport({ tab, s }, args) {
+  const before = await s.lib('metrics');
+  // An omitted dimension keeps its size at the time of the call (and from then on).
+  const pick = (dim, measured) => {
+    if (args[dim] != null) return args[dim];
+    const v = s.viewport ? s.viewport[dim] : measured;
+    if (!(v >= VIEWPORT_MIN && v <= VIEWPORT_MAX)) {
+      throw new ToolError('bad_args', `The current ${dim} is ${v} CSS px, outside ${VIEWPORT_MIN}–${VIEWPORT_MAX}: pass both width and height.`);
+    }
+    return v;
+  };
+  const width = pick('width', before.vw);
+  const height = pick('height', before.vh);
+  // Chrome takes the size before page zoom. Both dimensions are always sent: 0 ("keep") is
+  // unreliable in background tabs.
+  const zoom = await pageZoom(tab.id);
+  // Record the override before sending it: if the session ends while the command is on its way,
+  // dropSession() must see it (Chrome may have applied it, and drops it with the session).
+  if (s.closed) throw detachedError(tab.id); // ended before anything was sent: nothing to record
+  const prev = s.viewport;
+  s.viewport = { width, height };
+  saveViewports();
+  try {
+    await s.send('Emulation.setDeviceMetricsOverride', {
+      width: Math.round(width * zoom), height: Math.round(height * zoom), deviceScaleFactor: 0, mobile: false,
+    });
+  } catch (e) {
+    // Chrome refused it, so nothing changed: put the previous state back. (After a timeout it may
+    // have been applied; and once the session is closed, what dropSession() recorded stands.)
+    if (e instanceof CdpError && !s.closed) {
+      s.viewport = prev;
+      saveViewports();
+    }
+    throw e;
+  }
+  // The session ended while the command was on its way, taking the override with it: keep the
+  // lost record dropSession() made, so the next call reports it.
+  if (s.closed) throw detachedError(tab.id);
+  clearLostViewport(tab.id);
+  const near = (m) => Math.abs(m.vw - width) <= 1 && Math.abs(m.vh - height) <= 1;
+  const now = await pollViewport(s, near, SET_SETTLE_MS);
+  let msg;
+  if (!now) {
+    msg = `Viewport override set to ${width}×${height} CSS px for tab ${tab.id}, but the page did not report its size in time (it may be loading or busy). Check with screenshot.`;
+  } else if (!near(now)) {
+    msg = `Requested ${width}×${height}; the page reports ${now.vw}×${now.vh} CSS px. The override remains active (reset: true clears it).`;
+  } else {
+    msg = `Tab ${tab.id} viewport is now ${now.vw}×${now.vh} CSS px (was ${before.vw}×${before.vh}). Only this tab's page is resized; the browser window is unchanged. `
+      + 'Element positions changed: take a new screenshot before using coordinates. '
+      + 'The override lasts until reset: true, or until cctether detaches from the tab (5 min without tool calls, or a pause).';
+  }
+  return { content: [text(msg)] };
+}
+
+async function resetViewport({ tab, s }) {
+  const before = await s.lib('metrics');
+  const had = s.viewport;
+  // Sent even without a known override: harmless, and it clears one left by an earlier
+  // service-worker instance. Only the size override is cleared, no other emulation.
+  // If this fails, the record stays (also the lost one dropSession() makes if the session ends
+  // meanwhile).
+  await s.send('Emulation.clearDeviceMetricsOverride');
+  // The session ended while the command was on its way: what dropSession() recorded stands, and
+  // a newer session on this tab is not this call's business.
+  if (s.closed) throw detachedError(tab.id);
+  s.viewport = null;
+  clearLostViewport(tab.id);
+  // Right after the clear, a background tab can report an earlier override's size for up to about
+  // a second before its real one. So wait for the real size as the browser knows it (an override
+  // doesn't change the tab's size in chrome.tabs), and keep a hidden tab painting meanwhile,
+  // which makes Chrome apply the change within a few frames. Also without a known override: one
+  // may be left from an earlier worker instance or a reset that timed out.
+  const real = await realViewport(tab.id);
+  const back = real
+    ? (m) => Math.abs(m.vw - real.vw) <= 1 && Math.abs(m.vh - real.vh) <= 1
+    : had ? (m) => m.vw !== before.vw || m.vh !== before.vh : () => true;
+  const now = await whilePainting(s, tab.id, () => pollViewport(s, back, RESET_SETTLE_MS));
+  let msg;
+  if (!had) {
+    if (now && back(now)) {
+      msg = `Tab ${tab.id} has no viewport override from cctether; its viewport is ${now.vw}×${now.vh} CSS px.`;
+    } else if (now) {
+      msg = `Tab ${tab.id} has no viewport override from cctether, but the page reports ${now.vw}×${now.vh} CSS px where the browser says ${Math.round(real.vw)}×${Math.round(real.vh)} (it may be loading or busy). Check with screenshot.`;
+    } else {
+      msg = `Tab ${tab.id} has no viewport override from cctether; the page did not report its size in time (it may be loading or busy).`;
+    }
+  } else if (now && back(now)) {
+    msg = `Tab ${tab.id} is back at its real viewport, ${now.vw}×${now.vh} CSS px (the override was ${had.width}×${had.height}).`;
+  } else if (now) {
+    msg = `Cleared the ${had.width}×${had.height} viewport override on tab ${tab.id}, but the page still reports ${now.vw}×${now.vh} CSS px (it may be loading or busy). Check with screenshot.`;
+  } else {
+    msg = `Cleared the ${had.width}×${had.height} viewport override on tab ${tab.id}, but the page did not report its size in time (it may be loading or busy). Check with screenshot.`;
+  }
+  return { content: [text(msg)] };
+}
+
+/** The tab's real viewport in CSS px according to the browser, or null if it doesn't say. */
+async function realViewport(tabId) {
+  try {
+    const [t, zoom] = await Promise.all([chrome.tabs.get(tabId), pageZoom(tabId)]);
+    if (t.width > 0 && t.height > 0) return { vw: t.width / zoom, vh: t.height / zoom };
+  } catch { /* the tab is gone */ }
+  return null;
+}
+
+/** Run fn while a background tab is made to paint (the same tiny screencast as capture() uses). */
+async function whilePainting(s, tabId, fn) {
+  const hidden = await isHiddenTab(tabId);
+  if (hidden) {
+    await s.send('Page.startScreencast', { format: 'jpeg', quality: 1, maxWidth: 16, maxHeight: 16, everyNthFrame: 1 }, { timeoutMs: 3000 }).catch(() => {});
+  }
+  try {
+    return await fn();
+  } finally {
+    // A tab has one screencast. Stopping it while a screenshot is capturing on this tab would
+    // stall that capture (up to 8 s, then it brings the tab to the front); capture() stops the
+    // screencast itself when it is done.
+    if (hidden && !s.capturing) s.send('Page.stopScreencast', {}, { timeoutMs: 3000 }).catch(() => {});
+  }
 }
 
 // ---- evaluate ----------------------------------------------------------------------------------

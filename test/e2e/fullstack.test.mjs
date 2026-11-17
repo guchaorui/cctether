@@ -187,6 +187,14 @@ test('tools work end to end through MCP', async () => {
   const ev = text(await mcp.call('evaluate', { expression: 'document.title + "!"' }));
   assert.match(ev, /Form page!/);
 
+  const narrow = await mcp.call('resize_viewport', { width: 390, height: 600 });
+  assert.ok(!narrow.isError, text(narrow));
+  assert.match(text(narrow), /viewport is now 390×600 CSS px/);
+  const noArgs = await mcp.call('resize_viewport', {});
+  assert.equal(noArgs.isError, true);
+  assert.match(text(noArgs), /^Pass width and\/or height, or reset: true\./);
+  assert.ok(!(await mcp.call('resize_viewport', { reset: true })).isError);
+
   // The popup's activity log saw these calls.
   const activity = await sw.evaluate('chrome.storage.session.get("activity").then(x => x.activity)');
   assert.ok(activity.some((a) => a.tool === 'click' && a.ok && a.tab?.id === tabId));
@@ -218,6 +226,32 @@ test('pause refuses every tool until resumed', async () => {
   assert.equal(await sw.evaluate('self.cctether.getStatus().attachedTabs'), 0, 'pausing detaches the debugger');
   await ui({ type: 'setPaused', paused: false });
   assert.ok(!(await mcp.call('list_tabs')).isError);
+});
+
+test('a viewport override ends with a pause, and the next call on the tab says so once', async () => {
+  const opened = await mcp.call('open_tab', { url: `${base}/other?viewport` });
+  assert.ok(!opened.isError, text(opened));
+  const tab = Number(text(opened).match(/Opened tab (\d+)/)[1]);
+  const width = async () => Number(text(await mcp.call('evaluate', { tab, expression: 'innerWidth' })).match(/\n(\d+)\n/)[1]);
+  // The real width, once cctether is attached and the page agrees with the browser about it.
+  await waitFor(() => sw.evaluate(`chrome.debugger.getTargets().then((ts) => ts.some((t) => t.tabId === ${tab} && t.attached))`), 'the debugger to attach');
+  const real = await waitFor(async () => {
+    const [w, own] = [await width(), await sw.evaluate(`chrome.tabs.get(${tab}).then((t) => t.width)`)];
+    return w === own && w;
+  }, 'the page width to settle');
+  assert.ok(!(await mcp.call('resize_viewport', { tab, width: 390, height: 600 })).isError);
+  assert.equal(await width(), 390);
+  await ui({ type: 'setPaused', paused: true });
+  await waitFor(async () => (await sw.evaluate('self.cctether.getStatus().attachedTabs')) === 0, 'the debugger to detach');
+  await ui({ type: 'setPaused', paused: false });
+  const r = await mcp.call('read_page', { tab });
+  assert.ok(!r.isError, text(r));
+  assert.match(text(r), /other page/);
+  assert.match(r.content.at(-1).text, /^Note: the 390×600 viewport override set with resize_viewport ended when cctether detached from this tab \(for example after 5 minutes without tool calls, or a pause\)\./);
+  // Chrome restores the size itself when the debugger lets go (a background tab may lag a moment).
+  await waitFor(async () => (await width()) === real, 'the page to be back at its real width');
+  assert.doesNotMatch(text(await mcp.call('read_page', { tab })), /Note: the/);
+  assert.ok(!(await mcp.call('close_tab', { tab })).isError);
 });
 
 test('the extension reconnects after the service restarts', async () => {

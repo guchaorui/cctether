@@ -6,7 +6,7 @@ import { parsePairingCode, keyFingerprint, displayServer, base64urlToBytes, byte
 import { Connection } from './connection.js';
 import { runTool, ToolError, TOOL_NAMES } from './tools/index.js';
 import { shareTab, unshareTab, tabInfo, countSharedTabs, onSharedTabsChanged } from './tabs.js';
-import { detachAll, setDebuggerHooks } from './debugger.js';
+import { detachAll, setDebuggerHooks, lostViewportTabs } from './debugger.js';
 import { updateActionIcon } from './badge.js';
 
 const ALARM = 'cctether-check';
@@ -233,4 +233,4 @@ async function handleUiMessage(msg) {
 }
 
 // Debug/test hook, reachable only through DevTools / CDP on this service worker.
-self.cctether = { runTool, getStatus: () => status, getSettings: () => settings };
+self.cctether = { runTool, getStatus: () => status, getSettings: () => settings, lostViewportTabs };

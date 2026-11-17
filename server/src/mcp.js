@@ -32,6 +32,16 @@ export function createMcpSession({ write, browser, version, log = () => {}, unav
   const reply = (id, result) => write(JSON.stringify({ jsonrpc: '2.0', id, result }));
   const replyError = (id, code, message) => write(JSON.stringify({ jsonrpc: '2.0', id: id ?? null, error: { code, message } }));
 
+  // The tool list is this server's, so an extension older than the server may not know a tool
+  // (e.g. while a new version waits for Chrome Web Store review). It says so itself; no version
+  // comparison here.
+  function outdatedExtension(name) {
+    const ext = browser?.status?.()?.info?.extension || 'unknown';
+    return `${name} is not supported by the connected cctether browser extension (version ${ext}; this server is ${version}). `
+      + 'The extension is older than the server: ask the user to update it (chrome://extensions → Developer mode → Update). '
+      + 'If the Chrome Web Store does not have the new version yet, this tool can\'t be used for now.';
+  }
+
   async function callTool(params) {
     const name = params?.name;
     const tool = TOOLS.find((t) => t.name === name);
@@ -42,6 +52,7 @@ export function createMcpSession({ write, browser, version, log = () => {}, unav
     if (unavailable) return { result: errorResult(unavailable) };
     try {
       const r = await browser.call(name, args, toolTimeoutMs(name, args));
+      if (!r.ok && isUnknownToolAnswer(r.error)) return { result: errorResult(outdatedExtension(name)) };
       if (!r.ok) return { result: errorResult(r.error.message) };
       return { result: { content: sanitizeContent(r.data?.content) } };
     } catch (e) {
@@ -106,6 +117,11 @@ export function createMcpSession({ write, browser, version, log = () => {}, unav
 
 function errorResult(text) {
   return { content: [{ type: 'text', text }], isError: true };
+}
+
+/** What an extension answers for a tool it doesn't have (extension/background/app.js onCall). */
+function isUnknownToolAnswer(error) {
+  return error?.code === 'bad_args' && typeof error.message === 'string' && error.message.startsWith('Unknown tool "');
 }
 
 const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);

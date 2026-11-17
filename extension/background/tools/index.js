@@ -3,16 +3,16 @@
 // runTool(name, args) → { content: [{type:'text', text} | {type:'image', data, mimeType}], tab? }
 // Expected failures throw ToolError(code, message) with these codes:
 //   no_tab, not_shared, restricted_url, dialog_open, debugger_busy, no_element, stale_ref,
-//   timeout, js_error, navigated, bad_args, not_found, internal
+//   timeout, js_error, navigated, bad_args, not_found, viewport_changed, internal
 // ("paused" and "not connected" are handled by the caller.) When the failing call had resolved
 // a tab, the error carries it as `error.tab` ({ id, title, url }).
 
 import { ToolError } from './errors.js';
 import { A, int, bool, str, oneOf, strOrStrings, listOf, pattern, checkArgs } from './args.js';
 import { resolveTab, setCurrentTab, isRestrictedUrl, restrictedMessage } from '../tabs.js';
-import { session, dialogError } from '../debugger.js';
+import { session, dialogError, takeLostViewport } from '../debugger.js';
 import { listTabs, openTab, closeTab, listExtensions, reloadExtension, tabSummary } from './browser.js';
-import { navigate, readPage, find, screenshot, evaluate, waitFor } from './page.js';
+import { navigate, readPage, find, screenshot, resizeViewport, evaluate, waitFor } from './page.js';
 import { click, hover, type, pressKey, scroll, selectOption } from './input.js';
 import { consoleMessages, networkRequests, handleDialog } from './logs.js';
 
@@ -24,6 +24,8 @@ const pointer = { ref: A.ref, selector: A.selector, x: A.x, y: A.y, tab: A.tab }
  * kind: 'browser' = run(args); 'page' = resolve tab, attach debugger, run({ tab, s }, args).
  * restrictedOk: the tool works even if the tab shows a restricted page (s is null then).
  * dialogOk: the tool may run while a JS dialog is open.
+ * ownsViewport: the tool manages the resize_viewport override itself, so it neither shows nor
+ *   consumes the "override ended" note (see runPageTool).
  */
 const TOOLS = {
   list_tabs: { kind: 'browser', args: {}, run: listTabs },
@@ -50,6 +52,11 @@ const TOOLS = {
       quality: int(1, 100), tab: A.tab,
     },
     run: screenshot,
+  },
+  resize_viewport: {
+    kind: 'page', ownsViewport: true,
+    args: { width: int(200, 3840), height: int(200, 3840), reset: bool(), tab: A.tab },
+    run: resizeViewport,
   },
   click: {
     kind: 'page',
@@ -125,10 +132,27 @@ export const TOOL_NAMES = Object.freeze(Object.keys(TOOLS));
 /** Argument names per tool (tests compare them with the server's JSON schemas). */
 export const TOOL_ARGS = Object.freeze(Object.fromEntries(Object.entries(TOOLS).map(([n, d]) => [n, Object.keys(d.args)])));
 
+// A resize_viewport override that ended when the debugger let go of the tab is reported once, on
+// the next tool call. The text doesn't guess the exact cause and doesn't claim the page is at
+// its real size now.
+const lostWhat = (v) => `${v.width}×${v.height} viewport override set with resize_viewport ended when cctether detached from this tab (for example after 5 minutes without tool calls, or a pause)`;
+const lostNote = (v) => `Note: the ${lostWhat(v)}. Call resize_viewport again if you still need it.`;
+const viewportChanged = (v) => new ToolError('viewport_changed', `Not done. The ${lostWhat(v)}, so the layout may have changed since your last screenshot and (x, y) may point somewhere else. Take a new screenshot (or call resize_viewport again), then retry.`);
+
+/** Append the note to an error's message (unexpected errors too: runTool keeps the message). */
+function withNote(e, note) {
+  if (e instanceof Error) {
+    e.message = `${e.message}\n${note}`;
+    return e;
+  }
+  return new Error(`${String(e)}\n${note}`);
+}
+
 async function runPageTool(def, args) {
   const tab = await resolveTab(args.tab);
   setCurrentTab(tab.id);
   let summary = null;
+  let lost = null;
   try {
     const url = tab.pendingUrl || tab.url;
     let s = null;
@@ -140,16 +164,27 @@ async function runPageTool(def, args) {
       s = await session(tab.id);
     }
     if (s && s.dialog && !def.dialogOk) throw dialogError(tab.id, s.dialog);
+    // Only for a shared tab cctether is attached to and that is not blocked: taking the record
+    // means the note is shown now.
+    if (s && !def.ownsViewport) {
+      const v = await takeLostViewport(tab.id);
+      // Coordinates were most likely measured on a screenshot taken under the override: refuse
+      // once rather than click somewhere else. The record is used up, so a retry runs.
+      if (v && (args.x != null || args.y != null)) throw viewportChanged(v);
+      lost = v;
+    }
     if (s) s.busy++;
     try {
       const result = await def.run({ tab, s }, args);
       result.tab ??= await tabSummary(tab.id);
+      if (lost) result.content.push({ type: 'text', text: lostNote(lost) });
       return result;
     } finally {
       if (s) { s.busy--; s.touch(); }
     }
   } catch (e) {
     summary = await tabSummary(tab.id);
+    if (lost) e = withNote(e, lostNote(lost));
     if (e && typeof e === 'object') e.tab ??= summary;
     throw e;
   }

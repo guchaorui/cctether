@@ -114,6 +114,22 @@ export const TOOLS = [
     annotations: READ,
   },
   {
+    name: 'resize_viewport',
+    title: 'Resize viewport',
+    description: 'Resize a tab\'s viewport (CSS px) without resizing the browser window, e.g. width 390 to check a narrow layout. A desktop viewport, not mobile-device emulation. An omitted dimension keeps its current size. reset: true clears the override; it also ends when cctether detaches from the tab (5 min without tool calls, pause).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        width: { type: 'integer', minimum: 200, maximum: 3840 },
+        height: { type: 'integer', minimum: 200, maximum: 3840 },
+        reset: { type: 'boolean', description: 'Back to the real size.' },
+        tab,
+      },
+      additionalProperties: false,
+    },
+    annotations: ACT,
+  },
+  {
     name: 'click',
     title: 'Click',
     description: 'Click an element (ref or selector) or a point (x, y) with real mouse events. Scrolls the element into view first.',

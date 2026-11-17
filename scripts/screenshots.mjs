@@ -51,6 +51,7 @@ const VITE = { id: 0, title: 'My extension – options', host: 'localhost:5173' 
 const DOCS = { id: 0, title: 'chrome.tabGroups | API | Chrome for Developers', host: 'developer.chrome.com' };
 const ACTIVITY = [
   { tool: 'screenshot', tab: GH, ok: true, ago: 8 },
+  { tool: 'resize_viewport', tab: GH, ok: true, ago: 15 },
   { tool: 'click', tab: GH, ok: true, ago: 21 },
   { tool: 'type', tab: GH, ok: false, error: 'element_not_found', ago: 40 },
   { tool: 'read_page', tab: GH, ok: true, ago: 64 },

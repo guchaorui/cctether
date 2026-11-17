@@ -20,7 +20,7 @@ test('initialize and tools/list', async () => {
   await send({ jsonrpc: '2.0', method: 'notifications/initialized' });
   assert.equal(out.length, 2, 'no reply to notifications');
   await send({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
-  assert.equal(out[2].result.tools.length, 20);
+  assert.equal(out[2].result.tools.length, 21);
   await send({ jsonrpc: '2.0', id: 3, method: 'ping' });
   assert.deepEqual(out[3], { jsonrpc: '2.0', id: 3, result: {} });
   await send({ jsonrpc: '2.0', id: 4, method: 'resources/list' });
@@ -61,6 +61,33 @@ test('tools/call with no browser explains what the user should do', async () => 
   await send({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'list_tabs', arguments: {} } });
   assert.equal(out[0].result.isError, true);
   assert.match(out[0].result.content[0].text, /No browser is connected[\s\S]*cctether pair/);
+});
+
+test('tools/call: an extension older than the server gets a clear "update the extension" message', async () => {
+  // What an extension before 0.4.0 answers for resize_viewport (extension/background/app.js onCall).
+  const unknown = { ok: false, error: { code: 'bad_args', message: 'Unknown tool "resize_viewport". Update the cctether extension?' } };
+  const answer = async (tool) => (tool === 'resize_viewport' ? unknown : { ok: false, error: { code: 'bad_args', message: '`x` must be a number.' } });
+
+  const withStatus = session({ call: answer, status: () => ({ connected: true, info: { extension: '0.3.3', browser: 'Chrome 156' } }) });
+  await withStatus.send({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'resize_viewport', arguments: { width: 390 } } });
+  assert.equal(withStatus.out[0].result.isError, true);
+  assert.equal(withStatus.out[0].result.content[0].text,
+    'resize_viewport is not supported by the connected cctether browser extension (version 0.3.3; this server is 1.2.3). '
+    + 'The extension is older than the server: ask the user to update it (chrome://extensions → Developer mode → Update). '
+    + 'If the Chrome Web Store does not have the new version yet, this tool can\'t be used for now.');
+
+  // Any other bad_args answer passes through unchanged.
+  await withStatus.send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'click', arguments: { x: 1, y: 2 } } });
+  assert.deepEqual(withStatus.out[1].result, { content: [{ type: 'text', text: '`x` must be a number.' }], isError: true });
+
+  // A browser object without status() (or without info yet): the version is "unknown".
+  const bare = session({ call: answer });
+  await bare.send({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'resize_viewport', arguments: { reset: true } } });
+  assert.equal(bare.out[0].result.isError, true);
+  assert.match(bare.out[0].result.content[0].text, /^resize_viewport is not supported by the connected cctether browser extension \(version unknown; this server is 1\.2\.3\)\. .*ask the user to update it/);
+  const noInfo = session({ call: answer, status: () => ({ connected: false }) });
+  await noInfo.send({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'resize_viewport', arguments: { width: 400 } } });
+  assert.match(noInfo.out[0].result.content[0].text, /\(version unknown; this server is 1\.2\.3\)/);
 });
 
 test('sanitizeContent drops malformed items', () => {

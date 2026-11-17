@@ -110,7 +110,7 @@ test('tool definitions are well-formed', () => {
     assert.equal(t.inputSchema.additionalProperties, false);
     assert.equal(typeof t.annotations.readOnlyHint, 'boolean');
   }
-  assert.equal(names.size, 20);
+  assert.equal(names.size, 21);
 });
 
 test('connection codes: server encodes, extension decodes', async () => {

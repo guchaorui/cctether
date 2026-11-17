@@ -643,6 +643,510 @@ test('screenshot: viewport at CSS pixels, scaling, element, full page', async ()
   await ok('close_tab', { tab });
 });
 
+// ---- resize_viewport ----------------------------------------------------------------------------
+
+const viewportOf = (tab) => pageEval(tab, '[innerWidth, innerHeight]');
+const windowOf = (tab) => swEval(`chrome.tabs.get(${tab}).then((t) => chrome.windows.get(t.windowId)).then((w) => [w.width, w.height, w.state])`);
+const lostNoteRe = (w, h) => new RegExp(`\\nNote: the ${w}×${h} viewport override set with resize_viewport ended when cctether detached from this tab \\(for example after 5 minutes without tool calls, or a pause\\)\\. Call resize_viewport again if you still need it\\.$`);
+const PRESS = { x: 60, y: 120 }; // inside #press in viewport.html, wide or narrow
+
+async function until(fn, what, ms = 5000) {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const v = await fn();
+    if (v) return v;
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+/**
+ * Wait until the page reports `size`. After the debugger lets go, Chrome restores the real size
+ * on its own, and a background tab can show an earlier size for a moment first.
+ */
+const atSize = (tab, [w, h]) => until(async () => { const v = await viewportOf(tab); return v[0] === w && v[1] === h; }, `tab ${tab} at ${w}×${h}`);
+
+const debuggerAttached = (tab) => swEval(`chrome.debugger.getTargets().then((ts) => ts.find((t) => t.tabId === ${tab})?.attached ?? false)`);
+
+/** The overrides cctether keeps in chrome.storage.session ({ [tabId]: { width, height } }). */
+const storedOverrides = () => swEval('chrome.storage.session.get("viewportOverrides").then((x) => x.viewportOverrides ?? {})');
+const storedFor = async (tab) => (await storedOverrides())[tab] ?? null;
+
+/**
+ * Fault injection: the next time cctether sends `method` to `tab`, the tab leaves the cctether
+ * group (so cctether really detaches) just before ('detach-before') or just after
+ * ('detach-after') Chrome handles the command; or ('refuse') Chrome is sent an invalid width and
+ * really rejects it. 'hold' / 'hold-refuse': Chrome handles (or rejects) the command, but the
+ * answer reaches cctether only on release() (wait for it with held()). Everything else goes to
+ * Chrome unchanged. Deterministic: no timing involved.
+ */
+async function injectOnce(tab, method, mode) {
+  await swEval(`(() => {
+    self.__cdpOrig ??= chrome.debugger.sendCommand;
+    const orig = self.__cdpOrig;
+    self.__held = false;
+    self.__release = null;
+    const detached = async () => {
+      await chrome.tabs.ungroup(${tab});
+      for (let i = 0; i < 250; i++) {
+        if (!(await chrome.debugger.getTargets()).find((t) => t.tabId === ${tab})?.attached) return;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      throw new Error('the debugger did not let go');
+    };
+    chrome.debugger.sendCommand = async function (target, m, params) {
+      if (target?.tabId !== ${tab} || m !== ${JSON.stringify(method)}) return orig.apply(this, arguments);
+      chrome.debugger.sendCommand = orig;
+      const mode = ${JSON.stringify(mode)};
+      if (mode === 'refuse') return orig.call(this, target, m, { ...params, width: -1 });
+      if (mode === 'detach-before') { await detached(); return orig.call(this, target, m, params); }
+      if (mode === 'hold' || mode === 'hold-refuse') {
+        const answer = orig.call(this, target, m, mode === 'hold' ? params : { ...params, width: -1 }).then((value) => ({ value }), (error) => ({ error }));
+        const r = await answer;
+        await new Promise((resolve) => { self.__release = resolve; self.__held = true; });
+        self.__held = false;
+        if (r.error) throw r.error;
+        return r.value;
+      }
+      const r = await orig.call(this, target, m, params);
+      await detached();
+      return r;
+    };
+    return true;
+  })()`);
+}
+
+/** Undo injectOnce if it was not used up, and let a held answer through. */
+const restoreCdp = () => swEval('(self.__cdpOrig && (chrome.debugger.sendCommand = self.__cdpOrig), self.__release?.(), true)');
+/** Chrome has answered the command injectOnce holds. */
+const held = () => until(() => swEval('self.__held === true'), 'the command to be held');
+const release = () => swEval('(self.__release(), true)');
+
+/**
+ * The tab's real viewport, measured once cctether is attached and the page agrees with the
+ * browser about the tab's size. Chrome's "started debugging" bar makes tabs created after it
+ * appears shorter (e.g. 437 → 380 px); a background tab keeps the size it was created with.
+ */
+async function realSizeOf(tab) {
+  await until(() => debuggerAttached(tab), `the debugger to attach to tab ${tab}`);
+  return until(async () => {
+    const [page, own] = await Promise.all([viewportOf(tab), swEval(`chrome.tabs.get(${tab}).then((t) => [t.width, t.height])`)]);
+    return page[0] === own[0] && page[1] === own[1] && page;
+  }, `tab ${tab} to settle at its own size`);
+}
+
+/**
+ * Take the tab out of the cctether group, so cctether detaches (and Chrome drops the override),
+ * then put it back. No tool runs on the tab in between.
+ */
+async function leaveAndRejoin(tab) {
+  await swEval(`chrome.tabs.ungroup(${tab})`);
+  await until(async () => !(await debuggerAttached(tab)), `the debugger to let go of tab ${tab}`);
+  await rejoin(tab);
+}
+
+/** Put a tab back into the cctether group of its window (or a new one). */
+async function rejoin(tab) {
+  await swEval(`(async () => {
+    const t = await chrome.tabs.get(${tab});
+    const [g] = await chrome.tabGroups.query({ title: 'cctether', windowId: t.windowId });
+    if (g) await chrome.tabs.group({ tabIds: [${tab}], groupId: g.id });
+    else await chrome.tabGroups.update(await chrome.tabs.group({ tabIds: [${tab}] }), { title: 'cctether' });
+    return true;
+  })()`);
+}
+
+// Shared by the next three tests: one tab and its real viewport size.
+let vpTab;
+let vpReal;
+
+test('resize_viewport: a narrow viewport for one background tab, without touching the window', async () => {
+  vpTab = await openShared('/pages/viewport.html');
+  const tab = vpTab;
+  const real = vpReal = await realSizeOf(tab);
+  assert.ok(real[0] > 600, `the real viewport should be wide: ${real}`);
+  const win = await windowOf(tab);
+  const r = await ok('resize_viewport', { tab, width: 390, height: 844 });
+  assert.match(r.text, new RegExp(`^Tab ${tab} viewport is now 390×844 CSS px \\(was ${real[0]}×${real[1]}\\)\\. Only this tab's page is resized; the browser window is unchanged\\. `
+    + 'Element positions changed: take a new screenshot before using coordinates\\. The override lasts until reset: true, or until cctether detaches from the tab'));
+  // A screenshot right away has the new size and the narrow layout (red bar), not just a crop.
+  const shot = await ok('screenshot', { tab, format: 'png' });
+  assert.deepEqual(pngSize(shot.images[0].data), { width: 390, height: 844 });
+  assert.match(shot.text, /^390×844 PNG, viewport, 1 px = 1 CSS px\..* Viewport: 390×844 CSS px \(resize_viewport override\)\.$/);
+  const [bar] = await pixels(shot.images[0], [[200, 20]]);
+  assert.ok(bar[0] > 200 && bar[1] < 60 && bar[2] < 60, `expected the narrow layout's red bar, got ${bar}`);
+  assert.deepEqual(await viewportOf(tab), [390, 844]);
+  assert.equal(await pageEval(tab, 'matchMedia("(max-width: 600px)").matches'), true);
+  assert.deepEqual(await windowOf(tab), win, 'the real window keeps its size');
+  assert.equal(await swEval(`chrome.tabs.get(${tab}).then((t) => t.active)`), false, 'still in the background');
+  const c = await ok('click', { tab, ...PRESS });
+  assert.match(c.text, /on button "Press"/);
+  assert.equal(await pageEval(tab, 'window.clicks'), 1);
+
+  // The override survives a navigation to another origin and a reload.
+  const port = new URL(base).port;
+  await ok('navigate', { tab, url: `http://localhost:${port}/pages/viewport.html?other-origin` });
+  assert.equal(await pageEval(tab, 'location.host'), `localhost:${port}`);
+  assert.deepEqual(await viewportOf(tab), [390, 844]);
+  await ok('navigate', { tab, action: 'reload' });
+  assert.deepEqual(await viewportOf(tab), [390, 844]);
+});
+
+test('resize_viewport: one dimension at a time, list_tabs, argument checks', async () => {
+  const tab = vpTab;
+  // One dimension at a time: the other one stays where it is.
+  await ok('resize_viewport', { tab, width: 500 });
+  assert.deepEqual(await viewportOf(tab), [500, 844]);
+  await ok('resize_viewport', { tab, height: 700 });
+  assert.deepEqual(await viewportOf(tab), [500, 700]);
+  await ok('resize_viewport', { tab, width: 420 });
+  assert.deepEqual(await viewportOf(tab), [420, 700]);
+  // Two one-dimension calls sent at once run one after the other, so neither undoes the other.
+  const both = await Promise.all([call('resize_viewport', { tab, width: 450 }), call('resize_viewport', { tab, height: 650 })]);
+  assert.ok(both.every((x) => x.ok), JSON.stringify(both));
+  assert.deepEqual(await viewportOf(tab), [450, 650]);
+
+  const listed = await ok('list_tabs');
+  assert.match(listed.text, new RegExp(`tab ${tab}: .*\\(.*viewport override 450×650.*\\)`));
+
+  // Argument combinations and ranges.
+  const none = await fails('resize_viewport', { tab }, 'bad_args');
+  assert.equal(none.message, 'Pass width and/or height, or reset: true.');
+  assert.equal((await fails('resize_viewport', { tab, reset: false }, 'bad_args')).message, 'Pass width and/or height, or reset: true.');
+  const mixed = await fails('resize_viewport', { tab, reset: true, width: 400 }, 'bad_args');
+  assert.equal(mixed.message, 'Pass either reset: true, or width/height, not both.');
+  await fails('resize_viewport', { tab, width: 100 }, 'bad_args');
+  await fails('resize_viewport', { tab, width: 390.5 }, 'bad_args');
+  await fails('resize_viewport', { tab, height: 5000 }, 'bad_args');
+  assert.deepEqual(await viewportOf(tab), [450, 650], 'failed calls changed nothing');
+  await ok('resize_viewport', { tab, reset: false, width: 400 });
+  assert.deepEqual(await viewportOf(tab), [400, 650]);
+});
+
+test('resize_viewport: reset goes back to exactly the real size', async () => {
+  const tab = vpTab;
+  const real = vpReal;
+  try {
+    const back = await ok('resize_viewport', { tab, reset: true });
+    assert.equal(back.text, `Tab ${tab} is back at its real viewport, ${real[0]}×${real[1]} CSS px (the override was 400×650).`);
+    assert.deepEqual(await viewportOf(tab), real);
+    assert.equal(await pageEval(tab, 'matchMedia("(max-width: 600px)").matches'), false);
+    assert.doesNotMatch((await ok('list_tabs')).text, /viewport override/);
+    const again = await ok('resize_viewport', { tab, reset: true });
+    assert.equal(again.text, `Tab ${tab} has no viewport override from cctether; its viewport is ${real[0]}×${real[1]} CSS px.`);
+    assert.doesNotMatch((await ok('screenshot', { tab })).text, /resize_viewport/, 'no override, no mention');
+  } finally {
+    await ok('close_tab', { tab });
+  }
+});
+
+test('resize_viewport: a reset never stops the screencast a screenshot on the same tab relies on', async () => {
+  const tab = await openShared('/pages/viewport.html?race');
+  try {
+    const real = await realSizeOf(tab);
+    for (let i = 0; i < 8; i++) {
+      await ok('resize_viewport', { tab, width: 390 + 10 * i, height: 700 });
+      const t0 = Date.now();
+      const timed = (p) => p.then((r) => ({ ...r, ms: Date.now() - t0 }));
+      // Alternate which call starts first.
+      const [shot, reset] = i % 2
+        ? await Promise.all([timed(call('screenshot', { tab })), call('resize_viewport', { tab, reset: true })])
+        : (await Promise.all([call('resize_viewport', { tab, reset: true }), timed(call('screenshot', { tab }))])).reverse();
+      assert.ok(shot.ok, `screenshot ${i} failed: ${shot.code}: ${shot.message}`);
+      assert.ok(reset.ok, `reset ${i} failed: ${reset.code}: ${reset.message}`);
+      // A capture whose screencast was stopped stalls for 8 s, then brings the tab to the front.
+      assert.ok(shot.ms < 4000, `screenshot ${i} took ${shot.ms} ms`);
+      assert.equal(await swEval(`chrome.tabs.get(${tab}).then((t) => t.active)`), false, `tab brought to the front in round ${i}`);
+    }
+    await until(async () => { const v = await viewportOf(tab); return v[0] === real[0] && v[1] === real[1]; }, 'the real size');
+  } finally {
+    await ok('close_tab', { tab });
+  }
+});
+
+test('resize_viewport under page zoom: sizes are CSS px and do not drift', async () => {
+  const tab = await openShared('/pages/viewport.html?zoom');
+  const near = ([w, h], [ew, eh]) => Math.abs(w - ew) <= 1 && Math.abs(h - eh) <= 1;
+  try {
+    await swEval(`chrome.tabs.setZoom(${tab}, 1.25)`);
+    await until(async () => (await pageEval(tab, 'devicePixelRatio')) === 1.25, 'zoom 125%');
+    const r = await ok('resize_viewport', { tab, width: 390, height: 844 });
+    assert.match(r.text, /viewport is now 3(89|90|91)×84[345] CSS px/);
+    const v1 = await viewportOf(tab);
+    assert.ok(near(v1, [390, 844]), `page reports ${v1}`);
+    await ok('resize_viewport', { tab, width: 400 });
+    await ok('resize_viewport', { tab, width: 410 });
+    const v2 = await viewportOf(tab);
+    assert.ok(near(v2, [410, 844]), `after two width-only calls the page reports ${v2}`);
+    await ok('resize_viewport', { tab, reset: true });
+
+    // An omitted dimension that is out of range is an error, not silently changed: at 500 % the
+    // real viewport is less than 200 CSS px tall.
+    await swEval(`chrome.tabs.setZoom(${tab}, 5)`);
+    const small = await until(async () => { const v = await viewportOf(tab); return v[1] < 200 && v; }, 'zoom 500%');
+    const e = await fails('resize_viewport', { tab, width: 390 }, 'bad_args');
+    assert.equal(e.message, `The current height is ${small[1]} CSS px, outside 200–3840: pass both width and height.`);
+    assert.deepEqual(await viewportOf(tab), small, 'nothing was changed');
+  } finally {
+    // Zoom is remembered per origin in the profile: put it back for the other tests.
+    await swEval(`chrome.tabs.setZoom(${tab}, 1)`).catch(() => {});
+    await ok('close_tab', { tab });
+  }
+});
+
+test('resize_viewport: an override that ended on detach is reported once; coordinates are refused once', async () => {
+  const tab = await openShared('/pages/viewport.html?detach');
+  try {
+    const real = await realSizeOf(tab);
+    await ok('resize_viewport', { tab, width: 390, height: 844 });
+    await leaveAndRejoin(tab);
+    const r = await ok('read_page', { tab });
+    assert.match(r.text, /Viewport fixture/);
+    assert.match(r.text, lostNoteRe(390, 844), 'the next call ends with the note');
+    await atSize(tab, real); // Chrome dropped the override; cctether did not re-apply it
+    assert.doesNotMatch((await ok('read_page', { tab })).text, /Note: the/, 'shown once');
+    assert.doesNotMatch((await ok('list_tabs')).text, /viewport override/);
+
+    // A call with coordinates is refused once (they were probably measured under the override).
+    await ok('resize_viewport', { tab, width: 390, height: 844 });
+    await leaveAndRejoin(tab);
+    const e = await fails('click', { tab, ...PRESS }, 'viewport_changed');
+    assert.equal(e.message, 'Not done. The 390×844 viewport override set with resize_viewport ended when cctether detached from this tab (for example after 5 minutes without tool calls, or a pause), '
+      + 'so the layout may have changed since your last screenshot and (x, y) may point somewhere else. Take a new screenshot (or call resize_viewport again), then retry.');
+    assert.equal(e.tab?.id, tab);
+    assert.equal(await pageEval(tab, 'window.clicks'), 0, 'the click did not happen');
+    const c = await ok('click', { tab, ...PRESS });
+    assert.match(c.text, /on button "Press"/);
+    assert.doesNotMatch(c.text, /Note: the/);
+    assert.equal(await pageEval(tab, 'window.clicks'), 1);
+
+    // An error result carries the note too.
+    await ok('resize_viewport', { tab, width: 390, height: 844 });
+    await leaveAndRejoin(tab);
+    const nf = await fails('click', { tab, selector: '#missing' }, 'no_element');
+    assert.match(nf.message, lostNoteRe(390, 844));
+    assert.doesNotMatch((await ok('read_page', { tab })).text, /Note: the/);
+  } finally {
+    await ok('close_tab', { tab });
+  }
+});
+
+test('resize_viewport keeps the note when it fails, and clears it when it succeeds', async () => {
+  const tab = await openShared('/pages/viewport.html?keep');
+  try {
+    // A failing resize_viewport neither shows nor consumes the note.
+    await ok('resize_viewport', { tab, width: 390, height: 844 });
+    await leaveAndRejoin(tab);
+    const bad = await fails('resize_viewport', { tab }, 'bad_args');
+    assert.doesNotMatch(bad.message, /Note: the/);
+    assert.match((await ok('read_page', { tab })).text, lostNoteRe(390, 844));
+
+    // A successful set clears it.
+    await ok('resize_viewport', { tab, width: 390, height: 844 });
+    await leaveAndRejoin(tab);
+    const set = await ok('resize_viewport', { tab, width: 400, height: 800 });
+    assert.match(set.text, /viewport is now 400×800 CSS px/);
+    assert.doesNotMatch(set.text, /Note: the/);
+    assert.doesNotMatch((await ok('read_page', { tab })).text, /Note: the/);
+
+    // So does a successful reset (there's no override left to clear by then).
+    await leaveAndRejoin(tab);
+    const reset = await ok('resize_viewport', { tab, reset: true });
+    assert.match(reset.text, /has no viewport override from cctether/);
+    assert.doesNotMatch((await ok('read_page', { tab })).text, /Note: the/);
+  } finally {
+    await ok('close_tab', { tab });
+  }
+});
+
+test('resize_viewport: closing a tab leaves no "override ended" record behind', async () => {
+  const lost = () => swEval('self.cctether.lostViewportTabs()');
+  const other = await openShared('/pages/viewport.html?other');
+  // Closed while the override is active (the debugger is attached).
+  const a = await openShared('/pages/viewport.html?close-a');
+  await ok('resize_viewport', { tab: a, width: 390, height: 844 });
+  await ok('close_tab', { tab: a });
+  // Closed after the override already ended (no session any more, a note was waiting).
+  const b = await openShared('/pages/viewport.html?close-b');
+  await ok('resize_viewport', { tab: b, width: 390, height: 844 });
+  await leaveAndRejoin(b);
+  assert.ok((await lost()).includes(b), 'the ended override was recorded');
+  await ok('close_tab', { tab: b });
+  await until(async () => !(await lost()).some((id) => id === a || id === b), 'the records to go');
+  try {
+    const r = await ok('read_page', { tab: other });
+    assert.doesNotMatch(r.text, /Note: the/);
+    assert.ok(!(await lost()).length, `records left: ${await lost()}`);
+  } finally {
+    await ok('close_tab', { tab: other });
+  }
+});
+
+test('resize_viewport: the stored records follow the override (chrome.storage.session)', async () => {
+  const tab = await openShared('/pages/viewport.html?stored');
+  const has = (w, h) => async () => { const v = await storedFor(tab); return v?.width === w && v?.height === h; };
+  const gone = async () => (await storedFor(tab)) === null;
+  try {
+    await ok('resize_viewport', { tab, width: 390, height: 844 });
+    await until(has(390, 844), 'the override to be stored');
+    await leaveAndRejoin(tab);
+    assert.deepEqual(await storedFor(tab), { width: 390, height: 844 }, 'kept while the note is pending');
+    assert.match((await ok('read_page', { tab })).text, lostNoteRe(390, 844));
+    await until(gone, 'the entry to go once the note was delivered');
+
+    await ok('resize_viewport', { tab, width: 500, height: 700 });
+    await until(has(500, 700), 'the new override to be stored');
+    await ok('resize_viewport', { tab, height: 650 });
+    await until(has(500, 650), 'the change to be stored');
+    await ok('resize_viewport', { tab, reset: true });
+    await until(gone, 'the entry to go after a reset');
+
+    await ok('resize_viewport', { tab, width: 420, height: 700 });
+    await until(has(420, 700), 'the override to be stored');
+  } finally {
+    await ok('close_tab', { tab });
+  }
+  await until(gone, 'the entry to go when the tab was closed with an active override');
+});
+
+test('resize_viewport: a detach while the command is on its way does not lose the override', async () => {
+  const tab = await openShared('/pages/viewport.html?inflight');
+  try {
+    const real = await realSizeOf(tab);
+
+    // Chrome applies the override, then the session ends before cctether hears back.
+    await injectOnce(tab, 'Emulation.setDeviceMetricsOverride', 'detach-after');
+    const e = await fails('resize_viewport', { tab, width: 390, height: 844 }, 'no_tab');
+    assert.match(e.message, new RegExp(`^cctether lost its connection to tab ${tab} `));
+    await until(async () => (await storedFor(tab))?.width === 390, 'the override to be stored');
+    assert.deepEqual(await storedFor(tab), { width: 390, height: 844 });
+    await rejoin(tab);
+    assert.match((await ok('read_page', { tab })).text, lostNoteRe(390, 844), 'the ended override is reported');
+    await atSize(tab, real);
+
+    // Chrome refuses the command: nothing changed, so the previous override is still the one.
+    await ok('resize_viewport', { tab, width: 500, height: 700 });
+    await injectOnce(tab, 'Emulation.setDeviceMetricsOverride', 'refuse');
+    const refused = await call('resize_viewport', { tab, width: 420 });
+    assert.ok(!refused.ok && /Emulation\.setDeviceMetricsOverride: Width and height/.test(refused.message), JSON.stringify(refused));
+    assert.match((await ok('list_tabs')).text, new RegExp(`tab ${tab}: .*viewport override 500×700`));
+    await until(async () => (await storedFor(tab))?.width === 500, 'the previous entry to be stored again');
+    assert.deepEqual(await storedFor(tab), { width: 500, height: 700 });
+    assert.deepEqual(await viewportOf(tab), [500, 700]);
+
+    // Reset, and the session ends before the clear reaches Chrome: the override was not cleared
+    // by cctether, it ended with the session, so it is reported.
+    await injectOnce(tab, 'Emulation.clearDeviceMetricsOverride', 'detach-before');
+    await fails('resize_viewport', { tab, reset: true }, 'no_tab');
+    await rejoin(tab);
+    assert.match((await ok('read_page', { tab })).text, lostNoteRe(500, 700));
+
+    // Chrome clears it, but the session ends before cctether hears back: the call fails, and what
+    // dropSession() recorded stands (the override ended with the session; reported once).
+    await ok('resize_viewport', { tab, width: 390, height: 844 });
+    await injectOnce(tab, 'Emulation.clearDeviceMetricsOverride', 'detach-after');
+    const late = await fails('resize_viewport', { tab, reset: true }, 'no_tab');
+    assert.match(late.message, new RegExp(`^cctether lost its connection to tab ${tab} `));
+    await rejoin(tab);
+    assert.match((await ok('read_page', { tab })).text, lostNoteRe(390, 844));
+    await until(async () => (await storedFor(tab)) === null, 'the entry to go once reported');
+    assert.doesNotMatch((await ok('read_page', { tab })).text, /Note: the/);
+    await atSize(tab, real);
+  } finally {
+    await restoreCdp();
+    await swEval(`chrome.tabs.remove(${tab})`).catch(() => {});
+  }
+});
+
+test('resize_viewport: a note delivered while a set is on its way leaves the new override stored', async () => {
+  const tab = await openShared('/pages/viewport.html?race1');
+  try {
+    // Override A ended; its note is pending.
+    await ok('resize_viewport', { tab, width: 390, height: 844 });
+    await leaveAndRejoin(tab);
+    // B is applied by Chrome, but cctether hears back only after another call delivered A's note.
+    await injectOnce(tab, 'Emulation.setDeviceMetricsOverride', 'hold');
+    const setting = call('resize_viewport', { tab, width: 500, height: 700 });
+    await held();
+    assert.match((await ok('read_page', { tab })).text, lostNoteRe(390, 844));
+    await release();
+    const b = await setting;
+    assert.ok(b.ok, JSON.stringify(b));
+    await until(async () => { const v = await storedFor(tab); return v?.width === 500 && v?.height === 700; }, 'B to be the stored entry', 2000);
+    assert.match((await ok('list_tabs')).text, new RegExp(`tab ${tab}: .*viewport override 500×700`));
+    assert.doesNotMatch((await ok('read_page', { tab })).text, /Note: the/);
+  } finally {
+    await restoreCdp();
+    await ok('close_tab', { tab });
+  }
+});
+
+test('resize_viewport: a set refused after the pending note was delivered stores nothing', async () => {
+  const tab = await openShared('/pages/viewport.html?race1b');
+  try {
+    await ok('resize_viewport', { tab, width: 390, height: 844 });
+    await leaveAndRejoin(tab);
+    await injectOnce(tab, 'Emulation.setDeviceMetricsOverride', 'hold-refuse');
+    const setting = call('resize_viewport', { tab, width: 500, height: 700 });
+    await held();
+    assert.match((await ok('read_page', { tab })).text, lostNoteRe(390, 844));
+    await release();
+    const b = await setting;
+    assert.ok(!b.ok && /Width and height/.test(b.message), JSON.stringify(b));
+    // A was reported and B never applied: nothing to remember.
+    await until(async () => (await storedFor(tab)) === null, 'no stored entry', 2000);
+    assert.ok(!(await swEval('self.cctether.lostViewportTabs()')).includes(tab), 'no pending record');
+    assert.doesNotMatch((await ok('read_page', { tab })).text, /Note: the/);
+    assert.doesNotMatch((await ok('list_tabs')).text, new RegExp(`tab ${tab}: .*viewport override`));
+  } finally {
+    await restoreCdp();
+    await ok('close_tab', { tab });
+  }
+});
+
+test('resize_viewport: a reset that returns after its session ended leaves a newer session alone', async () => {
+  const tab = await openShared('/pages/viewport.html?race2');
+  try {
+    await ok('resize_viewport', { tab, width: 390, height: 844 });
+    // Chrome clears the override, but the old session's reset hears back only after the session
+    // ended and a new session set 500×700.
+    await injectOnce(tab, 'Emulation.clearDeviceMetricsOverride', 'hold');
+    const resetting = call('resize_viewport', { tab, reset: true });
+    await held();
+    await leaveAndRejoin(tab);
+    await ok('resize_viewport', { tab, width: 500, height: 700 });
+    await release();
+    const old = await resetting;
+    assert.ok(!old.ok && old.code === 'no_tab', JSON.stringify(old));
+    assert.match(old.message, new RegExp(`^cctether lost its connection to tab ${tab} `));
+    await until(async () => { const v = await storedFor(tab); return v?.width === 500 && v?.height === 700; }, '500×700 to stay stored', 2000);
+    assert.deepEqual(await storedFor(tab), { width: 500, height: 700 });
+    assert.match((await ok('list_tabs')).text, new RegExp(`tab ${tab}: .*viewport override 500×700`));
+    assert.deepEqual(await viewportOf(tab), [500, 700]);
+  } finally {
+    await restoreCdp();
+    await swEval(`chrome.tabs.remove(${tab})`).catch(() => {});
+  }
+});
+
+test('resize_viewport: reset waits for the real size also when cctether knows of no override', async () => {
+  const tab = await openShared('/pages/viewport.html?unknown');
+  try {
+    const real = await realSizeOf(tab); // also attaches the debugger
+    // Overrides cctether doesn't know about (e.g. left by an earlier worker instance), sent on
+    // cctether's own debugger session.
+    for (const [width, height] of [[500, 844], [420, 700], [400, 650]]) {
+      await swEval(`chrome.debugger.sendCommand({ tabId: ${tab} }, 'Emulation.setDeviceMetricsOverride', { width: ${width}, height: ${height}, deviceScaleFactor: 0, mobile: false })`);
+      await until(async () => { const v = await viewportOf(tab); return v[0] === width && v[1] === height; }, `${width}×${height}`);
+    }
+    const r = await ok('resize_viewport', { tab, reset: true });
+    assert.equal(r.text, `Tab ${tab} has no viewport override from cctether; its viewport is ${real[0]}×${real[1]} CSS px.`);
+    assert.deepEqual(await viewportOf(tab), real, 'at the real size right after the call');
+  } finally {
+    await ok('close_tab', { tab });
+  }
+});
+
 // ---- scope: unshared and restricted tabs --------------------------------------------------------
 
 test('tabs outside the group are refused; a same-named user group counts', async () => {
@@ -653,6 +1157,7 @@ test('tabs outside the group are refused; a same-named user group counts', async
   const e = await fails('read_page', { tab: outside }, 'not_shared');
   assert.match(e.message, /Share this tab/);
   await fails('close_tab', { tab: outside }, 'not_shared');
+  await fails('resize_viewport', { tab: outside, width: 390 }, 'not_shared');
   await fails('read_page', { tab: 987654321 }, 'no_tab');
   // The user makes their own group called "cctether".
   await swEval(`chrome.tabs.group({ tabIds: [${outside}] }).then((g) => chrome.tabGroups.update(g, { title: 'cctether' }))`);
@@ -771,8 +1276,72 @@ test('screenshot with a real devicePixelRatio of 2 (like a Retina Mac)', async (
     assert.match(shot.content[1].text, /1 px = 1 CSS px/);
     const el = await run('screenshot', { selector: '#target', format: 'png' });
     assert.deepEqual(pngSize(el.content[0].data), { width: 200, height: 100 });
+    // resize_viewport keeps the real pixel ratio: still 1 image px = 1 CSS px, and points still hit.
+    const vt = (await run('open_tab', { url: `${base}/pages/viewport.html?dpr` })).tab.id;
+    const rs = await run('resize_viewport', { tab: vt, width: 390, height: 844 });
+    assert.match(rs.content[0].text, /viewport is now 390×844 CSS px/);
+    const vs = await run('screenshot', { tab: vt, format: 'png' });
+    assert.deepEqual(pngSize(vs.content[0].data), { width: 390, height: 844 });
+    assert.match(vs.content[1].text, /1 px = 1 CSS px\..*Viewport: 390×844 CSS px \(resize_viewport override\)/);
+    const [bar] = await pixels(vs.content[0], [[200, 20]]);
+    assert.ok(bar[0] > 200 && bar[1] < 60 && bar[2] < 60, `expected the narrow layout's red bar, got ${bar}`);
+    const c = await run('click', { tab: vt, x: 60, y: 120 });
+    assert.match(c.content[0].text, /on button "Press"/);
+    const after = await run('evaluate', { tab: vt, expression: '[devicePixelRatio, window.clicks]' });
+    assert.deepEqual(JSON.parse(after.content[0].text.match(/\n(\[.*\])\n/)[1]), [2, 1]);
   } finally {
     await hi.close();
+  }
+});
+
+test('resize_viewport records survive a service-worker restart', async () => {
+  // A separate browser, so the main suite's worker handle stays valid.
+  const other = await launchChrome({ extensions: [EXT], headless: !HEADED });
+  try {
+    let w = await other.extensionWorker(EXT_ID);
+    const run = (name, args) => w.evaluate(`self.cctether.runTool(${JSON.stringify(name)}, ${JSON.stringify(args)}).then(
+      (r) => ({ ok: true, text: r.content.filter((c) => c.type === 'text').map((c) => c.text).join('\\n'), tab: r.tab }),
+      (e) => ({ ok: false, code: e.code, message: e.message }))`);
+    const okRun = async (name, args) => { const r = await run(name, args); assert.ok(r.ok, `${name} failed: ${r.code}: ${r.message}`); return r; };
+    const pageVal = async (tab, expression) => JSON.parse((await okRun('evaluate', { tab, expression })).text.match(/<untrusted-page-content>\n([\s\S]*)\n<\/untrusted-page-content>/)[1]);
+    const stored = () => w.evaluate('chrome.storage.session.get("viewportOverrides").then((x) => x.viewportOverrides ?? {})');
+
+    const tab = (await okRun('open_tab', { url: `${base}/pages/viewport.html?restart` })).tab.id;
+    const real = await until(async () => {
+      const [page, own] = [await pageVal(tab, '[innerWidth, innerHeight]'), await w.evaluate(`chrome.tabs.get(${tab}).then((t) => [t.width, t.height])`)];
+      return page[0] === own[0] && page[1] === own[1] && page;
+    }, 'the real size');
+    await okRun('resize_viewport', { tab, width: 390, height: 844 });
+    await until(async () => (await stored())[tab]?.width === 390, 'the override to be stored');
+    // Plus an entry for a tab that no longer exists: the next worker instance must drop it.
+    await w.evaluate(`chrome.storage.session.get('viewportOverrides').then(({ viewportOverrides: v }) =>
+      chrome.storage.session.set({ viewportOverrides: { ...v, 987654321: { width: 400, height: 400 } } }))`);
+    await w.evaluate('self.beforeRestart = true');
+
+    // Stop the extension's service worker; the next tab event starts a new instance.
+    const { targetId } = await other.cdp.send('Target.createTarget', { url: 'about:blank' });
+    const helper = await other.cdp.attach(targetId);
+    await helper.send('ServiceWorker.enable');
+    await helper.send('ServiceWorker.stopAllWorkers');
+    await other.cdp.send('Target.createTarget', { url: 'about:blank', background: true });
+    w = await until(async () => {
+      const c = await other.extensionWorker(EXT_ID, 2000).catch(() => null);
+      return c && (await c.evaluate('self.beforeRestart === undefined').catch(() => false)) && c;
+    }, 'a new worker instance', 15000);
+
+    // The new instance loaded the record as an override that has ended.
+    assert.deepEqual(await w.evaluate('self.cctether.lostViewportTabs()'), [tab]);
+    await until(async () => !('987654321' in await stored()), 'the closed tab\'s entry to be dropped');
+    const e = await run('click', { tab, x: 60, y: 120 });
+    assert.equal(e.code, 'viewport_changed', JSON.stringify(e));
+    const rp = await okRun('read_page', { tab });
+    assert.match(rp.text, /Viewport fixture/);
+    assert.doesNotMatch(rp.text, /Note: the/);
+    assert.equal(await pageVal(tab, 'window.clicks'), 0, 'the refused click did not happen');
+    await until(async () => { const v = await pageVal(tab, '[innerWidth, innerHeight]'); return v[0] === real[0] && v[1] === real[1]; }, 'the real size');
+    await until(async () => !(String(tab) in await stored()), 'the entry to go');
+  } finally {
+    await other.close();
   }
 });
 

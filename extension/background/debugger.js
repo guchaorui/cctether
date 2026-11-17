@@ -4,6 +4,10 @@
 // contexts so the 'cctether' isolated world can be re-created after navigation, and detaches
 // after IDLE_MS without tool calls. main.js/app.js gets told about the attached-tab count and
 // about the user pressing "Cancel" on Chrome's "is debugging this browser" bar.
+// A resize_viewport override only lives as long as the session; when a session that had one
+// ends, the tab is noted in lostViewports so the next tool call on it can say so (tools/index.js).
+// The overrides are also kept in chrome.storage.session, so that still works after the service
+// worker was recycled.
 
 import { ToolError } from './tools/errors.js';
 import { withTimeout, sleep, q } from './tools/util.js';
@@ -24,6 +28,23 @@ const POST_DATA_KEEP = 10000;
 const sessions = new Map();
 /** @type {Map<number, Promise<TabSession>>} */
 const attaching = new Map();
+/**
+ * resize_viewport overrides that ended because the debugger let go of the tab (Chrome drops the
+ * emulation on detach and cctether doesn't re-apply it). The next tool call on the tab reports it
+ * once, so the change in layout doesn't go unnoticed.
+ * @type {Map<number, {width: number, height: number}>}
+ */
+const lostViewports = new Map();
+/**
+ * chrome.storage.session key of every override cctether set that was neither reset nor reported
+ * yet, active or lost ({ [tabId]: { width, height } }). It is derived from the in-memory state
+ * (live sessions' `viewport` and lostViewports) on every write, never edited entry by entry. The
+ * service worker is recycled during long disconnects; the next instance loads what is left and
+ * treats it as lost (see loadViewports).
+ */
+const VIEWPORTS_KEY = 'viewportOverrides';
+/** @type {Promise<void> | null} */
+let viewportsLoaded = null;
 let hooks = {};
 let lastCancelNotice = 0;
 
@@ -60,7 +81,7 @@ function chromeErrorText(e) {
   return raw;
 }
 
-function detachedError(tabId) {
+export function detachedError(tabId) {
   return new ToolError('no_tab', `cctether lost its connection to tab ${tabId} (the tab was closed, crashed or navigated to a page extensions can't control). Call list_tabs and try again.`);
 }
 
@@ -142,6 +163,12 @@ class TabSession {
     this.worldPromise = null;
     this.listeners = new Set();
     this.pending = new Set();
+    /** The resize_viewport override in effect (requested CSS px), or null. */
+    this.viewport = null;
+    /** resize_viewport calls on this tab run one after another (see tools/page.js). */
+    this.viewportQueue = Promise.resolve();
+    /** Screenshot captures in progress (tools/page.js capture()), which rely on a screencast. */
+    this.capturing = 0;
     this.newDialogSignal();
   }
 
@@ -599,12 +626,27 @@ export function existingSession(tabId) {
   return s && !s.closed ? s : null;
 }
 
-export async function detach(tabId) {
+/**
+ * Forget a tab's session. Both ways a session ends come through here: cctether detaching
+ * (detach) and Chrome reporting that the debugger was detached (onDetach, tab closed). A session
+ * is in the map only once, so a viewport override is recorded as lost exactly once.
+ * Returns false if there was no session.
+ */
+function dropSession(tabId) {
   const s = sessions.get(tabId);
-  if (!s) return;
+  if (!s) return false;
   sessions.delete(tabId);
+  if (s.viewport && !s.closed) {
+    lostViewports.set(tabId, { ...s.viewport });
+    saveViewports();
+  }
   s.dispose();
   notifyCount();
+  return true;
+}
+
+export async function detach(tabId) {
+  if (!dropSession(tabId)) return;
   try { await chrome.debugger.detach({ tabId }); } catch { /* already gone */ }
 }
 
@@ -614,12 +656,71 @@ export async function detachAll() {
   await Promise.allSettled([...sessions.keys()].map((id) => detach(id)));
 }
 
-function dropSession(tabId) {
-  const s = sessions.get(tabId);
-  if (!s) return;
-  sessions.delete(tabId);
-  s.dispose();
-  notifyCount();
+// ---- viewport override records -----------------------------------------------------------------
+//
+// The truth is in memory: the `viewport` of every live session, and lostViewports. The stored
+// object is only ever derived from it (saveViewports), after the one-time load, so no async flow
+// can remove or restore another flow's entry by tab id.
+
+/** Resolves once the records left by an earlier service-worker instance are loaded. */
+export function viewportsReady() {
+  viewportsLoaded ??= loadViewports();
+  return viewportsLoaded;
+}
+
+async function loadViewports() {
+  let found = null;
+  try { found = (await chrome.storage.session.get(VIEWPORTS_KEY))?.[VIEWPORTS_KEY]; } catch { /* nothing stored */ }
+  if (!found || typeof found !== 'object') return;
+  for (const [key, v] of Object.entries(found)) {
+    const tabId = Number(key);
+    if (!Number.isInteger(tabId) || !Number.isInteger(v?.width) || !Number.isInteger(v?.height)) continue;
+    try { await chrome.tabs.get(tabId); } catch { continue; } // closed while no worker was running
+    // Set by an earlier worker instance, so it has ended: Chrome drops an override with the
+    // debugger session, and attach() replaces a session the old instance left attached.
+    if (!lostViewports.has(tabId)) lostViewports.set(tabId, { width: v.width, height: v.height });
+  }
+  saveViewports(); // without the tabs that are gone
+}
+
+/**
+ * Write the stored object, built from the in-memory state when the write happens (after the
+ * load). A tab with both a live override and a lost one is stored with the live one.
+ * Fire-and-forget, like setCurrentTab: everything works without storage, just not across a
+ * worker restart.
+ */
+export function saveViewports() {
+  viewportsReady().then(() => {
+    const out = {};
+    for (const [tabId, v] of lostViewports) out[tabId] = { width: v.width, height: v.height };
+    for (const [tabId, s] of sessions) {
+      if (s.viewport && !s.closed) out[tabId] = { width: s.viewport.width, height: s.viewport.height };
+    }
+    return chrome.storage.session.set({ [VIEWPORTS_KEY]: out });
+  }).catch(() => {});
+}
+
+/** The override that ended with the tab's last debugger session, if any; forgets it (reported once). */
+export async function takeLostViewport(tabId) {
+  await viewportsReady();
+  const v = lostViewports.get(tabId) ?? null;
+  if (v) {
+    lostViewports.delete(tabId);
+    saveViewports();
+  }
+  return v;
+}
+
+/** Forget a lost override without reporting it (resize_viewport set or reset the size since). */
+export function clearLostViewport(tabId) {
+  lostViewports.delete(tabId);
+  saveViewports();
+}
+
+/** Tabs with a lost override not reported yet (for tests, through the self.cctether hook). */
+export async function lostViewportTabs() {
+  await viewportsReady();
+  return [...lostViewports.keys()];
 }
 
 // ---- global listeners (registered at module load) ---------------------------------------------
@@ -639,7 +740,17 @@ chrome.debugger.onDetach.addListener((source, reason) => {
   }
 });
 
-chrome.tabs.onRemoved.addListener((tabId) => dropSession(tabId));
+chrome.tabs.onRemoved.addListener((tabId) => {
+  dropSession(tabId);
+  // Also when onDetach already ended the session (and recorded the override): a closed tab
+  // never leaves an entry behind. After the load, which could otherwise bring it back.
+  viewportsReady().then(() => {
+    lostViewports.delete(tabId);
+    saveViewports();
+  });
+});
+
+viewportsReady();
 
 // A tab that leaves the cctether group (or whose group is renamed) is no longer Claude's.
 async function recheckScope(tabIds) {

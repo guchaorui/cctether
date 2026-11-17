@@ -76,6 +76,8 @@ export async function listTabs() {
       if (t.status === 'loading') flags.push('loading');
       if (t.discarded) flags.push('asleep (discarded)');
       if (existingSession(t.id)?.dialog) flags.push(`${existingSession(t.id).dialog.type} dialog open`);
+      const vp = existingSession(t.id)?.viewport;
+      if (vp) flags.push(`viewport override ${vp.width}×${vp.height}`);
       if (await isRestrictedUrl(t.pendingUrl || t.url)) flags.push('restricted page, navigate it first');
       lines.push(`- tab ${t.id}: ${q(t.title || '(no title)', 100)} ${clip(t.pendingUrl || t.url || '', 300)}${flags.length ? ` (${flags.join(', ')})` : ''}`);
     }
