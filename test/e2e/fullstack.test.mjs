@@ -194,6 +194,10 @@ test('tools work end to end through MCP', async () => {
   assert.equal(noArgs.isError, true);
   assert.match(text(noArgs), /^Pass width and\/or height, or reset: true\./);
   assert.ok(!(await mcp.call('resize_viewport', { reset: true })).isError);
+  const dark = await mcp.call('set_color_scheme', { scheme: 'dark' });
+  assert.ok(!dark.isError, text(dark));
+  assert.match(text(dark), /now sees a dark color scheme/);
+  assert.ok(!(await mcp.call('set_color_scheme', { scheme: 'system' })).isError);
 
   // The popup's activity log saw these calls.
   const activity = await sw.evaluate('chrome.storage.session.get("activity").then(x => x.activity)');
@@ -228,7 +232,7 @@ test('pause refuses every tool until resumed', async () => {
   assert.ok(!(await mcp.call('list_tabs')).isError);
 });
 
-test('a viewport override ends with a pause, and the next call on the tab says so once', async () => {
+test('emulations end with a pause, and the next call on the tab says so once', async () => {
   const opened = await mcp.call('open_tab', { url: `${base}/other?viewport` });
   assert.ok(!opened.isError, text(opened));
   const tab = Number(text(opened).match(/Opened tab (\d+)/)[1]);
@@ -239,17 +243,21 @@ test('a viewport override ends with a pause, and the next call on the tab says s
     const [w, own] = [await width(), await sw.evaluate(`chrome.tabs.get(${tab}).then((t) => t.width)`)];
     return w === own && w;
   }, 'the page width to settle');
+  const dark = async () => text(await mcp.call('evaluate', { tab, expression: 'matchMedia("(prefers-color-scheme: dark)").matches' })).includes('\ntrue\n');
   assert.ok(!(await mcp.call('resize_viewport', { tab, width: 390, height: 600 })).isError);
+  assert.ok(!(await mcp.call('set_color_scheme', { tab, scheme: 'dark' })).isError);
   assert.equal(await width(), 390);
+  assert.equal(await dark(), true);
   await ui({ type: 'setPaused', paused: true });
   await waitFor(async () => (await sw.evaluate('self.cctether.getStatus().attachedTabs')) === 0, 'the debugger to detach');
   await ui({ type: 'setPaused', paused: false });
   const r = await mcp.call('read_page', { tab });
   assert.ok(!r.isError, text(r));
   assert.match(text(r), /other page/);
-  assert.match(r.content.at(-1).text, /^Note: the 390×600 viewport override set with resize_viewport ended when cctether detached from this tab \(for example after 5 minutes without tool calls, or a pause\)\./);
+  assert.match(r.content.at(-1).text, /^Note: the 390×600 viewport override \(resize_viewport\) and the dark color scheme \(set_color_scheme\) ended when cctether detached from this tab \(for example after 5 minutes without tool calls, or a pause\)\. Set them again if you still need them\.$/);
   // Chrome restores the size itself when the debugger lets go (a background tab may lag a moment).
   await waitFor(async () => (await width()) === real, 'the page to be back at its real width');
+  await waitFor(async () => !(await dark()), 'the page to be back at the browser\'s color scheme');
   assert.doesNotMatch(text(await mcp.call('read_page', { tab })), /Note: the/);
   assert.ok(!(await mcp.call('close_tab', { tab })).isError);
 });

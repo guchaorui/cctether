@@ -4,10 +4,10 @@
 // contexts so the 'cctether' isolated world can be re-created after navigation, and detaches
 // after IDLE_MS without tool calls. main.js/app.js gets told about the attached-tab count and
 // about the user pressing "Cancel" on Chrome's "is debugging this browser" bar.
-// A resize_viewport override only lives as long as the session; when a session that had one
-// ends, the tab is noted in lostViewports so the next tool call on it can say so (tools/index.js).
-// The overrides are also kept in chrome.storage.session, so that still works after the service
-// worker was recycled.
+// Emulations (resize_viewport, set_color_scheme) only live as long as the session; when a session
+// that had one ends, the tab is noted in lostEmulations so the next tool call on it can say so
+// (tools/index.js). They are also kept in chrome.storage.session, so that still works after the
+// service worker was recycled.
 
 import { ToolError } from './tools/errors.js';
 import { withTimeout, sleep, q } from './tools/util.js';
@@ -29,22 +29,27 @@ const sessions = new Map();
 /** @type {Map<number, Promise<TabSession>>} */
 const attaching = new Map();
 /**
- * resize_viewport overrides that ended because the debugger let go of the tab (Chrome drops the
- * emulation on detach and cctether doesn't re-apply it). The next tool call on the tab reports it
- * once, so the change in layout doesn't go unnoticed.
- * @type {Map<number, {width: number, height: number}>}
+ * @typedef {{ viewport?: {width: number, height: number}, scheme?: 'dark' | 'light' }} Emulation
+ * One record per tab, with a part per emulation tool: viewport (resize_viewport) and scheme
+ * (set_color_scheme).
  */
-const lostViewports = new Map();
 /**
- * chrome.storage.session key of every override cctether set that was neither reset nor reported
- * yet, active or lost ({ [tabId]: { width, height } }). It is derived from the in-memory state
- * (live sessions' `viewport` and lostViewports) on every write, never edited entry by entry. The
- * service worker is recycled during long disconnects; the next instance loads what is left and
- * treats it as lost (see loadViewports).
+ * Emulations that ended because the debugger let go of the tab (Chrome drops them on detach and
+ * cctether doesn't re-apply them). The next tool call on the tab reports them once, so the change
+ * in the page doesn't go unnoticed.
+ * @type {Map<number, Emulation>}
  */
-const VIEWPORTS_KEY = 'viewportOverrides';
+const lostEmulations = new Map();
+/**
+ * chrome.storage.session key of every emulation cctether set that was neither undone nor
+ * reported yet, active or lost ({ [tabId]: Emulation }). It is derived from the in-memory state
+ * (live sessions' `viewport` / `colorScheme`, and lostEmulations) on every write, never edited
+ * entry by entry. The service worker is recycled during long disconnects; the next instance loads
+ * what is left and treats it as lost (see loadEmulations).
+ */
+const EMULATIONS_KEY = 'emulations';
 /** @type {Promise<void> | null} */
-let viewportsLoaded = null;
+let emulationsLoaded = null;
 let hooks = {};
 let lastCancelNotice = 0;
 
@@ -165,8 +170,10 @@ class TabSession {
     this.pending = new Set();
     /** The resize_viewport override in effect (requested CSS px), or null. */
     this.viewport = null;
-    /** resize_viewport calls on this tab run one after another (see tools/page.js). */
-    this.viewportQueue = Promise.resolve();
+    /** The set_color_scheme override in effect ('dark' | 'light'), or null. */
+    this.colorScheme = null;
+    /** resize_viewport and set_color_scheme calls on this tab run one after another (tools/page.js). */
+    this.emulationQueue = Promise.resolve();
     /** Screenshot captures in progress (tools/page.js capture()), which rely on a screencast. */
     this.capturing = 0;
     this.newDialogSignal();
@@ -629,16 +636,18 @@ export function existingSession(tabId) {
 /**
  * Forget a tab's session. Both ways a session ends come through here: cctether detaching
  * (detach) and Chrome reporting that the debugger was detached (onDetach, tab closed). A session
- * is in the map only once, so a viewport override is recorded as lost exactly once.
+ * is in the map only once, so its emulations are recorded as lost exactly once.
  * Returns false if there was no session.
  */
 function dropSession(tabId) {
   const s = sessions.get(tabId);
   if (!s) return false;
   sessions.delete(tabId);
-  if (s.viewport && !s.closed) {
-    lostViewports.set(tabId, { ...s.viewport });
-    saveViewports();
+  const parts = s.closed ? null : sessionEmulation(s);
+  if (parts) {
+    // By part: what this session had replaces that part; a part it didn't have stays pending.
+    lostEmulations.set(tabId, { ...lostEmulations.get(tabId), ...parts });
+    saveEmulations();
   }
   s.dispose();
   notifyCount();
@@ -656,71 +665,100 @@ export async function detachAll() {
   await Promise.allSettled([...sessions.keys()].map((id) => detach(id)));
 }
 
-// ---- viewport override records -----------------------------------------------------------------
+// ---- emulation records ---------------------------------------------------------------------------
 //
-// The truth is in memory: the `viewport` of every live session, and lostViewports. The stored
-// object is only ever derived from it (saveViewports), after the one-time load, so no async flow
-// can remove or restore another flow's entry by tab id.
+// The truth is in memory: the `viewport` / `colorScheme` of every live session, and
+// lostEmulations. The stored object is only ever derived from it (saveEmulations), after the
+// one-time load, so no async flow can remove or restore another flow's entry by tab id.
 
-/** Resolves once the records left by an earlier service-worker instance are loaded. */
-export function viewportsReady() {
-  viewportsLoaded ??= loadViewports();
-  return viewportsLoaded;
+/** A session's emulations as a record, or null if it has none. */
+function sessionEmulation(s) {
+  const e = {};
+  if (s.viewport) e.viewport = { width: s.viewport.width, height: s.viewport.height };
+  if (s.colorScheme) e.scheme = s.colorScheme;
+  return e.viewport || e.scheme ? e : null;
 }
 
-async function loadViewports() {
+/** A clean copy of a stored record, or null if nothing in it is valid. */
+function parseEmulation(v) {
+  const e = {};
+  const vp = v?.viewport;
+  if (Number.isInteger(vp?.width) && Number.isInteger(vp?.height)) e.viewport = { width: vp.width, height: vp.height };
+  if (v?.scheme === 'dark' || v?.scheme === 'light') e.scheme = v.scheme;
+  return e.viewport || e.scheme ? e : null;
+}
+
+/** Resolves once the records left by an earlier service-worker instance are loaded. */
+export function emulationsReady() {
+  emulationsLoaded ??= loadEmulations();
+  return emulationsLoaded;
+}
+
+async function loadEmulations() {
   let found = null;
-  try { found = (await chrome.storage.session.get(VIEWPORTS_KEY))?.[VIEWPORTS_KEY]; } catch { /* nothing stored */ }
+  try { found = (await chrome.storage.session.get(EMULATIONS_KEY))?.[EMULATIONS_KEY]; } catch { /* nothing stored */ }
   if (!found || typeof found !== 'object') return;
   for (const [key, v] of Object.entries(found)) {
     const tabId = Number(key);
-    if (!Number.isInteger(tabId) || !Number.isInteger(v?.width) || !Number.isInteger(v?.height)) continue;
+    const e = parseEmulation(v);
+    if (!Number.isInteger(tabId) || !e) continue;
     try { await chrome.tabs.get(tabId); } catch { continue; } // closed while no worker was running
-    // Set by an earlier worker instance, so it has ended: Chrome drops an override with the
-    // debugger session, and attach() replaces a session the old instance left attached.
-    if (!lostViewports.has(tabId)) lostViewports.set(tabId, { width: v.width, height: v.height });
+    // Set by an earlier worker instance, so it has ended: Chrome drops emulations with the
+    // debugger session, and attach() replaces a session the old instance left attached. A part
+    // already pending in this instance is newer: keep it.
+    lostEmulations.set(tabId, { ...e, ...lostEmulations.get(tabId) });
   }
-  saveViewports(); // without the tabs that are gone
+  saveEmulations(); // without the tabs that are gone
 }
 
 /**
  * Write the stored object, built from the in-memory state when the write happens (after the
- * load). A tab with both a live override and a lost one is stored with the live one.
+ * load). Per tab and part, a live session's value wins over a pending lost one.
  * Fire-and-forget, like setCurrentTab: everything works without storage, just not across a
  * worker restart.
  */
-export function saveViewports() {
-  viewportsReady().then(() => {
+export function saveEmulations() {
+  emulationsReady().then(() => {
     const out = {};
-    for (const [tabId, v] of lostViewports) out[tabId] = { width: v.width, height: v.height };
+    for (const [tabId, e] of lostEmulations) out[tabId] = parseEmulation(e);
     for (const [tabId, s] of sessions) {
-      if (s.viewport && !s.closed) out[tabId] = { width: s.viewport.width, height: s.viewport.height };
+      const live = s.closed ? null : sessionEmulation(s);
+      if (live) out[tabId] = { ...out[tabId], ...live };
     }
-    return chrome.storage.session.set({ [VIEWPORTS_KEY]: out });
+    return chrome.storage.session.set({ [EMULATIONS_KEY]: out });
   }).catch(() => {});
 }
 
-/** The override that ended with the tab's last debugger session, if any; forgets it (reported once). */
-export async function takeLostViewport(tabId) {
-  await viewportsReady();
-  const v = lostViewports.get(tabId) ?? null;
-  if (v) {
-    lostViewports.delete(tabId);
-    saveViewports();
+/** The emulations that ended with the tab's last debugger session, if any; forgets them (reported once). */
+export async function takeLostEmulation(tabId) {
+  await emulationsReady();
+  const e = lostEmulations.get(tabId) ?? null;
+  if (e) {
+    lostEmulations.delete(tabId);
+    saveEmulations();
   }
-  return v;
+  return e;
 }
 
-/** Forget a lost override without reporting it (resize_viewport set or reset the size since). */
-export function clearLostViewport(tabId) {
-  lostViewports.delete(tabId);
-  saveViewports();
+/**
+ * Forget one part of a lost record without reporting it, because its tool set or undid it since:
+ * part 'viewport' (resize_viewport) or 'scheme' (set_color_scheme). The other part stays pending.
+ */
+export function clearLostEmulation(tabId, part) {
+  const e = lostEmulations.get(tabId);
+  if (e) {
+    const rest = { ...e };
+    delete rest[part];
+    if (rest.viewport || rest.scheme) lostEmulations.set(tabId, rest);
+    else lostEmulations.delete(tabId);
+  }
+  saveEmulations();
 }
 
-/** Tabs with a lost override not reported yet (for tests, through the self.cctether hook). */
-export async function lostViewportTabs() {
-  await viewportsReady();
-  return [...lostViewports.keys()];
+/** Lost records not reported yet, { [tabId]: Emulation } (for tests, through the self.cctether hook). */
+export async function pendingEmulations() {
+  await emulationsReady();
+  return Object.fromEntries(lostEmulations);
 }
 
 // ---- global listeners (registered at module load) ---------------------------------------------
@@ -742,15 +780,15 @@ chrome.debugger.onDetach.addListener((source, reason) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   dropSession(tabId);
-  // Also when onDetach already ended the session (and recorded the override): a closed tab
+  // Also when onDetach already ended the session (and recorded its emulations): a closed tab
   // never leaves an entry behind. After the load, which could otherwise bring it back.
-  viewportsReady().then(() => {
-    lostViewports.delete(tabId);
-    saveViewports();
+  emulationsReady().then(() => {
+    lostEmulations.delete(tabId);
+    saveEmulations();
   });
 });
 
-viewportsReady();
+emulationsReady();
 
 // A tab that leaves the cctether group (or whose group is renamed) is no longer Claude's.
 async function recheckScope(tabIds) {

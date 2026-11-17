@@ -1,6 +1,6 @@
 // Tools that read or drive a page as a whole: navigate, read_page, find, screenshot,
-// resize_viewport, evaluate, wait_for. Each gets ctx = { tab, s } where s is the tab's debugger
-// session (debugger.js).
+// resize_viewport, set_color_scheme, evaluate, wait_for. Each gets ctx = { tab, s } where s is the
+// tab's debugger session (debugger.js).
 
 import { ToolError } from './errors.js';
 import { untrusted, q, page, sleep, normalizeUrl, imageSize, withTimeout } from './util.js';
@@ -8,7 +8,7 @@ import { exceptionToText } from './format.js';
 import { isRestrictedUrl, restrictedMessage } from '../tabs.js';
 import {
   dialogError, CdpError, isContextGone, detachedError,
-  viewportsReady, saveViewports, clearLostViewport,
+  emulationsReady, saveEmulations, clearLostEmulation,
 } from '../debugger.js';
 import { SERIALIZE_FN } from '../page-scripts.js';
 import { tabSummary, waitTabComplete } from './browser.js';
@@ -262,6 +262,7 @@ export async function screenshot({ tab, s }, args) {
   // The size measured for this capture, not the requested one: a resize running at the same
   // time may or may not have happened yet.
   if (s.viewport) desc += ` Viewport: ${m.vw}×${m.vh} CSS px (resize_viewport override).`;
+  if (s.colorScheme) desc += ` Color scheme: ${s.colorScheme} (set_color_scheme override).`;
   return {
     content: [
       { type: 'image', data: r.data, mimeType: `image/${format}` },
@@ -270,40 +271,33 @@ export async function screenshot({ tab, s }, args) {
   };
 }
 
-// ---- resize_viewport ---------------------------------------------------------------------------
+// ---- emulation (resize_viewport, set_color_scheme) ----------------------------------------------
 //
-// Emulates a viewport size for this one tab (Emulation.setDeviceMetricsOverride): the browser
-// window is not resized and the tab is not brought to the front. A desktop viewport, not a phone
-// (mobile: false; the device pixel ratio stays). Chrome drops the override when the debugger
-// detaches; debugger.js records that and tools/index.js tells Claude on the next call.
+// Both emulate something for this one tab through the debugger, without touching the browser's
+// window or settings. Chrome drops emulations when the debugger detaches; debugger.js records
+// that and tools/index.js tells Claude on the next call.
 
-const VIEWPORT_MIN = 200;
-const VIEWPORT_MAX = 3840;
-const SET_SETTLE_MS = 1500;
-const RESET_SETTLE_MS = 1000;
 const POLL_MS = 75;
 
-/** Run resize_viewport calls on one tab one after another: two width-only calls must not race. */
+/**
+ * Run the emulation tools on one tab one after another (one queue for both): two width-only
+ * calls must not race, and every call sees the state the previous one left.
+ */
 function queued(s, fn) {
-  const run = s.viewportQueue.then(fn);
-  s.viewportQueue = run.catch(() => {}); // a failed call must not block the next one
+  const run = s.emulationQueue.then(async () => {
+    // The records of an earlier worker instance must be in place before a call changes them.
+    await emulationsReady();
+    return fn();
+  });
+  s.emulationQueue = run.catch(() => {}); // a failed call must not block the next one
   return run;
 }
 
-async function pageZoom(tabId) {
-  try {
-    const z = await chrome.tabs.getZoom(tabId);
-    return z > 0 ? z : 1;
-  } catch {
-    return 1;
-  }
-}
-
 /**
- * Read the page's viewport size until done(metrics) or ms pass. Errors are ignored (the page may
- * be navigating). Returns the last reading, or null if there was none.
+ * Read the page's metrics until done(metrics) or ms pass. Errors are ignored (the page may be
+ * navigating). Returns the last reading, or null if there was none.
  */
-async function pollViewport(s, done, ms) {
+async function pollMetrics(s, done, ms) {
   const deadline = Date.now() + ms;
   let last = null;
   for (;;) {
@@ -317,17 +311,31 @@ async function pollViewport(s, done, ms) {
   }
 }
 
+// ---- resize_viewport ---------------------------------------------------------------------------
+//
+// Emulates a viewport size (Emulation.setDeviceMetricsOverride). A desktop viewport, not a phone
+// (mobile: false; the device pixel ratio stays). The tab is not brought to the front.
+
+const VIEWPORT_MIN = 200;
+const VIEWPORT_MAX = 3840;
+const SET_SETTLE_MS = 1500;
+const RESET_SETTLE_MS = 1000;
+
+async function pageZoom(tabId) {
+  try {
+    const z = await chrome.tabs.getZoom(tabId);
+    return z > 0 ? z : 1;
+  } catch {
+    return 1;
+  }
+}
+
 export async function resizeViewport(ctx, args) {
   const reset = args.reset === true;
   const sized = args.width != null || args.height != null;
   if (reset && sized) throw new ToolError('bad_args', 'Pass either reset: true, or width/height, not both.');
   if (!reset && !sized) throw new ToolError('bad_args', 'Pass width and/or height, or reset: true.');
-  return queued(ctx.s, async () => {
-    // The stored records of an earlier worker instance must be in place before this call
-    // changes or clears them.
-    await viewportsReady();
-    return reset ? resetViewport(ctx) : setViewport(ctx, args);
-  });
+  return queued(ctx.s, () => (reset ? resetViewport(ctx) : setViewport(ctx, args)));
 }
 
 async function setViewport({ tab, s }, args) {
@@ -351,7 +359,7 @@ async function setViewport({ tab, s }, args) {
   if (s.closed) throw detachedError(tab.id); // ended before anything was sent: nothing to record
   const prev = s.viewport;
   s.viewport = { width, height };
-  saveViewports();
+  saveEmulations();
   try {
     await s.send('Emulation.setDeviceMetricsOverride', {
       width: Math.round(width * zoom), height: Math.round(height * zoom), deviceScaleFactor: 0, mobile: false,
@@ -361,16 +369,18 @@ async function setViewport({ tab, s }, args) {
     // have been applied; and once the session is closed, what dropSession() recorded stands.)
     if (e instanceof CdpError && !s.closed) {
       s.viewport = prev;
-      saveViewports();
+      saveEmulations();
     }
     throw e;
   }
   // The session ended while the command was on its way, taking the override with it: keep the
   // lost record dropSession() made, so the next call reports it.
   if (s.closed) throw detachedError(tab.id);
-  clearLostViewport(tab.id);
+  clearLostEmulation(tab.id, 'viewport');
   const near = (m) => Math.abs(m.vw - width) <= 1 && Math.abs(m.vh - height) <= 1;
-  const now = await pollViewport(s, near, SET_SETTLE_MS);
+  const now = await pollMetrics(s, near, SET_SETTLE_MS);
+  // Ended during the wait: say so rather than "remains active"; dropSession() recorded it.
+  if (s.closed) throw detachedError(tab.id);
   let msg;
   if (!now) {
     msg = `Viewport override set to ${width}×${height} CSS px for tab ${tab.id}, but the page did not report its size in time (it may be loading or busy). Check with screenshot.`;
@@ -388,7 +398,7 @@ async function resetViewport({ tab, s }) {
   const before = await s.lib('metrics');
   const had = s.viewport;
   // Sent even without a known override: harmless, and it clears one left by an earlier
-  // service-worker instance. Only the size override is cleared, no other emulation.
+  // service-worker instance. Only the size override is cleared: set_color_scheme's stays.
   // If this fails, the record stays (also the lost one dropSession() makes if the session ends
   // meanwhile).
   await s.send('Emulation.clearDeviceMetricsOverride');
@@ -396,7 +406,7 @@ async function resetViewport({ tab, s }) {
   // a newer session on this tab is not this call's business.
   if (s.closed) throw detachedError(tab.id);
   s.viewport = null;
-  clearLostViewport(tab.id);
+  clearLostEmulation(tab.id, 'viewport');
   // Right after the clear, a background tab can report an earlier override's size for up to about
   // a second before its real one. So wait for the real size as the browser knows it (an override
   // doesn't change the tab's size in chrome.tabs), and keep a hidden tab painting meanwhile,
@@ -406,7 +416,8 @@ async function resetViewport({ tab, s }) {
   const back = real
     ? (m) => Math.abs(m.vw - real.vw) <= 1 && Math.abs(m.vh - real.vh) <= 1
     : had ? (m) => m.vw !== before.vw || m.vh !== before.vh : () => true;
-  const now = await whilePainting(s, tab.id, () => pollViewport(s, back, RESET_SETTLE_MS));
+  const now = await whilePainting(s, tab.id, () => pollMetrics(s, back, RESET_SETTLE_MS));
+  if (s.closed) throw detachedError(tab.id); // ended during the wait: no "back at" report
   let msg;
   if (!had) {
     if (now && back(now)) {
@@ -449,6 +460,90 @@ async function whilePainting(s, tabId, fn) {
     // screencast itself when it is done.
     if (hidden && !s.capturing) s.send('Page.stopScreencast', {}, { timeoutMs: 3000 }).catch(() => {});
   }
+}
+
+// ---- set_color_scheme --------------------------------------------------------------------------
+//
+// Emulates the prefers-color-scheme media feature (Emulation.setEmulatedMedia). The browser's own
+// setting is not changed; a site's own theme switch or saved theme is not touched.
+
+const SCHEME_SETTLE_MS = 1000;
+const READ_MS = 1000;
+
+/** This session's media emulation, as cctether set it. */
+const mediaConfig = (s) => ({ colorScheme: s.colorScheme });
+
+/**
+ * The only place that sends Emulation.setEmulatedMedia. Each call submits the WHOLE media
+ * emulation config: anything not in it (the media type, other features) is cleared. So it is
+ * built only from the live session's own config, never from a lost record (that would quietly
+ * re-apply an override that ended), and any future media emulation (reduced motion, print) must
+ * be added to mediaConfig and sent from here.
+ */
+function sendMedia(s, config) {
+  return s.send('Emulation.setEmulatedMedia', {
+    features: [{ name: 'prefers-color-scheme', value: config.colorScheme ?? '' }],
+  });
+}
+
+const schemeOf = (m) => (m.dark ? 'dark' : 'light');
+
+export async function setColorScheme(ctx, args) {
+  return queued(ctx.s, () => (args.scheme === 'system' ? removeColorScheme(ctx) : applyColorScheme(ctx, args.scheme)));
+}
+
+async function applyColorScheme({ tab, s }, scheme) {
+  const before = await s.lib('metrics');
+  // Record first, then send, as setViewport does.
+  if (s.closed) throw detachedError(tab.id);
+  const prev = s.colorScheme;
+  s.colorScheme = scheme;
+  saveEmulations();
+  try {
+    await sendMedia(s, mediaConfig(s));
+  } catch (e) {
+    if (e instanceof CdpError && !s.closed) {
+      s.colorScheme = prev;
+      saveEmulations();
+    }
+    throw e;
+  }
+  if (s.closed) throw detachedError(tab.id);
+  clearLostEmulation(tab.id, 'scheme');
+  const now = await pollMetrics(s, (m) => schemeOf(m) === scheme, SCHEME_SETTLE_MS);
+  if (s.closed) throw detachedError(tab.id); // ended during the wait: no "remains active" report
+  let msg;
+  if (!now) {
+    msg = `Color scheme override set to ${scheme} for tab ${tab.id}, but the page did not answer in time (it may be loading or busy). Check with screenshot.`;
+  } else if (schemeOf(now) !== scheme) {
+    msg = `Requested ${scheme}, but the page still reports a ${schemeOf(now)} color scheme. The override remains active (scheme: "system" clears it).`;
+  } else {
+    msg = `Tab ${tab.id} now sees a ${scheme} color scheme (the page reported ${schemeOf(before)} before). Only this tab is affected; the browser's own setting is unchanged. `
+      + 'Only the prefers-color-scheme media feature changes: a site\'s own theme switch or saved theme is not touched. '
+      + 'Take a new screenshot to see the result. '
+      + 'The override lasts until scheme: "system", or until cctether detaches from the tab (5 min without tool calls, or a pause).';
+  }
+  return { content: [text(msg)] };
+}
+
+async function removeColorScheme({ tab, s }) {
+  const had = s.colorScheme;
+  // Sent even without a known override (harmless; clears one an earlier worker instance left).
+  await sendMedia(s, { ...mediaConfig(s), colorScheme: null });
+  if (s.closed) throw detachedError(tab.id); // what dropSession() recorded stands
+  s.colorScheme = null;
+  clearLostEmulation(tab.id, 'scheme');
+  // Read once, without waiting for a change: when the override equaled the browser's own scheme,
+  // nothing changes. (Retried only while the read itself fails, e.g. during a navigation.)
+  const now = await pollMetrics(s, () => true, READ_MS);
+  if (s.closed) throw detachedError(tab.id);
+  const what = had
+    ? `Removed the ${had} color scheme override from tab ${tab.id}`
+    : `Tab ${tab.id} has no color scheme override from cctether`;
+  const page = now
+    ? (had ? `; the page now reports ${schemeOf(now)}.` : `; the page reports ${schemeOf(now)}.`)
+    : '; the page did not answer in time.';
+  return { content: [text(what + page)] };
 }
 
 // ---- evaluate ----------------------------------------------------------------------------------

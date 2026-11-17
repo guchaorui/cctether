@@ -143,7 +143,7 @@ Settings live in `$CCTETHER_HOME`, else `$XDG_CONFIG_HOME/cctether`, else `~/.co
 
 ## Tools
 
-Claude gets these 21 tools:
+Claude gets these 22 tools:
 
 | Tool | What it does |
 |---|---|
@@ -155,6 +155,7 @@ Claude gets these 21 tools:
 | `find` | Finds elements by CSS selector. |
 | `screenshot` | Screenshots the visible area, the full page, or one element. |
 | `resize_viewport` | Resizes a tab's viewport (for example to a phone width) without resizing the browser window. |
+| `set_color_scheme` | Makes a tab see a dark or light color scheme (to check dark mode) without changing the browser's own setting. |
 | `click` | Clicks an element or a point with real mouse events. |
 | `type` | Types text into an element or the focused element. |
 | `press_key` | Presses a key or combination, such as `Enter` or `Control+A` (`Meta+A` when the browser is on a Mac). |
@@ -222,7 +223,7 @@ Your pairing is kept either way.
 
 ## Does it cost much?
 
-- **Claude's context:** the 21 tool descriptions take about 4,000 tokens, around 2% of a 200k context. Recent Claude Code versions load MCP tools on demand when there are many of them, so until Claude actually uses the browser, only the tool names (about 150 tokens) and a short note (about 120 tokens) sit in the context.
+- **Claude's context:** the 22 tool descriptions take about 4,200 tokens, around 2% of a 200k context. Recent Claude Code versions load MCP tools on demand when there are many of them, so until Claude actually uses the browser, only the tool names (about 150 tokens) and a short note (about 120 tokens) sit in the context.
 - **Memory on the Claude Code computer:** the service uses about 75 MB, and each open Claude Code window adds a small relay process of about 55 MB.
 - **The browser:** the extension does nothing while Claude isn't using it, apart from a tiny heartbeat every 10 seconds.
 
@@ -233,6 +234,7 @@ Your pairing is kept either way.
 - `reload_extension` applies code changes, but not `manifest.json` changes. For those, click reload on `chrome://extensions` yourself.
 - Very long full-page screenshots are scaled down (to stay under the image size limit), so they come out narrow.
 - `resize_viewport` gives a narrow desktop viewport, not a phone emulation: the user agent, touch and pixel ratio stay as they are, so it checks the layout at that width, not everything a real phone does.
+- `set_color_scheme` changes what the page is told about the system's color scheme; it does not operate a site's own theme switch or change a theme the site has saved.
 - One browser per service at a time.
 - The service doesn't run on Windows directly. Use WSL.
 

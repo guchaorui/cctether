@@ -13,6 +13,7 @@ import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { launchChrome } from './lib/chrome.js';
 
 const VERSION_RE = JSON.parse(readFileSync(new URL('../../extension/manifest.json', import.meta.url), 'utf8')).version.replace(/\./g, '\\.');
@@ -668,19 +669,27 @@ const atSize = (tab, [w, h]) => until(async () => { const v = await viewportOf(t
 
 const debuggerAttached = (tab) => swEval(`chrome.debugger.getTargets().then((ts) => ts.find((t) => t.tabId === ${tab})?.attached ?? false)`);
 
-/** The overrides cctether keeps in chrome.storage.session ({ [tabId]: { width, height } }). */
-const storedOverrides = () => swEval('chrome.storage.session.get("viewportOverrides").then((x) => x.viewportOverrides ?? {})');
-const storedFor = async (tab) => (await storedOverrides())[tab] ?? null;
+/** The emulations cctether keeps in chrome.storage.session ({ [tabId]: { viewport?, scheme? } }). */
+const storedEmulations = () => swEval('chrome.storage.session.get("emulations").then((x) => x.emulations ?? {})');
+/** The tab's stored record, or null. */
+const storedFor = async (tab) => (await storedEmulations())[tab] ?? null;
+/** The viewport part of the tab's stored record, or null. */
+const storedVp = async (tab) => (await storedFor(tab))?.viewport ?? null;
+/** Tab ids with an ended emulation not reported yet. */
+const pendingTabs = () => swEval('self.cctether.pendingEmulations().then((p) => Object.keys(p).map(Number))');
+const pendingFor = (tab) => swEval(`self.cctether.pendingEmulations().then((p) => p[${tab}] ?? null)`);
 
 /**
  * Fault injection: the next time cctether sends `method` to `tab`, the tab leaves the cctether
  * group (so cctether really detaches) just before ('detach-before') or just after
- * ('detach-after') Chrome handles the command; or ('refuse') Chrome is sent an invalid width and
- * really rejects it. 'hold' / 'hold-refuse': Chrome handles (or rejects) the command, but the
- * answer reaches cctether only on release() (wait for it with held()). Everything else goes to
- * Chrome unchanged. Deterministic: no timing involved.
+ * ('detach-after') Chrome handles the command; or ('refuse') Chrome is sent invalid parameters
+ * and really rejects it. 'hold' / 'hold-refuse': Chrome handles (or rejects) the command, but the
+ * answer reaches cctether only on release() (wait for it with held()). With `after`, the trap is
+ * armed only once cctether has sent that method to the tab (e.g. to catch the page reads of a
+ * verification wait, not the read before). Everything else goes to Chrome unchanged.
+ * Deterministic: no timing involved.
  */
-async function injectOnce(tab, method, mode) {
+async function injectOnce(tab, method, mode, { after = null } = {}) {
   await swEval(`(() => {
     self.__cdpOrig ??= chrome.debugger.sendCommand;
     const orig = self.__cdpOrig;
@@ -694,14 +703,18 @@ async function injectOnce(tab, method, mode) {
       }
       throw new Error('the debugger did not let go');
     };
+    let armed = ${JSON.stringify(after)} === null;
+    // Invalid parameters, so that Chrome itself rejects the command.
+    const invalid = (m, params) => (m === 'Emulation.setEmulatedMedia' ? { features: 'not-a-list' } : { ...params, width: -1 });
     chrome.debugger.sendCommand = async function (target, m, params) {
-      if (target?.tabId !== ${tab} || m !== ${JSON.stringify(method)}) return orig.apply(this, arguments);
+      if (target?.tabId === ${tab} && m === ${JSON.stringify(after)}) armed = true;
+      if (!armed || target?.tabId !== ${tab} || m !== ${JSON.stringify(method)}) return orig.apply(this, arguments);
       chrome.debugger.sendCommand = orig;
       const mode = ${JSON.stringify(mode)};
-      if (mode === 'refuse') return orig.call(this, target, m, { ...params, width: -1 });
+      if (mode === 'refuse') return orig.call(this, target, m, invalid(m, params));
       if (mode === 'detach-before') { await detached(); return orig.call(this, target, m, params); }
       if (mode === 'hold' || mode === 'hold-refuse') {
-        const answer = orig.call(this, target, m, mode === 'hold' ? params : { ...params, width: -1 }).then((value) => ({ value }), (error) => ({ error }));
+        const answer = orig.call(this, target, m, mode === 'hold' ? params : invalid(m, params)).then((value) => ({ value }), (error) => ({ error }));
         const r = await answer;
         await new Promise((resolve) => { self.__release = resolve; self.__held = true; });
         self.__held = false;
@@ -910,9 +923,9 @@ test('resize_viewport: an override that ended on detach is reported once; coordi
     // A call with coordinates is refused once (they were probably measured under the override).
     await ok('resize_viewport', { tab, width: 390, height: 844 });
     await leaveAndRejoin(tab);
-    const e = await fails('click', { tab, ...PRESS }, 'viewport_changed');
+    const e = await fails('click', { tab, ...PRESS }, 'emulation_changed');
     assert.equal(e.message, 'Not done. The 390×844 viewport override set with resize_viewport ended when cctether detached from this tab (for example after 5 minutes without tool calls, or a pause), '
-      + 'so the layout may have changed since your last screenshot and (x, y) may point somewhere else. Take a new screenshot (or call resize_viewport again), then retry.');
+      + 'so the page may look different from your last screenshot and (x, y) may point somewhere else. Take a new screenshot (or set it again), then retry.');
     assert.equal(e.tab?.id, tab);
     assert.equal(await pageEval(tab, 'window.clicks'), 0, 'the click did not happen');
     const c = await ok('click', { tab, ...PRESS });
@@ -960,7 +973,7 @@ test('resize_viewport keeps the note when it fails, and clears it when it succee
 });
 
 test('resize_viewport: closing a tab leaves no "override ended" record behind', async () => {
-  const lost = () => swEval('self.cctether.lostViewportTabs()');
+  const lost = pendingTabs;
   const other = await openShared('/pages/viewport.html?other');
   // Closed while the override is active (the debugger is attached).
   const a = await openShared('/pages/viewport.html?close-a');
@@ -984,13 +997,13 @@ test('resize_viewport: closing a tab leaves no "override ended" record behind', 
 
 test('resize_viewport: the stored records follow the override (chrome.storage.session)', async () => {
   const tab = await openShared('/pages/viewport.html?stored');
-  const has = (w, h) => async () => { const v = await storedFor(tab); return v?.width === w && v?.height === h; };
+  const has = (w, h) => async () => { const v = await storedVp(tab); return v?.width === w && v?.height === h; };
   const gone = async () => (await storedFor(tab)) === null;
   try {
     await ok('resize_viewport', { tab, width: 390, height: 844 });
     await until(has(390, 844), 'the override to be stored');
     await leaveAndRejoin(tab);
-    assert.deepEqual(await storedFor(tab), { width: 390, height: 844 }, 'kept while the note is pending');
+    assert.deepEqual(await storedFor(tab), { viewport: { width: 390, height: 844 } }, 'kept while the note is pending');
     assert.match((await ok('read_page', { tab })).text, lostNoteRe(390, 844));
     await until(gone, 'the entry to go once the note was delivered');
 
@@ -1018,8 +1031,8 @@ test('resize_viewport: a detach while the command is on its way does not lose th
     await injectOnce(tab, 'Emulation.setDeviceMetricsOverride', 'detach-after');
     const e = await fails('resize_viewport', { tab, width: 390, height: 844 }, 'no_tab');
     assert.match(e.message, new RegExp(`^cctether lost its connection to tab ${tab} `));
-    await until(async () => (await storedFor(tab))?.width === 390, 'the override to be stored');
-    assert.deepEqual(await storedFor(tab), { width: 390, height: 844 });
+    await until(async () => (await storedVp(tab))?.width === 390, 'the override to be stored');
+    assert.deepEqual(await storedFor(tab), { viewport: { width: 390, height: 844 } });
     await rejoin(tab);
     assert.match((await ok('read_page', { tab })).text, lostNoteRe(390, 844), 'the ended override is reported');
     await atSize(tab, real);
@@ -1030,8 +1043,8 @@ test('resize_viewport: a detach while the command is on its way does not lose th
     const refused = await call('resize_viewport', { tab, width: 420 });
     assert.ok(!refused.ok && /Emulation\.setDeviceMetricsOverride: Width and height/.test(refused.message), JSON.stringify(refused));
     assert.match((await ok('list_tabs')).text, new RegExp(`tab ${tab}: .*viewport override 500×700`));
-    await until(async () => (await storedFor(tab))?.width === 500, 'the previous entry to be stored again');
-    assert.deepEqual(await storedFor(tab), { width: 500, height: 700 });
+    await until(async () => (await storedVp(tab))?.width === 500, 'the previous entry to be stored again');
+    assert.deepEqual(await storedFor(tab), { viewport: { width: 500, height: 700 } });
     assert.deepEqual(await viewportOf(tab), [500, 700]);
 
     // Reset, and the session ends before the clear reaches Chrome: the override was not cleared
@@ -1072,7 +1085,7 @@ test('resize_viewport: a note delivered while a set is on its way leaves the new
     await release();
     const b = await setting;
     assert.ok(b.ok, JSON.stringify(b));
-    await until(async () => { const v = await storedFor(tab); return v?.width === 500 && v?.height === 700; }, 'B to be the stored entry', 2000);
+    await until(async () => { const v = await storedVp(tab); return v?.width === 500 && v?.height === 700; }, 'B to be the stored entry', 2000);
     assert.match((await ok('list_tabs')).text, new RegExp(`tab ${tab}: .*viewport override 500×700`));
     assert.doesNotMatch((await ok('read_page', { tab })).text, /Note: the/);
   } finally {
@@ -1095,7 +1108,7 @@ test('resize_viewport: a set refused after the pending note was delivered stores
     assert.ok(!b.ok && /Width and height/.test(b.message), JSON.stringify(b));
     // A was reported and B never applied: nothing to remember.
     await until(async () => (await storedFor(tab)) === null, 'no stored entry', 2000);
-    assert.ok(!(await swEval('self.cctether.lostViewportTabs()')).includes(tab), 'no pending record');
+    assert.ok(!(await pendingTabs()).includes(tab), 'no pending record');
     assert.doesNotMatch((await ok('read_page', { tab })).text, /Note: the/);
     assert.doesNotMatch((await ok('list_tabs')).text, new RegExp(`tab ${tab}: .*viewport override`));
   } finally {
@@ -1119,8 +1132,8 @@ test('resize_viewport: a reset that returns after its session ended leaves a new
     const old = await resetting;
     assert.ok(!old.ok && old.code === 'no_tab', JSON.stringify(old));
     assert.match(old.message, new RegExp(`^cctether lost its connection to tab ${tab} `));
-    await until(async () => { const v = await storedFor(tab); return v?.width === 500 && v?.height === 700; }, '500×700 to stay stored', 2000);
-    assert.deepEqual(await storedFor(tab), { width: 500, height: 700 });
+    await until(async () => { const v = await storedVp(tab); return v?.width === 500 && v?.height === 700; }, '500×700 to stay stored', 2000);
+    assert.deepEqual(await storedFor(tab), { viewport: { width: 500, height: 700 } });
     assert.match((await ok('list_tabs')).text, new RegExp(`tab ${tab}: .*viewport override 500×700`));
     assert.deepEqual(await viewportOf(tab), [500, 700]);
   } finally {
@@ -1147,6 +1160,252 @@ test('resize_viewport: reset waits for the real size also when cctether knows of
   }
 });
 
+// ---- set_color_scheme ---------------------------------------------------------------------------
+
+const isDark = (tab) => pageEval(tab, 'matchMedia("(prefers-color-scheme: dark)").matches');
+const toneOf = (tab) => pageEval(tab, 'getComputedStyle(document.getElementById("tone")).backgroundColor');
+/** Chrome restores the browser's scheme itself when the debugger lets go. */
+const atScheme = (tab, dark) => until(async () => (await isDark(tab)) === dark, `tab ${tab} to be ${dark ? 'dark' : 'light'}`);
+const ENDED_TEXT = 'ended when cctether detached from this tab (for example after 5 minutes without tool calls, or a pause)';
+const esc = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const schemeNoteRe = (scheme) => new RegExp(`\\n${esc(`Note: the ${scheme} color scheme set with set_color_scheme ${ENDED_TEXT}. Call set_color_scheme again if you still need it.`)}$`);
+const bothNoteRe = (w, h, scheme) => new RegExp(`\\n${esc(`Note: the ${w}×${h} viewport override (resize_viewport) and the ${scheme} color scheme (set_color_scheme) ${ENDED_TEXT}. Set them again if you still need them.`)}$`);
+const refusal = (what) => `Not done. The ${what} ${ENDED_TEXT}, so the page may look different from your last screenshot and (x, y) may point somewhere else. Take a new screenshot (or set it again), then retry.`;
+
+test('set_color_scheme: dark and light for one background tab, then back to the browser\'s', async () => {
+  const tab = await openShared('/pages/viewport.html?scheme');
+  try {
+    assert.equal(await isDark(tab), false, 'the test browser is light');
+    const r = await ok('set_color_scheme', { tab, scheme: 'dark' });
+    assert.equal(r.text, `Tab ${tab} now sees a dark color scheme (the page reported light before). Only this tab is affected; the browser's own setting is unchanged. `
+      + 'Only the prefers-color-scheme media feature changes: a site\'s own theme switch or saved theme is not touched. Take a new screenshot to see the result. '
+      + 'The override lasts until scheme: "system", or until cctether detaches from the tab (5 min without tool calls, or a pause).');
+    // A screenshot right away shows the dark styles and the dark page background.
+    const shot = await ok('screenshot', { tab, format: 'png' });
+    assert.match(shot.text, / Color scheme: dark \(set_color_scheme override\)\.$/);
+    const [tone, bg] = await pixels(shot.images[0], [[120, 240], [500, 300]]);
+    assert.ok(tone[0] < 40 && tone[1] > 130 && tone[2] < 40, `expected the dark-scheme green, got ${tone}`);
+    assert.ok(bg[0] < 60 && bg[1] < 60 && bg[2] < 60, `expected a dark page background, got ${bg}`);
+    assert.equal(await isDark(tab), true);
+    assert.equal(await toneOf(tab), 'rgb(0, 160, 0)');
+    assert.equal(await swEval(`chrome.tabs.get(${tab}).then((t) => t.active)`), false, 'still in the background');
+    assert.match((await ok('list_tabs')).text, new RegExp(`tab ${tab}: .*\\(.*color scheme dark.*\\)`));
+
+    // It survives a navigation to another origin and a reload.
+    const port = new URL(base).port;
+    await ok('navigate', { tab, url: `http://localhost:${port}/pages/viewport.html?scheme-other` });
+    assert.equal(await isDark(tab), true);
+    await ok('navigate', { tab, action: 'reload' });
+    assert.equal(await isDark(tab), true);
+
+    const l = await ok('set_color_scheme', { tab, scheme: 'light' });
+    assert.match(l.text, new RegExp(`^Tab ${tab} now sees a light color scheme \\(the page reported dark before\\)\\.`));
+    assert.equal(await isDark(tab), false);
+    assert.equal(await toneOf(tab), 'rgb(255, 200, 0)');
+    assert.match((await ok('list_tabs')).text, new RegExp(`tab ${tab}: .*color scheme light`));
+
+    const sys = await ok('set_color_scheme', { tab, scheme: 'system' });
+    assert.equal(sys.text, `Removed the light color scheme override from tab ${tab}; the page now reports light.`);
+    const again = await ok('set_color_scheme', { tab, scheme: 'system' });
+    assert.equal(again.text, `Tab ${tab} has no color scheme override from cctether; the page reports light.`);
+    assert.doesNotMatch((await ok('list_tabs')).text, /color scheme/);
+    assert.doesNotMatch((await ok('screenshot', { tab })).text, /Color scheme/);
+
+    // Argument checks: the extension is the gate (Chrome accepts any value silently).
+    await fails('set_color_scheme', {}, 'bad_args');
+    await fails('set_color_scheme', { tab, scheme: 'purple' }, 'bad_args');
+    await fails('set_color_scheme', { tab, scheme: 'dark', reset: true }, 'bad_args');
+    assert.equal(await isDark(tab), false, 'failed calls changed nothing');
+  } finally {
+    await ok('close_tab', { tab });
+  }
+});
+
+test('set_color_scheme and resize_viewport are independent', async () => {
+  const tab = await openShared('/pages/viewport.html?both');
+  try {
+    const real = await realSizeOf(tab);
+    await ok('resize_viewport', { tab, width: 390, height: 844 });
+    await ok('set_color_scheme', { tab, scheme: 'dark' });
+    assert.match((await ok('list_tabs')).text, new RegExp(`tab ${tab}: .*viewport override 390×844, color scheme dark`));
+    const shot = await ok('screenshot', { tab, format: 'png' });
+    assert.match(shot.text, / Viewport: 390×844 CSS px \(resize_viewport override\)\. Color scheme: dark \(set_color_scheme override\)\.$/);
+    assert.deepEqual(pngSize(shot.images[0].data), { width: 390, height: 844 });
+
+    // Resetting the viewport leaves the color scheme.
+    const back = await ok('resize_viewport', { tab, reset: true });
+    assert.match(back.text, /is back at its real viewport/);
+    assert.deepEqual(await viewportOf(tab), real);
+    assert.equal(await isDark(tab), true);
+    assert.match((await ok('list_tabs')).text, new RegExp(`tab ${tab}: .*\\(.*color scheme dark`));
+    assert.doesNotMatch((await ok('list_tabs')).text, /viewport override/);
+
+    // Removing the color scheme leaves the viewport.
+    await ok('resize_viewport', { tab, width: 420, height: 700 });
+    await ok('set_color_scheme', { tab, scheme: 'system' });
+    assert.equal(await isDark(tab), false);
+    assert.deepEqual(await viewportOf(tab), [420, 700]);
+    const listed = (await ok('list_tabs')).text;
+    assert.match(listed, new RegExp(`tab ${tab}: .*viewport override 420×700`));
+    assert.doesNotMatch(listed, /color scheme/);
+    await ok('resize_viewport', { tab, reset: true });
+  } finally {
+    await ok('close_tab', { tab });
+  }
+});
+
+test('set_color_scheme: an ended scheme is reported once; coordinates are refused once, naming all that ended', async () => {
+  const tab = await openShared('/pages/viewport.html?scheme-detach');
+  try {
+    // Scheme only.
+    await ok('set_color_scheme', { tab, scheme: 'dark' });
+    await leaveAndRejoin(tab);
+    assert.match((await ok('read_page', { tab })).text, schemeNoteRe('dark'));
+    await atScheme(tab, false);
+    assert.doesNotMatch((await ok('read_page', { tab })).text, /Note: the/, 'shown once');
+
+    // Both.
+    await ok('resize_viewport', { tab, width: 390, height: 844 });
+    await ok('set_color_scheme', { tab, scheme: 'dark' });
+    await leaveAndRejoin(tab);
+    assert.match((await ok('read_page', { tab })).text, bothNoteRe(390, 844, 'dark'));
+    assert.doesNotMatch((await ok('read_page', { tab })).text, /Note: the/);
+
+    // Coordinates when only the scheme ended: refused once, naming the scheme.
+    await ok('set_color_scheme', { tab, scheme: 'dark' });
+    await leaveAndRejoin(tab);
+    const e1 = await fails('click', { tab, ...PRESS }, 'emulation_changed');
+    assert.equal(e1.message, refusal('dark color scheme set with set_color_scheme'));
+    assert.equal(await pageEval(tab, 'window.clicks'), 0, 'the click did not happen');
+    assert.match((await ok('click', { tab, ...PRESS })).text, /on button "Press"/);
+    assert.equal(await pageEval(tab, 'window.clicks'), 1);
+
+    // Both ended: the refusal names both, and nothing is left pending.
+    await ok('resize_viewport', { tab, width: 390, height: 844 });
+    await ok('set_color_scheme', { tab, scheme: 'dark' });
+    await leaveAndRejoin(tab);
+    const e2 = await fails('click', { tab, ...PRESS }, 'emulation_changed');
+    assert.equal(e2.message, refusal('390×844 viewport override (resize_viewport) and the dark color scheme (set_color_scheme)'));
+    assert.equal(await pendingFor(tab), null);
+    assert.doesNotMatch((await ok('read_page', { tab })).text, /Note: the/);
+  } finally {
+    await ok('close_tab', { tab });
+  }
+});
+
+test('emulation records are cleared and merged part by part', async () => {
+  const tab = await openShared('/pages/viewport.html?parts');
+  try {
+    // Both ended; set_color_scheme clears only its part: coordinates are still refused, for the viewport.
+    await ok('resize_viewport', { tab, width: 390, height: 844 });
+    await ok('set_color_scheme', { tab, scheme: 'dark' });
+    await leaveAndRejoin(tab);
+    await ok('set_color_scheme', { tab, scheme: 'dark' });
+    assert.deepEqual(await pendingFor(tab), { viewport: { width: 390, height: 844 } });
+    const e = await fails('click', { tab, ...PRESS }, 'emulation_changed');
+    assert.equal(e.message, refusal('390×844 viewport override set with resize_viewport'));
+    await ok('set_color_scheme', { tab, scheme: 'system' });
+
+    // The reverse: resize_viewport clears only its part; the next call carries the scheme note.
+    await ok('resize_viewport', { tab, width: 390, height: 844 });
+    await ok('set_color_scheme', { tab, scheme: 'dark' });
+    await leaveAndRejoin(tab);
+    assert.match((await ok('resize_viewport', { tab, width: 400, height: 800 })).text, /viewport is now 400×800/);
+    assert.deepEqual(await pendingFor(tab), { scheme: 'dark' });
+    assert.match((await ok('read_page', { tab })).text, schemeNoteRe('dark'));
+    await ok('resize_viewport', { tab, reset: true });
+
+    // Merge: a pending viewport part, then a new session that only sets a scheme and ends.
+    await ok('resize_viewport', { tab, width: 390, height: 844 });
+    await leaveAndRejoin(tab);
+    await ok('set_color_scheme', { tab, scheme: 'light' });
+    assert.deepEqual(await pendingFor(tab), { viewport: { width: 390, height: 844 } }, 'set_color_scheme neither shows nor uses the record');
+    await leaveAndRejoin(tab);
+    assert.deepEqual(await pendingFor(tab), { viewport: { width: 390, height: 844 }, scheme: 'light' });
+    await until(async () => isDeepStrictEqual(await storedFor(tab), { viewport: { width: 390, height: 844 }, scheme: 'light' }), 'the merged record to be stored');
+    assert.match((await ok('read_page', { tab })).text, bothNoteRe(390, 844, 'light'));
+  } finally {
+    await ok('close_tab', { tab });
+  }
+});
+
+test('set_color_scheme: the stored record follows both parts', async () => {
+  const tab = await openShared('/pages/viewport.html?scheme-stored');
+  const is = (want) => async () => isDeepStrictEqual(await storedFor(tab), want);
+  try {
+    await ok('set_color_scheme', { tab, scheme: 'dark' });
+    await until(is({ scheme: 'dark' }), 'the scheme to be stored');
+    await ok('resize_viewport', { tab, width: 390, height: 844 });
+    await until(is({ viewport: { width: 390, height: 844 }, scheme: 'dark' }), 'both parts to be stored');
+    await ok('set_color_scheme', { tab, scheme: 'system' });
+    await until(is({ viewport: { width: 390, height: 844 } }), 'only the viewport to stay');
+    await ok('resize_viewport', { tab, reset: true });
+    await until(is(null), 'the record to go');
+
+    await ok('set_color_scheme', { tab, scheme: 'dark' });
+    await leaveAndRejoin(tab);
+    assert.deepEqual(await storedFor(tab), { scheme: 'dark' }, 'kept while the note is pending');
+    assert.match((await ok('read_page', { tab })).text, schemeNoteRe('dark'));
+    await until(is(null), 'the record to go once reported');
+
+    await ok('set_color_scheme', { tab, scheme: 'dark' });
+    await ok('resize_viewport', { tab, width: 390, height: 844 });
+    await until(is({ viewport: { width: 390, height: 844 }, scheme: 'dark' }), 'both parts to be stored');
+  } finally {
+    await ok('close_tab', { tab });
+  }
+  await until(is(null), 'the record to go when the tab was closed');
+});
+
+test('set_color_scheme / resize_viewport: detaches in flight or during the check, and Chrome refusing', async () => {
+  const tab = await openShared('/pages/viewport.html?scheme-inflight');
+  try {
+    // Chrome applies the scheme, then the session ends before cctether hears back.
+    await injectOnce(tab, 'Emulation.setEmulatedMedia', 'detach-after');
+    const e1 = await fails('set_color_scheme', { tab, scheme: 'dark' }, 'no_tab');
+    assert.match(e1.message, new RegExp(`^cctether lost its connection to tab ${tab} `));
+    await rejoin(tab);
+    assert.match((await ok('read_page', { tab })).text, schemeNoteRe('dark'));
+    await atScheme(tab, false);
+
+    // Chrome refuses the command: the previous scheme is still the one.
+    await ok('set_color_scheme', { tab, scheme: 'light' });
+    await injectOnce(tab, 'Emulation.setEmulatedMedia', 'refuse');
+    const refused = await call('set_color_scheme', { tab, scheme: 'dark' });
+    assert.ok(!refused.ok && /Emulation\.setEmulatedMedia/.test(refused.message), JSON.stringify(refused));
+    assert.match((await ok('list_tabs')).text, new RegExp(`tab ${tab}: .*color scheme light`));
+    await until(async () => (await storedFor(tab))?.scheme === 'light', 'the previous scheme to be stored');
+    assert.equal(await isDark(tab), false);
+
+    // "system", and the session ends before it reaches Chrome: the override ended with the session.
+    await injectOnce(tab, 'Emulation.setEmulatedMedia', 'detach-before');
+    await fails('set_color_scheme', { tab, scheme: 'system' }, 'no_tab');
+    await rejoin(tab);
+    assert.match((await ok('read_page', { tab })).text, schemeNoteRe('light'));
+
+    // The session ends during the check after the command (the page reads that follow it).
+    const duringCheck = async (args, after, note) => {
+      await injectOnce(tab, 'Runtime.callFunctionOn', 'detach-after', { after });
+      const e = await fails(args.scheme ? 'set_color_scheme' : 'resize_viewport', { tab, ...args }, 'no_tab');
+      assert.match(e.message, new RegExp(`^cctether lost its connection to tab ${tab} `));
+      await rejoin(tab);
+      const rp = (await ok('read_page', { tab })).text;
+      if (note) assert.match(rp, note);
+      else assert.doesNotMatch(rp, /Note: the/);
+    };
+    await duringCheck({ scheme: 'dark' }, 'Emulation.setEmulatedMedia', schemeNoteRe('dark'));
+    await duringCheck({ width: 390, height: 844 }, 'Emulation.setDeviceMetricsOverride', lostNoteRe(390, 844));
+    // Undoing: the override was already cleared before the check, so there is nothing to report.
+    await ok('set_color_scheme', { tab, scheme: 'dark' });
+    await duringCheck({ scheme: 'system' }, 'Emulation.setEmulatedMedia', null);
+    await ok('resize_viewport', { tab, width: 390, height: 844 });
+    await duringCheck({ reset: true }, 'Emulation.clearDeviceMetricsOverride', null);
+  } finally {
+    await restoreCdp();
+    await swEval(`chrome.tabs.remove(${tab})`).catch(() => {});
+  }
+});
+
 // ---- scope: unshared and restricted tabs --------------------------------------------------------
 
 test('tabs outside the group are refused; a same-named user group counts', async () => {
@@ -1158,6 +1417,7 @@ test('tabs outside the group are refused; a same-named user group counts', async
   assert.match(e.message, /Share this tab/);
   await fails('close_tab', { tab: outside }, 'not_shared');
   await fails('resize_viewport', { tab: outside, width: 390 }, 'not_shared');
+  await fails('set_color_scheme', { tab: outside, scheme: 'dark' }, 'not_shared');
   await fails('read_page', { tab: 987654321 }, 'no_tab');
   // The user makes their own group called "cctether".
   await swEval(`chrome.tabs.group({ tabIds: [${outside}] }).then((g) => chrome.tabGroups.update(g, { title: 'cctether' }))`);
@@ -1294,7 +1554,38 @@ test('screenshot with a real devicePixelRatio of 2 (like a Retina Mac)', async (
   }
 });
 
-test('resize_viewport records survive a service-worker restart', async () => {
+test('set_color_scheme in a browser that is itself dark', async () => {
+  const dark = await launchChrome({ extensions: [EXT], args: ['--force-dark-mode'], headless: !HEADED });
+  try {
+    const w = await dark.extensionWorker(EXT_ID);
+    const run = (name, args) => w.evaluate(`self.cctether.runTool(${JSON.stringify(name)}, ${JSON.stringify(args)})`);
+    const tab = (await run('open_tab', { url: `${base}/pages/viewport.html?dark-browser` })).tab.id;
+    const darkNow = async () => JSON.parse((await run('evaluate', { tab, expression: 'matchMedia("(prefers-color-scheme: dark)").matches' })).content[0].text.match(/\n(true|false)\n/)[1]);
+    assert.equal(await darkNow(), true, 'the browser itself is dark');
+    const l = await run('set_color_scheme', { tab, scheme: 'light' });
+    assert.match(l.content[0].text, new RegExp(`^Tab ${tab} now sees a light color scheme \\(the page reported dark before\\)\\.`));
+    assert.equal(await darkNow(), false);
+    const timedSystem = async () => {
+      const t0 = Date.now();
+      const r = await run('set_color_scheme', { tab, scheme: 'system' });
+      return { text: r.content[0].text, ms: Date.now() - t0 };
+    };
+    const back = await timedSystem();
+    assert.equal(back.text, `Removed the light color scheme override from tab ${tab}; the page now reports dark.`);
+    assert.ok(back.ms < 500, `took ${back.ms} ms`);
+    assert.equal(await darkNow(), true);
+    // An override equal to the browser's own scheme: nothing changes on "system", and the call
+    // reads the page once instead of waiting for a change that never comes.
+    await run('set_color_scheme', { tab, scheme: 'dark' });
+    const same = await timedSystem();
+    assert.equal(same.text, `Removed the dark color scheme override from tab ${tab}; the page now reports dark.`);
+    assert.ok(same.ms < 500, `took ${same.ms} ms`);
+  } finally {
+    await dark.close();
+  }
+});
+
+test('emulation records survive a service-worker restart', async () => {
   // A separate browser, so the main suite's worker handle stays valid.
   const other = await launchChrome({ extensions: [EXT], headless: !HEADED });
   try {
@@ -1304,18 +1595,22 @@ test('resize_viewport records survive a service-worker restart', async () => {
       (e) => ({ ok: false, code: e.code, message: e.message }))`);
     const okRun = async (name, args) => { const r = await run(name, args); assert.ok(r.ok, `${name} failed: ${r.code}: ${r.message}`); return r; };
     const pageVal = async (tab, expression) => JSON.parse((await okRun('evaluate', { tab, expression })).text.match(/<untrusted-page-content>\n([\s\S]*)\n<\/untrusted-page-content>/)[1]);
-    const stored = () => w.evaluate('chrome.storage.session.get("viewportOverrides").then((x) => x.viewportOverrides ?? {})');
+    const stored = () => w.evaluate('chrome.storage.session.get("emulations").then((x) => x.emulations ?? {})');
 
+    // Tab A: a viewport override and a dark color scheme. Tab B: a dark color scheme only.
     const tab = (await okRun('open_tab', { url: `${base}/pages/viewport.html?restart` })).tab.id;
     const real = await until(async () => {
       const [page, own] = [await pageVal(tab, '[innerWidth, innerHeight]'), await w.evaluate(`chrome.tabs.get(${tab}).then((t) => [t.width, t.height])`)];
       return page[0] === own[0] && page[1] === own[1] && page;
     }, 'the real size');
     await okRun('resize_viewport', { tab, width: 390, height: 844 });
-    await until(async () => (await stored())[tab]?.width === 390, 'the override to be stored');
+    await okRun('set_color_scheme', { tab, scheme: 'dark' });
+    const tabB = (await okRun('open_tab', { url: `${base}/pages/viewport.html?restart-b` })).tab.id;
+    await okRun('set_color_scheme', { tab: tabB, scheme: 'dark' });
+    await until(async () => { const st = await stored(); return st[tab]?.scheme === 'dark' && st[tab]?.viewport?.width === 390 && st[tabB]?.scheme === 'dark'; }, 'both records to be stored');
     // Plus an entry for a tab that no longer exists: the next worker instance must drop it.
-    await w.evaluate(`chrome.storage.session.get('viewportOverrides').then(({ viewportOverrides: v }) =>
-      chrome.storage.session.set({ viewportOverrides: { ...v, 987654321: { width: 400, height: 400 } } }))`);
+    await w.evaluate(`chrome.storage.session.get('emulations').then(({ emulations: v }) =>
+      chrome.storage.session.set({ emulations: { ...v, 987654321: { viewport: { width: 400, height: 400 }, scheme: 'dark' } } }))`);
     await w.evaluate('self.beforeRestart = true');
 
     // Stop the extension's service worker; the next tab event starts a new instance.
@@ -1329,17 +1624,24 @@ test('resize_viewport records survive a service-worker restart', async () => {
       return c && (await c.evaluate('self.beforeRestart === undefined').catch(() => false)) && c;
     }, 'a new worker instance', 15000);
 
-    // The new instance loaded the record as an override that has ended.
-    assert.deepEqual(await w.evaluate('self.cctether.lostViewportTabs()'), [tab]);
+    // The new instance loaded both records as emulations that have ended, part by part.
+    assert.deepEqual(await w.evaluate('self.cctether.pendingEmulations()'), {
+      [tab]: { viewport: { width: 390, height: 844 }, scheme: 'dark' },
+      [tabB]: { scheme: 'dark' },
+    });
     await until(async () => !('987654321' in await stored()), 'the closed tab\'s entry to be dropped');
     const e = await run('click', { tab, x: 60, y: 120 });
-    assert.equal(e.code, 'viewport_changed', JSON.stringify(e));
+    assert.equal(e.code, 'emulation_changed', JSON.stringify(e));
+    assert.match(e.message, /^Not done\. The 390×844 viewport override \(resize_viewport\) and the dark color scheme \(set_color_scheme\) ended when/);
     const rp = await okRun('read_page', { tab });
     assert.match(rp.text, /Viewport fixture/);
     assert.doesNotMatch(rp.text, /Note: the/);
     assert.equal(await pageVal(tab, 'window.clicks'), 0, 'the refused click did not happen');
     await until(async () => { const v = await pageVal(tab, '[innerWidth, innerHeight]'); return v[0] === real[0] && v[1] === real[1]; }, 'the real size');
-    await until(async () => !(String(tab) in await stored()), 'the entry to go');
+    assert.equal(await pageVal(tab, 'matchMedia("(prefers-color-scheme: dark)").matches'), false, 'back to the browser\'s scheme');
+    const rb = await okRun('read_page', { tab: tabB });
+    assert.match(rb.text, /\nNote: the dark color scheme set with set_color_scheme ended when cctether detached from this tab \(for example after 5 minutes without tool calls, or a pause\)\. Call set_color_scheme again if you still need it\.$/);
+    await until(async () => { const st = await stored(); return !(String(tab) in st) && !(String(tabB) in st); }, 'the entries to go');
   } finally {
     await other.close();
   }

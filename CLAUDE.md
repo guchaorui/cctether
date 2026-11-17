@@ -14,14 +14,14 @@
   - 全程走用户自己的连接，不经过 Anthropic 的中转服务器。
 - 起因：官方 Claude in Chrome 插件要经过 Anthropic 中转。主人的 Mac 有时连不上 Claude，这条链就断了。
 - 要开源（MIT），给有同样需求的人用。所以不能写死主人的环境，界面和 README 都要中英双语。
-- **当前：第二阶段全部做完，已公开发布（npm、GitHub、Chrome 应用商店）。`main` 上是 0.4.0（SPEC §13 v0.13，加了 `resize_viewport`），还没发布：npm 是 0.3.3，商店是 0.3.2。主人 2026-11-09 说先做到这里。新对话从 `docs/HANDOFF.md` 第零节开始，后续优化的候选清单在第二节。**
+- **当前：第二阶段全部做完，已公开发布（npm、GitHub、Chrome 应用商店）。`main` 上是 0.4.0（SPEC §13 v0.13、v0.14，加了 `resize_viewport` 和 `set_color_scheme`），还没发布：npm 是 0.3.3，商店是 0.3.2。主人 2026-11-09 说先做到这里。新对话从 `docs/HANDOFF.md` 第零节开始，后续优化的候选清单在第二节。**
 
 ## 仓库结构
 
 ```
 extension/          浏览器插件：MV3，零依赖，不打包，用户能直接「加载已解压的扩展程序」
   background/       service worker：main.js → app.js（总调度）、connection.js + crypto.js（连接和加密）、
-                    tabs.js（标签组范围）、debugger.js（调试器）、page-scripts.js、tools/（21 个工具）、badge.js（图标）
+                    tabs.js（标签组范围）、debugger.js（调试器）、page-scripts.js、tools/（22 个工具）、badge.js（图标）
   popup/ options/   弹窗、设置页；文字全在 shared/strings.js（中英）
   shared/           contract.js（后台和界面之间的约定）、pairing.js（连接码）、i18n、ui.css
   icons/            图标；源文件和生成脚本是 scripts/icons.mjs

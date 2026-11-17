@@ -1,10 +1,14 @@
 <!doctype html>
 <html><head><meta charset="utf-8"><title>Viewport fixture</title>
+<meta name="color-scheme" content="light dark">
 <style>
   html, body { margin: 0; }
   /* Blue when wide, red when the viewport is at most 600 px wide. */
   #bar { position: fixed; top: 0; left: 0; right: 0; height: 40px; background: rgb(0, 0, 255); }
   @media (max-width: 600px) { #bar { background: rgb(255, 0, 0); } }
+  /* Yellow with a light color scheme, green with a dark one. */
+  #tone { position: absolute; left: 20px; top: 220px; width: 200px; height: 40px; background: rgb(255, 200, 0); }
+  @media (prefers-color-scheme: dark) { #tone { background: rgb(0, 160, 0); } }
   #press { position: absolute; left: 20px; top: 100px; width: 120px; height: 40px; }
   #out { position: absolute; left: 20px; top: 160px; margin: 0; }
 </style></head>
@@ -12,6 +16,7 @@
 <div id="bar"></div>
 <button id="press" type="button">Press</button>
 <p id="out">Viewport fixture</p>
+<div id="tone"></div>
 <script>
   window.clicks = 0;
   document.getElementById('press').addEventListener('click', () => {

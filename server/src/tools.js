@@ -130,6 +130,18 @@ export const TOOLS = [
     annotations: ACT,
   },
   {
+    name: 'set_color_scheme',
+    title: 'Set color scheme',
+    description: 'Make a tab see a dark or light color scheme (the prefers-color-scheme media feature), e.g. to check a page\'s dark mode, without changing the browser\'s own setting. It does not operate a site\'s own theme switch or change a theme the site saved. "system" removes the override; it also ends when cctether detaches from the tab (5 min without tool calls, pause).',
+    inputSchema: {
+      type: 'object',
+      properties: { scheme: { type: 'string', enum: ['dark', 'light', 'system'] }, tab },
+      required: ['scheme'],
+      additionalProperties: false,
+    },
+    annotations: ACT,
+  },
+  {
     name: 'click',
     title: 'Click',
     description: 'Click an element (ref or selector) or a point (x, y) with real mouse events. Scrolls the element into view first.',

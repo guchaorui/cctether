@@ -86,7 +86,7 @@ test('cctether mcp starts the service, which serves MCP and admin commands', asy
   const init1 = await mcp.request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } });
   assert.equal(init1.result.serverInfo.name, 'cctether');
   const list = await mcp.request('tools/list', {});
-  assert.equal(list.result.tools.length, 21);
+  assert.equal(list.result.tools.length, 22);
 
   // Permissions: only this user can reach the control socket or read the key.
   assert.equal(statSync(home).mode & 0o777, 0o700);
@@ -143,12 +143,12 @@ test('cctether mcp survives a service restart', async (t) => {
   await cli(home, 'init', '--port', String(port));
   const mcp = mcpClient(home);
   t.after(async () => { mcp.close(); await cli(home, 'stop'); });
-  assert.equal((await mcp.request('tools/list', {})).result.tools.length, 21);
+  assert.equal((await mcp.request('tools/list', {})).result.tools.length, 22);
   await cli(home, 'stop');
   await sleep(300);
   // The shim notices, restarts the service and carries on.
   const again = await mcp.request('tools/list', {}, 15000);
-  assert.equal(again.result.tools.length, 21);
+  assert.equal(again.result.tools.length, 22);
   const st = JSON.parse((await cli(home, 'status', '--json')).stdout);
   assert.equal(st.running, true);
 });

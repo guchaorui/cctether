@@ -475,6 +475,7 @@ export function cctetherPageLib() {
       scrollX: window.scrollX, scrollY: window.scrollY,
       docW: Math.max(se.scrollWidth, document.documentElement.clientWidth),
       docH: Math.max(se.scrollHeight, document.documentElement.clientHeight),
+      dark: matchMedia('(prefers-color-scheme: dark)').matches,
     };
   }
 
