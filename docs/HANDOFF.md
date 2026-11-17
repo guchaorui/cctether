@@ -4,19 +4,20 @@
 
 ## 零、现在到哪了（先看这里）
 
-**两个阶段都做完了，项目已经公开发布，主人自己每天在用。** 主人 2026-11-09 说先做到这里。2026-11-17 主人提了「调窗口宽度」，已经做成第 21 个工具 `resize_viewport`；主人接着说「一起做了吧」，把切换深色/浅色也做了，是第 22 个工具 `set_color_scheme`。两个都在 `main` 上，是 0.4.0，测过、审过，**但还没发布，等主人说一声再发。** 除此之外没有做到一半的事。已知还没解决的问题只有一个：有界面模式下有一条测试偶尔失败，原因还没查清（见「坑」→「测试」）。
+**两个阶段都做完了，项目已经公开发布，主人自己每天在用。** 主人 2026-11-09 说先做到这里。2026-11-17 主人提了「调窗口宽度」，已经做成第 21 个工具 `resize_viewport`；主人接着说「一起做了吧」，把切换深色/浅色也做了，是第 22 个工具 `set_color_scheme`。两个都在 `main` 上，是 0.4.0，测过、审过，**2026-11-17 已经发布**（npm、GitHub Release、主人的服务器）。**只剩商店这一步：** 主人上传商店用的 zip，过审以后（上次大约一天）Mac 上的插件会自己更新，两个新工具才能用。除此之外没有做到一半的事。已知还没解决的问题只有一个：有界面模式下有一条测试偶尔失败，原因还没查清（见「坑」→「测试」）。
 
 | 在哪 | 版本 | 说明 |
 |---|---|---|
-| 仓库 `main` | 0.4.0 | 已公开（`guchaorui/cctether`）。加了 `resize_viewport` 和 `set_color_scheme`，还没发布 |
-| npm（`cctether`） | 0.3.3 | 2026-11-09 起由 GitHub Actions 可信发布，带来源证明。比 `main` 落后一版（0.4.0 还没发） |
-| GitHub Release | v0.3.3 | 附插件 zip、npm 包和校验和。比 `main` 落后一版 |
-| Chrome 应用商店 | 0.3.2 | 0.3.3 的插件代码没变，所以没提交；0.4.0 改了插件代码，发布时要提交。比 `main` 落后一版。[商店页面](https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib)，插件 ID `mbkadoolgknacadjkfjjajldmllbkdib` |
-| 主人的服务器 | 0.3.3 | 从 npm 装的，`cctether check` 全过（细节在 `CLAUDE.local.md`）。比 `main` 落后一版 |
-| 主人的 Mac | 商店版 0.3.2 | 连接正常，会自动更新。比 `main` 落后一版，要等 0.4.0 提交并过审 |
+| 仓库 `main` | 0.4.0 | 已公开（`guchaorui/cctether`），GitHub 上的测试全过。加了 `resize_viewport` 和 `set_color_scheme` |
+| npm（`cctether`） | 0.4.0 | 2026-11-09 起由 GitHub Actions 可信发布，带来源证明 |
+| GitHub Release | v0.4.0 | 附插件 zip、npm 包和校验和 |
+| Chrome 应用商店 | 0.3.2 | 0.3.3 的插件代码没变，所以没提交；0.4.0 改了插件代码，等主人上传 `-store.zip` 并过审。比 `main` 落后一版。[商店页面](https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib)，插件 ID `mbkadoolgknacadjkfjjajldmllbkdib` |
+| 主人的服务器 | 0.4.0 | 从 npm 装的，`cctether check` 全过（细节在 `CLAUDE.local.md`） |
+| 主人的 Mac | 商店版 0.3.2 | 连接正常，会自动更新。比 `main` 落后一版：商店过审前，两个新工具会回「请更新插件」，其他功能照常 |
 | 官网主页 | 已有卡片 | site-ops 做的。要改卡片交给 site-ops |
 
 - **测试**：服务端 78 个；端到端 72 个（71 个通过，1 个要有界面的 Chrome，GitHub 上会跳过）。
+- **过审以后**：要在主人的真 Mac 上试一遍两个新工具（清单在「开发机上测不了」那一节）。
 - **主人在真 Mac 上确认过的**：合盖再打开，连接很快恢复；常用快捷键都对（清单在 SPEC §13 v0.10）；商店版能连上服务端，整条链走通。
 - **外部反馈**：GitHub 上目前 0 个 star，没有 issue。还没有别人用过的反馈。
 
@@ -28,7 +29,7 @@
 
 **还等主人定的（都不急，主人不提就别催）：**
 
-- 发布 0.4.0（npm、Release、商店）：步骤在第三节，推标签就等于发布，所以要主人先说可以。这次插件代码改了，主人还要把新的 `-store.zip` 上传到商店。上传时可以顺手把商店后台「远程代码」理由里的一句话，换成 `store/listing.md` 里的新写法（那句话不再写「20 个工具」），不换也行。主人的 Mac 收到插件 0.4.0 之前，0.4.0 的服务端遇到 `resize_viewport` 会回一句明确的话：插件比服务端旧，请用户更新插件。
+- 把 0.4.0 提交到 Chrome 应用商店：到 v0.4.0 的 Release 页面下载 `cctether-extension-0.4.0-store.zip`，在开发者信息中心上传并提请审核（步骤在 `store/README.zh-CN.md` 最后一节）。上传时可以顺手把后台「远程代码」理由里的一句话换成 `store/listing.md` 里的新写法（不再写「20 个工具」），不换也行。
 - 中英文介绍：Claude 写过草稿给主人，发不发、发到哪由主人定。Claude 不代发。
 
 ## 一、新窗口怎么接手
@@ -121,7 +122,7 @@
 
 **测试：**
 
-- 有界面模式（`CCTETHER_HEADED=1`）下，「a dialog that was already open before cctether attached」这条测试在开发机上有时失败（2026-11-17 发现：在没改动的 0.3.3 代码上单独跑，5 次里 5 次失败）。它失败时会留下一个标签页，让后面的「tabs.js: shareTab / unshareTab …」那条也跟着失败。不是 `resize_viewport` 造成的。无界面跑和 GitHub 上的测试不受影响。原因还没查出来：Chrome for Testing 的版本从 2026-11-05 起没变过。
+- 有界面模式（`CCTETHER_HEADED=1`）下，「a dialog that was already open before cctether attached」这条测试在开发机上有时失败（2026-11-17 发现：在没改动的 0.3.3 代码上单独跑，5 次里 5 次失败）。它失败时会留下一个标签页，让后面的「tabs.js: shareTab / unshareTab …」那条也跟着失败。不是这次加的两个工具造成的。无界面跑和 GitHub 上的测试不受影响。原因还没查出来：Chrome for Testing 的版本从 2026-11-05 起没变过。
 - `node --test` 要写成通配（`test/*.test.js`），只给目录在 Node 24 上会报错。
 - 让开发版插件自己 `chrome.runtime.reload()`，在测试环境里会把插件弄成停用，不可靠（SPEC §11 第 2 条）。
 - 测试里插件刚装好会自动打开设置页，有时会占掉初始的空白标签页。测试要用的页面一律自己 `Target.createTarget` 新开。
