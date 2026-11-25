@@ -42,6 +42,20 @@ export function createMcpSession({ write, browser, version, log = () => {}, unav
       + 'If the Chrome Web Store does not have the new version yet, this tool can\'t be used for now.';
   }
 
+  /** The connected extension's version, if it is older than this server; else null. */
+  function olderExtension() {
+    const ext = browser?.status?.()?.info?.extension;
+    return typeof ext === 'string' && compareVersions(ext, version) < 0 ? ext : null;
+  }
+
+  // An older extension rejects an argument or value it doesn't know with bad_args: say why.
+  function withVersionNote(message) {
+    const ext = olderExtension();
+    if (!ext) return message;
+    return `${message}\n(The connected cctether browser extension is version ${ext}, older than this server, ${version}: this argument or value may be newer than the extension. `
+      + 'Ask the user to update the extension; until then, use the arguments the error says it accepts.)';
+  }
+
   async function callTool(params) {
     const name = params?.name;
     const tool = TOOLS.find((t) => t.name === name);
@@ -50,9 +64,17 @@ export function createMcpSession({ write, browser, version, log = () => {}, unav
     const invalid = validate(tool.inputSchema, args);
     if (invalid) return { result: errorResult(`Invalid arguments: ${invalid}.`) };
     if (unavailable) return { result: errorResult(unavailable) };
+    // Calls an older extension accepts but answers differently, without an error (SPEC §5.2).
+    const needs = minExtensionFor(name, args);
+    const ext = browser?.status?.()?.info?.extension;
+    if (needs && typeof ext === 'string' && compareVersions(ext, needs.version) < 0) {
+      return { result: errorResult(`${needs.what} needs the cctether browser extension ${needs.version} or newer; the connected one is ${ext} (this server is ${version}). `
+        + `Ask the user to update the extension. Until then: ${needs.instead}`) };
+    }
     try {
       const r = await browser.call(name, args, toolTimeoutMs(name, args));
       if (!r.ok && isUnknownToolAnswer(r.error)) return { result: errorResult(outdatedExtension(name)) };
+      if (!r.ok && r.error?.code === 'bad_args') return { result: errorResult(withVersionNote(r.error.message)) };
       if (!r.ok) return { result: errorResult(r.error.message) };
       return { result: { content: sanitizeContent(r.data?.content) } };
     } catch (e) {
@@ -117,6 +139,32 @@ export function createMcpSession({ write, browser, version, log = () => {}, unav
 
 function errorResult(text) {
   return { content: [{ type: 'text', text }], isError: true };
+}
+
+/** Compare dotted version numbers: < 0 if a is older than b. Non-numeric parts count as 0. */
+export function compareVersions(a, b) {
+  const pa = String(a).split('.').map((x) => parseInt(x, 10) || 0);
+  const pb = String(b).split('.').map((x) => parseInt(x, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d) return d;
+  }
+  return 0;
+}
+
+/**
+ * The extension version a call needs when an older extension would accept it but quietly do
+ * something else; else null. (Unknown arguments are no problem: older extensions reject them.)
+ */
+export function minExtensionFor(name, args) {
+  if (name === 'screenshot' && args.full_page === true && (args.ref != null || args.selector != null)) {
+    return {
+      version: '0.5.0',
+      what: 'A screenshot of an element\'s whole scrollable content (full_page with ref or selector)',
+      instead: 'screenshot the element without full_page, and scroll it with scroll to see the rest.',
+    };
+  }
+  return null;
 }
 
 /** What an extension answers for a tool it doesn't have (extension/background/app.js onCall). */

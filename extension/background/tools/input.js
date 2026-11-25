@@ -2,10 +2,11 @@
 // Input goes through CDP Input.* so the page sees real (trusted) events.
 
 import { ToolError } from './errors.js';
-import { q, untrusted } from './util.js';
+import { q, untrusted, sleep } from './util.js';
 import { isShared } from '../tabs.js';
 import { dialogError, describeDialog, dialogHint } from '../debugger.js';
 import { tabSummary, isMac } from './browser.js';
+import { shotPoint } from './page.js';
 
 const text = (t) => ({ type: 'text', text: t });
 const bad = (m) => new ToolError('bad_args', m);
@@ -22,27 +23,60 @@ function modifierBits(list) {
   return bits;
 }
 
-async function mouseClick(s, x, y, { button = 'left', clickCount = 1, modifiers = 0 } = {}) {
-  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, modifiers, button: 'none' });
+async function mouseClick(s, x, y, { button = 'left', clickCount = 1, modifiers = 0, move = true } = {}) {
+  if (move) await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, modifiers, button: 'none' });
   for (let i = 1; i <= clickCount; i++) {
     await s.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, modifiers, button, buttons: BUTTON_BITS[button], clickCount: i });
     await s.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, modifiers, button, buttons: 0, clickCount: i });
   }
 }
 
-/** Resolve ref / selector / (x, y) to a viewport point. */
-async function targetPoint(s, args) {
-  const hasEl = args.ref != null || args.selector != null;
-  const hasXY = args.x != null || args.y != null;
-  if (args.ref != null && args.selector != null) throw bad('Pass `ref` or `selector`, not both.');
-  if (hasEl && hasXY) throw bad('Pass either an element (`ref` or `selector`) or a point (`x` and `y`), not both.');
+/** Check how an element was named: ref alone, or selector and/or text. */
+function checkElementArgs(args) {
+  if (args.ref != null && (args.selector != null || args.text != null)) throw bad('Pass `ref` alone, or `selector` and/or `text`, not both kinds.');
+}
+
+/**
+ * The viewport point for a point argument: x, y in viewport CSS px, or with `screenshot`, a point
+ * on that screenshot. Returns { x, y, from } (from: how the point was given, for the result).
+ */
+async function pointArg(s, tabId, args) {
+  if (args.x == null || args.y == null) throw bad(args.screenshot != null ? 'Pass `x` and `y` (a point on the screenshot) with `screenshot`.' : 'Pass both `x` and `y`.');
+  if (args.screenshot == null) return { x: args.x, y: args.y, from: '' };
+  const p = await shotPoint(s, tabId, args.screenshot, args.x, args.y);
+  return { x: p.x, y: p.y, from: ` (point (${r0(args.x)}, ${r0(args.y)}) of screenshot ${args.screenshot}${p.note})` };
+}
+
+/** Resolve ref / selector / text / (x, y) to a viewport point. */
+async function targetPoint(s, tabId, args) {
+  const hasEl = args.ref != null || args.selector != null || args.text != null;
+  const hasXY = args.x != null || args.y != null || args.screenshot != null;
+  checkElementArgs(args);
+  if (hasEl && hasXY) throw bad('Pass either an element (`ref`, `selector`, `text`) or a point (`x` and `y`), not both.');
   if (hasXY) {
-    if (args.x == null || args.y == null) throw bad('Pass both `x` and `y`.');
-    const r = await s.lib('at', [{ x: args.x, y: args.y }]);
-    return { x: args.x, y: args.y, desc: r.desc, point: true, covered: null };
+    const p = await pointArg(s, tabId, args);
+    const r = await s.lib('at', [{ x: p.x, y: p.y }]);
+    return { x: p.x, y: p.y, desc: r.desc, point: true, covered: null, from: p.from };
   }
-  if (!hasEl) throw bad('Pass `ref` or `selector` (or `x` and `y`) to say where.');
-  return s.lib('point', [{ ref: args.ref, selector: args.selector }]);
+  if (!hasEl) throw bad('Pass `ref`, `selector` or `text` (or `x` and `y`) to say where.');
+  return s.lib('point', [{ ref: args.ref, selector: args.selector, text: args.text }]);
+}
+
+/**
+ * Move the mouse onto an element found earlier (point p from the page library), then check that
+ * the same element is still there, uncovered, at the same place: hover effects can open a menu
+ * over it or move it. Returns the rechecked point (press there, without moving again), or
+ * { dialog } if the move opened a JS dialog. Throws if something changed.
+ */
+async function moveAndRecheck(s, p, what, modifiers = 0) {
+  const moved = await s.raceDialog(s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: p.x, y: p.y, modifiers, button: 'none' }));
+  if (moved.dialog) return { dialog: moved.dialog };
+  const p2 = await s.lib('point', [{ ref: p.ref, doc: p.doc }]);
+  const why = p2.covered ? `${p2.covered} came on top of it`
+    : p2.desc !== p.desc ? `it changed (now ${p2.desc})`
+      : Math.abs(p2.x - p.x) > 2 || Math.abs(p2.y - p.y) > 2 ? 'it moved' : null;
+  if (why) throw new ToolError('no_element', `Did not click ${what}: ${why} when the mouse went over it. Take a screenshot and check before trying again.`);
+  return p2;
 }
 
 /** Record tabs created while an action runs (target=_blank links, window.open). */
@@ -102,22 +136,35 @@ function dialogNote(_tabId, d) {
 // ---- click / hover -----------------------------------------------------------------------------
 
 export async function click({ tab, s }, args) {
-  const p = await targetPoint(s, args);
+  const p = await targetPoint(s, tab.id, args);
+  // Found by its text, the element must also be what gets the click (refuse rather than click
+  // whatever covers it), also after the mouse moved onto it. By ref or selector the click goes
+  // ahead and the result says what got it.
+  let at = p;
+  const modifiers = modifierBits(args.modifiers);
+  if (args.text != null) {
+    if (p.covered) {
+      throw new ToolError('no_element', `Did not click: ${p.covered} is on top of ${p.desc} at that point, so it would get the click. `
+        + 'Close or move what covers it first, or pass the ref if you do mean to click there.');
+    }
+    const r = await moveAndRecheck(s, p, p.desc, modifiers);
+    if (r.dialog) return { content: [text(`Moved the mouse onto ${p.desc}. ${dialogNote(tab.id, r.dialog)}`)] };
+    at = r;
+  }
   const button = args.button ?? 'left';
   const clickCount = args.click_count ?? 1;
-  const modifiers = modifierBits(args.modifiers);
   const before = (await tabSummary(tab.id)).url;
   const w = s.navWatch();
   const newTabs = watchNewTabs(tab.id);
   try {
-    const r = await s.raceDialog(mouseClick(s, p.x, p.y, { button, clickCount, modifiers }));
+    const r = await s.raceDialog(mouseClick(s, at.x, at.y, { button, clickCount, modifiers, move: at === p }));
     const how = [
       clickCount === 2 ? 'Double-clicked' : clickCount === 3 ? 'Triple-clicked' : button === 'right' ? 'Right-clicked' : button === 'middle' ? 'Middle-clicked' : 'Clicked',
     ];
     if (clickCount > 1 && button !== 'left') how.push(`(${button} button)`);
     const mods = args.modifiers?.length ? ` with ${args.modifiers.join('+')}` : '';
     const lines = [p.point
-      ? `${how.join(' ')} at (${r0(p.x)}, ${r0(p.y)})${mods}, on ${p.desc}.`
+      ? `${how.join(' ')} at (${r0(p.x)}, ${r0(p.y)})${p.from}${mods}, on ${p.desc}.`
       : `${how.join(' ')} ${p.desc} at (${r0(p.x)}, ${r0(p.y)})${mods}.`];
     if (p.covered) lines.push(`Note: ${p.covered} was on top of it at that point, so that element got the click.`);
     if (r.dialog) {
@@ -134,10 +181,10 @@ export async function click({ tab, s }, args) {
   }
 }
 
-export async function hover({ s }, args) {
-  const p = await targetPoint(s, args);
+export async function hover({ tab, s }, args) {
+  const p = await targetPoint(s, tab.id, args);
   const r = await s.raceDialog(s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: p.x, y: p.y, button: 'none', modifiers: 0 }));
-  const lines = [p.point ? `Moved the mouse to (${r0(p.x)}, ${r0(p.y)}), over ${p.desc}.` : `Moved the mouse over ${p.desc} at (${r0(p.x)}, ${r0(p.y)}).`];
+  const lines = [p.point ? `Moved the mouse to (${r0(p.x)}, ${r0(p.y)})${p.from}, over ${p.desc}.` : `Moved the mouse over ${p.desc} at (${r0(p.x)}, ${r0(p.y)}).`];
   if (p.covered) lines.push(`Note: ${p.covered} is on top of it at that point.`);
   if (r.dialog) lines.push(dialogNote(s.tabId, r.dialog));
   return { content: [text(lines.join(' '))] };
@@ -418,12 +465,12 @@ function scrollSummary(st) {
 const sameScroll = (a, b) => a.page.x === b.page.x && a.page.y === b.page.y
   && (a.inner?.top ?? 0) === (b.inner?.top ?? 0) && (a.inner?.left ?? 0) === (b.inner?.left ?? 0);
 
-export async function scroll({ s }, args) {
-  const hasEl = args.ref != null || args.selector != null;
-  if (args.ref != null && args.selector != null) throw bad('Pass `ref` or `selector`, not both.');
-  if (hasEl && (args.x != null || args.y != null)) throw bad('Pass either an element (`ref`/`selector`) or a point (`x`, `y`), not both.');
+export async function scroll({ tab, s }, args) {
+  const hasEl = args.ref != null || args.selector != null || args.text != null;
+  checkElementArgs(args);
+  if (hasEl && (args.x != null || args.y != null || args.screenshot != null)) throw bad('Pass either an element (`ref`, `selector`, `text`) or a point (`x`, `y`), not both.');
   if (hasEl && args.direction == null) {
-    const r = await s.lib('scrollTo', [{ ref: args.ref, selector: args.selector }]);
+    const r = await s.lib('scrollTo', [{ ref: args.ref, selector: args.selector, text: args.text }]);
     const st = await s.lib('scrollState', [{}]);
     return { content: [text(`Scrolled ${r.desc} into view; its centre is now at (${r.x}, ${r.y}). ${scrollSummary(st)}`)] };
   }
@@ -431,12 +478,11 @@ export async function scroll({ s }, args) {
   let x;
   let y;
   if (hasEl) {
-    const p = await s.lib('point', [{ ref: args.ref, selector: args.selector }]);
+    const p = await s.lib('point', [{ ref: args.ref, selector: args.selector, text: args.text }]);
     ({ x, y } = p);
-  } else if (args.x != null || args.y != null) {
-    if (args.x == null || args.y == null) throw bad('Pass both `x` and `y`.');
-    await s.lib('at', [{ x: args.x, y: args.y }]); // validates the point
-    ({ x, y } = args);
+  } else if (args.x != null || args.y != null || args.screenshot != null) {
+    ({ x, y } = await pointArg(s, tab.id, args));
+    await s.lib('at', [{ x, y }]); // validates the point
   } else {
     const m = await s.lib('metrics');
     x = Math.floor(m.vw / 2);
@@ -478,10 +524,12 @@ export async function scroll({ s }, args) {
 
 // ---- select_option -----------------------------------------------------------------------------
 
-export async function selectOption({ s }, args) {
+export async function selectOption({ tab, s }, args) {
   if (args.ref != null && args.selector != null) throw bad('Pass `ref` or `selector`, not both.');
-  if (args.ref == null && args.selector == null) throw bad('Pass `ref` or `selector` for the <select>.');
+  if (args.ref == null && args.selector == null) throw bad('Pass `ref` or `selector` for the dropdown.');
   const values = Array.isArray(args.value) ? args.value : [args.value];
+  const t = await s.lib('ddTarget', [{ ref: args.ref, selector: args.selector }]);
+  if (!t.native) return customSelect(tab, s, t, values);
   const r = await s.lib('selectOption', [{ ref: args.ref, selector: args.selector, values }]);
   if (!r.matched) {
     const list = r.options.map((o) => `value=${JSON.stringify(o.value)} label=${JSON.stringify(o.label)}${o.disabled ? ' (disabled)' : ''}`).join('\n');
@@ -491,4 +539,104 @@ export async function selectOption({ s }, args) {
   if (r.unmatched.length) lines.push(`Not found (by value or label): ${r.unmatched.map((v) => q(v)).join(', ')}.`);
   if (!r.multiple && values.length > 1) lines.push('It is a single-choice <select>, so only the first match was used.');
   return { content: [text(lines.join(' '))] };
+}
+
+const OPEN_WAIT_MS = 2000;
+const norm = (v) => String(v ?? '').replace(/\s+/g, ' ').trim();
+
+const optionLine = (o) => `[${o.ref}] option ${JSON.stringify(o.label)}${o.value != null && o.value !== o.label ? ` value=${JSON.stringify(o.value)}` : ''}${o.selected ? ' selected' : ''}${o.disabled ? ' disabled' : ''}`;
+
+function optionList(options, max = 30) {
+  const lines = options.slice(0, max).map(optionLine);
+  if (options.length > max) lines.push(`… and ${options.length - max} more`);
+  return untrusted(lines.join('\n') || '(none)');
+}
+
+/**
+ * select_option on an element that declares it is a dropdown (SPEC §5.2): open it with a real
+ * click if needed, find the option in the list it names (aria-controls / aria-owns) or holds, and
+ * click that option with a real click. Never guesses which list belongs to it.
+ */
+async function customSelect(tab, s, t, values) {
+  if (values.length !== 1) throw bad(`${t.desc} is a custom dropdown: pass one value per call.`);
+  const value = values[0];
+  let opened = false;
+  if (!t.list && !t.expanded) {
+    const p = await s.lib('point', [{ ref: t.ref, doc: t.doc }]);
+    if (p.covered) throw new ToolError('no_element', `Did not open ${t.desc}: ${p.covered} is on top of it. Close what covers it first.`);
+    const r = await s.raceDialog(mouseClick(s, p.x, p.y));
+    if (r.dialog) return { content: [text(`Clicked ${t.desc} to open it. ${dialogNote(tab.id, r.dialog)}`)] };
+    opened = true;
+  }
+  // The list may be rendered a moment later, and many widgets name it only once it is open.
+  let list;
+  const deadline = Date.now() + (opened ? OPEN_WAIT_MS : 0);
+  for (;;) {
+    list = await s.lib('ddOptions', [{ ref: t.ref, doc: t.doc }]);
+    if (list.total || Date.now() >= deadline) break;
+    await sleep(100);
+  }
+  const did = opened ? `Opened ${t.desc}` : `${t.desc[0].toUpperCase()}${t.desc.slice(1)} is open`;
+  if (!list.total) {
+    const vis = await s.lib('visibleOptions', [{ limit: 30 }]);
+    const why = list.named
+      ? 'the list it names (aria-controls / aria-owns) has no visible options (some widgets render options elsewhere, or only a few at a time)'
+      : 'it does not say which list belongs to it (no aria-controls or aria-owns, and no options inside it)';
+    throw new ToolError('not_found', `${did}, but ${why}, so cctether did not pick an option. It is left open. `
+      + (vis.total
+        ? `Options visible on the page now${vis.total > vis.lines.length ? ` (first ${vis.lines.length} of ${vis.total})` : ''}; click the right one with click and its ref:\n${untrusted(vis.lines.join('\n'))}`
+        : 'No option-like elements are visible on the page: take a screenshot, then click the option with click and text.'));
+  }
+  const m = await s.lib('ddPick', [{ ref: t.ref, doc: t.doc, value }]);
+  if (!m.option) {
+    const more = (shown, total) => (total > shown ? `\n… and ${total - shown} more` : '');
+    throw new ToolError('not_found', m.many
+      ? `${m.count} options of ${t.desc} ${m.how} (${q(value)}), so cctether did not pick one; click the right one with click and its ref. ${opened ? 'It is left open. ' : ''}Matching options:\n${optionList(m.many)}${more(m.many.length, m.count)}`
+      : `No option of ${t.desc} matches ${q(value)} (by value or label). ${opened ? 'It is left open. ' : ''}Options${m.total > m.options.length ? ` (first ${m.options.length} of ${m.total})` : ''}:\n${optionList(m.options)}`);
+  }
+  const o = m.option;
+  if (o.disabled) throw new ToolError('not_found', `The option ${q(o.label)} of ${t.desc} is disabled.`);
+  if (o.selected && m.multi) {
+    return { content: [text(`${q(o.label)} is already selected in ${t.desc} (clicking it again would deselect it), so nothing was clicked.`)] };
+  }
+  // Scroll the option into view (also inside the list), move the mouse onto it, and check again
+  // that it is the option that is there (hover effects can move or cover things) before pressing.
+  const p = await s.lib('point', [{ ref: o.ref, doc: t.doc }]);
+  if (p.covered) throw new ToolError('no_element', `Did not click the option ${q(o.label)}: ${p.covered} is on top of it.`);
+  const p2 = await moveAndRecheck(s, p, `the option ${q(o.label)}`);
+  if (p2.dialog) return { content: [text(`Moved the mouse onto the option ${q(o.label)} of ${t.desc}. ${dialogNote(tab.id, p2.dialog)}`)] };
+  const before = (await tabSummary(tab.id)).url; // before the last check: nothing may come between it and the press
+  // Last check, in one go right before pressing: the value still picks this same option, it is
+  // still not selected if selecting again would deselect it, and it is on top at that point.
+  const fin = await s.lib('ddFinal', [{ ref: t.ref, doc: t.doc, value, opt: o, x: p2.x, y: p2.y }]);
+  if (!fin.same) {
+    throw new ToolError('no_element', `Did not click the option ${q(o.label)}: the list changed when the mouse went over it${fin.now ? ` (the value now picks ${q(fin.now.label)}${fin.now.disabled ? ', disabled' : ''})` : ''}. Take a screenshot and check before trying again.`);
+  }
+  if (fin.multi && fin.selected) {
+    return { content: [text(`${q(o.label)} became selected in ${t.desc} when the mouse went over it (clicking it would deselect it), so nothing was clicked.`)] };
+  }
+  if (!fin.onTop) throw new ToolError('no_element', `Did not click the option ${q(o.label)}: ${fin.hit} is on top of it now.`);
+  const w = s.navWatch();
+  try {
+    const r = await s.raceDialog(mouseClick(s, p2.x, p2.y, { move: false }));
+    const head = `${opened ? `Opened ${t.desc} and clicked` : 'Clicked'} its option ${q(o.label)}.`;
+    if (r.dialog) return { content: [text(`${head} ${dialogNote(tab.id, r.dialog)}`)] };
+    const note = await settle(s, w, tab.id, before, { startMs: 150 });
+    if (note) return { content: [text(`${head} ${note}`)] };
+    // Read back what the dropdown shows, so a retry doesn't click again blindly.
+    let now = null;
+    const until = Date.now() + 1000;
+    for (;;) {
+      try { now = await s.lib('ddShown', [{ ref: t.ref, doc: t.doc }], { timeoutMs: 2000 }); } catch { now = null; }
+      if (!now || now.gone || norm(now.shown).toLowerCase().includes(o.label.toLowerCase()) || Date.now() >= until) break;
+      await sleep(100);
+    }
+    let after;
+    if (!now) after = 'Could not read what the dropdown shows now; check with a screenshot before trying again.';
+    else if (now.gone) after = 'The dropdown is no longer on the page; check with a screenshot before trying again.';
+    else after = `It now shows ${q(now.shown, 200)}${now.expanded ? ' and is still open' : ''}.`;
+    return { content: [text(`${head} ${after}`)] };
+  } finally {
+    w.stop();
+  }
 }

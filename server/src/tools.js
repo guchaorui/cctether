@@ -6,8 +6,10 @@ const tab = { type: 'integer', description: 'Tab id from list_tabs. Default: the
 const ref = { type: 'integer', minimum: 1, description: 'Element number from read_page (interactive mode) or find. Invalid after navigation.' };
 const selector = { type: 'string', minLength: 1, maxLength: 2000, description: 'CSS selector (the first visible match, else the first match).' };
 const selectorFirst = { type: 'string', minLength: 1, maxLength: 2000, description: 'CSS selector (the first match, visible or not).' };
-const x = { type: 'number', description: 'Viewport x in CSS pixels (= screenshot pixels unless the screenshot was scaled).' };
-const y = { type: 'number', description: 'Viewport y in CSS pixels.' };
+const x = { type: 'number', description: 'Viewport x in CSS pixels, or with screenshot: x on that image.' };
+const y = { type: 'number', description: 'Viewport y in CSS pixels, or with screenshot: y on that image.' };
+const text = { type: 'string', minLength: 1, maxLength: 1000, description: 'Visible text or aria-label of the element (within selector, if given). Acts only on one exact match, else lists candidates.' };
+const shot = { type: 'integer', minimum: 1, description: 'A screenshot number: x, y are then a point on that image.' };
 const timeout = (def, max) => ({ type: 'integer', minimum: 100, maximum: max, description: `Milliseconds, default ${def}.` });
 
 const READ = { readOnlyHint: true, destructiveHint: false, openWorldHint: true };
@@ -48,7 +50,7 @@ export const TOOLS = [
   {
     name: 'navigate',
     title: 'Navigate',
-    description: 'Load a URL in a tab, or go back / forward / reload. Waits for the page to load.',
+    description: 'Load a URL in a tab, or go back / forward / reload. Waits for the page to load, then for wait_for if given.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -56,6 +58,12 @@ export const TOOLS = [
         action: { type: 'string', enum: ['back', 'forward', 'reload'], description: 'Instead of url.' },
         tab,
         timeout_ms: timeout(30000, 120000),
+        wait_for: {
+          type: 'object',
+          properties: { text: { type: 'string', minLength: 1, maxLength: 1000 }, selector },
+          additionalProperties: false,
+          description: 'Then wait (within timeout_ms) for this, as wait_for does, e.g. for content an app renders after loading.',
+        },
       },
       additionalProperties: false,
     },
@@ -82,15 +90,15 @@ export const TOOLS = [
   {
     name: 'find',
     title: 'Find elements',
-    description: 'Find elements by CSS selector. Returns count, and for each: ref number, tag, text, key attributes, position, visibility.',
+    description: 'Find elements by CSS selector and/or visible text. Returns count, and for each: ref number, tag, text, key attributes, position, visibility.',
     inputSchema: {
       type: 'object',
       properties: {
         selector,
+        text: { ...text, description: 'Visible text or aria-label (within selector, if given): exact matches first, then ones containing it.' },
         limit: { type: 'integer', minimum: 1, maximum: 200, description: 'Default 20.' },
         tab,
       },
-      required: ['selector'],
       additionalProperties: false,
     },
     annotations: READ,
@@ -98,11 +106,11 @@ export const TOOLS = [
   {
     name: 'screenshot',
     title: 'Screenshot',
-    description: 'Screenshot the visible area (default), the full page, or one element (ref or selector).',
+    description: 'Screenshot the visible area (default), the full page, or one element (ref or selector). Each screenshot has a number for click/hover/scroll.',
     inputSchema: {
       type: 'object',
       properties: {
-        full_page: { type: 'boolean' },
+        full_page: { type: 'boolean', description: 'With ref/selector: the whole scrollable content of that element (e.g. an app\'s content pane).' },
         ref,
         selector,
         format: { type: 'string', enum: ['jpeg', 'png'], description: 'Default jpeg.' },
@@ -112,6 +120,7 @@ export const TOOLS = [
       additionalProperties: false,
     },
     annotations: READ,
+    timeoutMs: (a) => (a.full_page && (a.ref != null || a.selector != null) ? 90000 : DEFAULT_TIMEOUT_MS),
   },
   {
     name: 'resize_viewport',
@@ -144,11 +153,11 @@ export const TOOLS = [
   {
     name: 'click',
     title: 'Click',
-    description: 'Click an element (ref or selector) or a point (x, y) with real mouse events. Scrolls the element into view first.',
+    description: 'Click an element (ref, selector and/or text) or a point (x, y; with screenshot, a point on that image) with real mouse events. Scrolls the element into view first.',
     inputSchema: {
       type: 'object',
       properties: {
-        ref, selector, x, y,
+        ref, selector, text, x, y, screenshot: shot,
         button: { type: 'string', enum: ['left', 'right', 'middle'] },
         click_count: { type: 'integer', minimum: 1, maximum: 3, description: '2 = double click.' },
         modifiers: { type: 'array', items: { type: 'string', enum: ['Alt', 'Control', 'Meta', 'Shift'] }, maxItems: 4 },
@@ -195,14 +204,14 @@ export const TOOLS = [
   {
     name: 'scroll',
     title: 'Scroll',
-    description: 'Scroll an element into view (ref or selector), or scroll the page — or the scrollable element under (x, y) — in a direction.',
+    description: 'Scroll an element into view (ref, selector and/or text), or scroll the page — or the scrollable element under (x, y) — in a direction.',
     inputSchema: {
       type: 'object',
       properties: {
-        ref, selector,
+        ref, selector, text,
         direction: { type: 'string', enum: ['up', 'down', 'left', 'right'] },
         amount: { type: 'integer', minimum: 1, maximum: 100000, description: 'Pixels, default 80% of the viewport.' },
-        x, y,
+        x, y, screenshot: shot,
         tab,
       },
       additionalProperties: false,
@@ -212,14 +221,14 @@ export const TOOLS = [
   {
     name: 'hover',
     title: 'Hover',
-    description: 'Move the mouse over an element (ref or selector) or a point (x, y).',
-    inputSchema: { type: 'object', properties: { ref, selector, x, y, tab }, additionalProperties: false },
+    description: 'Move the mouse over an element (ref, selector and/or text) or a point (x, y).',
+    inputSchema: { type: 'object', properties: { ref, selector, text, x, y, screenshot: shot, tab }, additionalProperties: false },
     annotations: ACT,
   },
   {
     name: 'select_option',
     title: 'Select option',
-    description: 'Choose option(s) in a <select>, matching each value against option value, then visible label.',
+    description: 'Choose option(s) in a <select>, matching each value against option value, then label. Also a custom dropdown that declares itself (role combobox or listbox): opens it and clicks the matching option (one value).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -235,14 +244,14 @@ export const TOOLS = [
   {
     name: 'wait_for',
     title: 'Wait for',
-    description: 'Wait until text appears on the page, or an element matching selector appears (with gone: true, until it disappears).',
+    description: 'Wait until text appears on the page, or an element matching selector, or text inside such an element (selector + text). gone: true waits until it is not there. Says if it was there from the start.',
     inputSchema: {
       type: 'object',
       properties: {
         text: { type: 'string', minLength: 1, maxLength: 1000 },
         selector,
         gone: { type: 'boolean' },
-        timeout_ms: timeout(10000, 120000),
+        timeout_ms: timeout(10000, 600000),
         tab,
       },
       additionalProperties: false,
@@ -253,7 +262,7 @@ export const TOOLS = [
   {
     name: 'evaluate',
     title: 'Run JavaScript',
-    description: 'Run JavaScript in the page and return the result as JSON. Works like the DevTools console: the value of the last expression is returned, top-level await is allowed. world "page" (default) shares globals with the page; "isolated" sees only the DOM.',
+    description: 'Run JavaScript in the page and return the result as JSON. Works like the DevTools console: the value of the last expression is returned (a Promise is awaited), top-level await is allowed. world "page" (default) shares globals with the page; "isolated" sees only the DOM.',
     inputSchema: {
       type: 'object',
       properties: {

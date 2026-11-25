@@ -14,7 +14,7 @@
   - 全程走用户自己的连接，不经过 Anthropic 的中转服务器。
 - 起因：官方 Claude in Chrome 插件要经过 Anthropic 中转。主人的 Mac 有时连不上 Claude，这条链就断了。
 - 要开源（MIT），给有同样需求的人用。所以不能写死主人的环境，界面和 README 都要中英双语。
-- **当前：第二阶段全部做完，已公开发布（npm、GitHub、Chrome 应用商店）。版本 0.4.0（SPEC §13 v0.13、v0.14，加了 `resize_viewport` 和 `set_color_scheme`），2026-11-17 已发到 npm 和 GitHub，2026-11-18 商店版也过审，主人的 Mac 已自动更新，两个新工具在真 Mac 上试过。主人 2026-11-09 说先做到这里。新对话从 `docs/HANDOFF.md` 第零节开始，后续优化的候选清单在第二节。**
+- **当前：第二阶段全部做完，已公开发布（npm、GitHub、Chrome 应用商店），发布的是 0.4.0。`main` 上是 0.5.0（SPEC §13 v0.15，按另一个 Claude 的使用反馈改了六处：按文字点击、自定义下拉框、截图编号、等待、evaluate 等 Promise、滚动区域截全），2026-11-25 做完，还没发布，等主人定。新对话从 `docs/HANDOFF.md` 第零节开始，后续优化的候选清单在第二节。**
 
 ## 仓库结构
 
@@ -43,7 +43,7 @@ README.md / README.zh-CN.md / SECURITY.md / PRIVACY.md   给用户看的说明�
 ## 命令
 
 - 服务端单元测试：`cd server && npm test`（约 15 秒）
-- 端到端测试：`node --test test/e2e/*.test.mjs`（约 40 秒，用 `~/.cache/ms-playwright` 里的 Chrome for Testing，或设 `CHROME_PATH`）
+- 端到端测试：`node --test test/e2e/*.test.mjs`（约 75 秒，用 `~/.cache/ms-playwright` 里的 Chrome for Testing，或设 `CHROME_PATH`）
   - 有界面跑（多测 1 项弹框）：先 `Xvfb :97 -screen 0 1280x900x24 -nolisten tcp &`，再 `CCTETHER_HEADED=1 DISPLAY=:97 node --test test/e2e/tools.test.mjs`
 - 界面截图：`node scripts/screenshots.mjs [过滤词]`（全量约 2.5 分钟），看 `screenshots/sheet-*.png`
 - 重新生成图标：`node scripts/icons.mjs`

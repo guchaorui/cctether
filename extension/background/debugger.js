@@ -10,7 +10,7 @@
 // service worker was recycled.
 
 import { ToolError } from './tools/errors.js';
-import { withTimeout, sleep, q } from './tools/util.js';
+import { withTimeout, sleep, q, untrusted } from './tools/util.js';
 import { formatConsoleArgs, consoleLevel, exceptionToText, location } from './tools/format.js';
 import { isShared, restrictedMessage } from './tabs.js';
 import { LIB_CALL } from './page-scripts.js';
@@ -176,6 +176,10 @@ class TabSession {
     this.emulationQueue = Promise.resolve();
     /** Screenshot captures in progress (tools/page.js capture()), which rely on a screencast. */
     this.capturing = 0;
+    /** False until attach() has checked the tab is still shared and enabled the CDP domains. */
+    this.ready = false;
+    /** Recent screenshots by number, to turn image points into viewport points (tools/page.js). */
+    this.shots = new Map();
     this.newDialogSignal();
   }
 
@@ -242,7 +246,7 @@ class TabSession {
 
   /** Track main-frame navigation from now on. */
   navWatch() {
-    const st = { requested: false, committed: false, loaded: false, sameDoc: false, stopped: false, status: null, bfcache: false, windowOpens: [] };
+    const st = { requested: false, committed: false, commits: 0, loaded: false, sameDoc: false, stopped: false, status: null, bfcache: false, windowOpens: [] };
     let notify = null;
     const off = this.on((m, p) => {
       switch (m) {
@@ -255,6 +259,7 @@ class TabSession {
         case 'Page.frameNavigated':
           if (!p.frame.parentId) {
             st.requested = st.committed = true;
+            st.commits++;
             if (p.type === 'BackForwardCacheRestore') st.loaded = st.bfcache = true;
           }
           break;
@@ -338,7 +343,10 @@ class TabSession {
           throw new ToolError('internal', `cctether's page script "${fn}" failed: ${exceptionToText(r.exceptionDetails)}`);
         }
         const v = r.result?.value;
-        if (v && typeof v === 'object' && v.__error) throw new ToolError(v.__error.code, v.__error.message);
+        if (v && typeof v === 'object' && v.__error) {
+          const { code, message, list } = v.__error;
+          throw new ToolError(code, Array.isArray(list) ? `${message}\n${untrusted(list.join('\n'))}` : message);
+        }
         return v;
       } catch (e) {
         if (attempt < 3 && isContextGone(e)) {
@@ -599,6 +607,14 @@ async function attach(tabId) {
   const s = new TabSession(tabId);
   sessions.set(tabId, s);
   notifyCount();
+  // The caller checked that the tab is shared, but it may have left the group since, and the
+  // scope listeners below only watch tabs that have a session. Now it has one: check again.
+  let now = null;
+  try { now = await chrome.tabs.get(tabId); } catch { /* closed */ }
+  if (!(await isShared(now))) {
+    await detach(tabId);
+    throw new ToolError('not_shared', `Tab ${tabId} is no longer shared with cctether: it left the "cctether" tab group. Ask the user to share it again, or use open_tab.`);
+  }
   // Console buffer starts empty; Runtime.enable replays messages logged before we attached.
   const steps = [
     s.send('Page.enable', {}, { timeoutMs: ENABLE_TIMEOUT_MS }),
@@ -611,6 +627,7 @@ async function attach(tabId) {
   // If a dialog is already open, page-side enables hang until it closes: don't wait for them.
   await Promise.race([Promise.allSettled(steps), s.dialogSignal]);
   if (s.closed) throw detachedError(tabId);
+  s.ready = true;
   s.touch();
   return s;
 }
@@ -618,7 +635,8 @@ async function attach(tabId) {
 /** Ensure the debugger is attached to the tab and return its session. */
 export async function session(tabId) {
   const existing = sessions.get(tabId);
-  if (existing && !existing.closed) { existing.touch(); return existing; }
+  // A session still being set up (its scope check not done yet) is not handed out: wait for it.
+  if (existing && !existing.closed && existing.ready) { existing.touch(); return existing; }
   let p = attaching.get(tabId);
   if (!p) {
     p = attach(tabId).finally(() => attaching.delete(tabId));

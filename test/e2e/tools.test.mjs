@@ -42,6 +42,14 @@ function startServer() {
       res.end(JSON.stringify({ message: 'hi', n: 42 }));
       return;
     }
+    if (u.pathname === '/slow') {
+      // A page that takes a while to arrive.
+      setTimeout(async () => {
+        res.setHeader('content-type', 'text/html; charset=utf-8');
+        res.end(await readFile(join(HERE, 'fixtures', 'pages', 'delayed.html')));
+      }, Number(u.searchParams.get('ms') || 1500));
+      return;
+    }
     if (u.pathname === '/api/echo') {
       let b = '';
       req.on('data', (c) => { b += c; });
@@ -228,6 +236,9 @@ test('argument checks', async () => {
   await fails('click', { ref: 1.5 }, 'bad_args');
   await fails('find', { selector: 42 }, 'bad_args');
   await fails('find', {}, 'bad_args');
+  await fails('click', { ref: 1, text: 'x' }, 'bad_args');
+  await fails('click', { text: '' }, 'bad_args');
+  await fails('click', { screenshot: 0, x: 1, y: 1 }, 'bad_args');
   await fails('read_page', { bogus: 1 }, 'bad_args');
   await fails('read_page', { tab: -3 }, 'bad_args');
   await fails('reload_extension', { id: 'not-an-id' }, 'bad_args');
@@ -533,23 +544,54 @@ test('network_requests: list, filters, details with body', async () => {
 
 // ---- wait_for and evaluate -------------------------------------------------------------------
 
-test('wait_for: element appearing later, text gone, timeout', async () => {
+test('wait_for: element appearing later, text gone, already there, timeout', async () => {
   const tab = await openShared('/pages/delayed.html');
   const r = await ok('wait_for', { selector: '#late', timeout_ms: 5000 });
-  assert.match(r.text, /Found an element matching "#late" after \d\.\d s/);
+  assert.match(r.text, /^Found an element matching "#late" after \d\.\d s/);
   assert.match(r.text, /div "Arrived late"/);
-  const g = await ok('wait_for', { text: 'Loading', gone: true });
-  assert.match(g.text, /is gone/);
+  // Text that was there from the start is reported as such (it may be the user's own input),
+  // with the element it is in.
   const t = await ok('wait_for', { text: 'Arrived', timeout_ms: 1000 });
-  assert.match(t.text, /Found the text "Arrived"/);
+  assert.match(t.text, /^The text "Arrived" was already there when the wait started \(found at the first check, so it may not be the new content you are waiting for\)\./);
+  assert.match(t.text, /<untrusted-page-content>\n\[\d+\] div "Arrived late"\n/);
+  const g = await ok('wait_for', { text: 'Loading', gone: true });
+  assert.match(g.text, /^The text "Loading" was not there at the first check\.$/);
+  // Text that goes away later.
+  await ok('navigate', { action: 'reload' });
+  const g2 = await ok('wait_for', { text: 'Loading', gone: true, timeout_ms: 5000 });
+  assert.match(g2.text, /^The text "Loading" is gone \(after \d\.\d s\)\.$/);
+  // selector + text: only visible text counts.
+  await ok('wait_for', { selector: '#late' });
+  await pageEval(tab, 'document.getElementById("late").insertAdjacentHTML("beforeend", "<span hidden>Ready</span>"); true');
+  await fails('wait_for', { selector: '#late', text: 'Ready', timeout_ms: 300 }, 'timeout');
+  await pageEval(tab, 'document.querySelector("#late span").hidden = false; true');
+  assert.match((await ok('wait_for', { selector: '#late', text: 'Ready' })).text, /^An element matching "#late" with text "Ready" was already there/);
   const e = await fails('wait_for', { text: 'never ever', timeout_ms: 400 }, 'timeout');
   assert.match(e.message, /did not appear/);
   await fails('wait_for', {}, 'bad_args');
+  await fails('wait_for', { text: 'x', timeout_ms: 600001 }, 'bad_args');
   // Survives a navigation during the wait.
   await ok('navigate', { url: `${base}/pages/nav-a.html` });
   const p = ok('wait_for', { selector: '#late', timeout_ms: 8000 });
   await swEval(`chrome.tabs.update(${tab}, { url: ${JSON.stringify(`${base}/pages/delayed.html`)} })`);
   assert.match((await p).text, /Found an element matching "#late"/);
+  await ok('close_tab', { tab });
+});
+
+test('navigate with wait_for: waits after the load; not appearing is not an error', async () => {
+  const tab = await openShared('/pages/nav-a.html');
+  const n = await ok('navigate', { url: `${base}/pages/delayed.html`, wait_for: { selector: '#late' } });
+  assert.match(n.text, /^Loaded .*delayed\.html \(HTTP 200\): "Delayed" Found an element matching "#late" after \d\.\d s\./);
+  const n2 = await ok('navigate', { action: 'reload', wait_for: { text: 'Arrived late' } });
+  assert.match(n2.text, /Found the text "Arrived late" after/);
+  const n3 = await ok('navigate', { url: `${base}/pages/delayed.html`, wait_for: { text: 'never ever' }, timeout_ms: 1500 });
+  assert.match(n3.text, /^Loaded .*delayed\.html .* But the text "never ever" did not appear within the remaining \d+\.\d s \(the page may still be rendering\): use wait_for to keep waiting, there is no need to load it again\.$/);
+  // A page that navigates away by itself: what the next page shows doesn't count.
+  const n4 = await ok('navigate', { url: `${base}/pages/redirect.html`, wait_for: { selector: '#late' }, timeout_ms: 5000 });
+  assert.match(n4.text, /^Loaded .*redirect\.html .* But the page navigated again \(now .*delayed\.html\) before an element matching "#late" appeared, so cctether stopped waiting\./);
+  await fails('navigate', { url: `${base}/pages/delayed.html`, wait_for: {} }, 'bad_args');
+  await fails('navigate', { url: `${base}/pages/delayed.html`, wait_for: { bogus: 1 } }, 'bad_args');
+  await fails('navigate', { url: `${base}/pages/delayed.html`, wait_for: 'Arrived' }, 'bad_args');
   await ok('close_tab', { tab });
 });
 
@@ -619,7 +661,7 @@ test('screenshot: viewport at CSS pixels, scaling, element, full page', async ()
   const fs = pngSize(full.images[0].data);
   const scale = Math.min(1, 1568 / Math.max(vw, docH));
   assert.equal(fs.height, Math.round(docH * scale));
-  assert.match(full.text, /full page, scaled down to fit 1568 px/);
+  assert.match(full.text, /full page, scaled down to fit Claude's image size limits/);
 
   // devicePixelRatio 2: the image stays at CSS-pixel size.
   const target = await targetFor('long.html?shot');
@@ -633,8 +675,7 @@ test('screenshot: viewport at CSS pixels, scaling, element, full page', async ()
     await page.send('Emulation.setDeviceMetricsOverride', { width: 2000, height: 1000, deviceScaleFactor: 2, mobile: false });
     const big = await ok('screenshot', {});
     assert.deepEqual(jpegSize(big.images[0].data), { width: 1568, height: 784 });
-    assert.match(big.text, /scaled down to fit 1568 px: 1 image px = 1\.276 CSS px\. Image coordinates are NOT click coordinates here: for click\/hover at image point \(x, y\), pass x = x × 1\.276, y = y × 1\.276/);
-    assert.doesNotMatch(big.text, /Image coordinates are viewport coordinates/, 'no contradicting hint when scaled');
+    assert.match(big.text, /scaled down to fit Claude's image size limits: 1 image px = 1\.276 CSS px\. This is screenshot (\d+): to click, hover or scroll at a point you see in it, pass the point's image x, y with screenshot: \1; cctether converts them\./);
     await page.send('Emulation.clearDeviceMetricsOverride');
   } finally {
     await page.detach();
@@ -1444,7 +1485,22 @@ test('restricted pages: chrome:// in a shared tab', async () => {
   const n = await ok('navigate', { tab, url: `${base}/pages/nav-b.html` });
   assert.match(n.text, /nav-b\.html/);
   assert.match((await ok('read_page', { tab })).text, /Page B/);
-  await ok('close_tab', { tab });
+  // With wait_for, from a restricted page: cctether attaches once the new page is a web page.
+  await swEval(`chrome.tabs.update(${tab}, { url: 'chrome://version' })`);
+  await new Promise((r) => setTimeout(r, 500));
+  const w = await ok('navigate', { tab, url: `${base}/pages/delayed.html`, wait_for: { selector: '#late' } });
+  assert.match(w.text, /delayed\.html.* Found an element matching "#late" after \d\.\d s\./);
+  // Taken out of the group while the page loads: cctether doesn't attach to wait.
+  await swEval(`chrome.tabs.update(${tab}, { url: 'chrome://version' })`);
+  await new Promise((r) => setTimeout(r, 500));
+  assert.equal(await debuggerAttached(tab), false);
+  const pending = ok('navigate', { tab, url: `${base}/slow?ms=1500`, wait_for: { selector: '#late' } });
+  await new Promise((r) => setTimeout(r, 400));
+  await swEval(`chrome.tabs.ungroup(${tab})`);
+  const un = await pending;
+  assert.match(un.text, /The tab is no longer shared with cctether .*, so it did not wait for anything\.$/);
+  assert.equal(await debuggerAttached(tab), false, 'not attached to a tab outside the group');
+  await rejoin(tab);
 });
 
 test('tabs.js: shareTab / unshareTab / tabInfo / countSharedTabs / onSharedTabsChanged', async () => {
@@ -1743,5 +1799,278 @@ test('macOS shortcuts: the editing commands behind them work (Mac code path, on 
   } finally {
     await page.detach();
   }
+  await ok('close_tab', { tab });
+});
+
+// ---- from another Claude's feedback (SPEC §5.2, 0.5.0) --------------------------------------------
+
+const outOf = (tab) => pageEval(tab, 'document.getElementById("out").textContent');
+
+test('find / click / hover / scroll by text: exact only, look-alikes listed, names, shadow DOM', async () => {
+  const tab = await openShared('/pages/widgets.html?text');
+  // Two "Edit" buttons: not guessed; both listed with refs and their table rows, as page content.
+  const amb = await fails('click', { text: 'Edit' }, 'ambiguous');
+  assert.match(amb.message, /^2 visible elements have the text "Edit", so cctether did not pick one\. Pass the ref of the right one, or narrow it down with selector:\nContent below[^\n]*\n<untrusted-page-content>\n/);
+  assert.match(amb.message, /\[\d+\] button "Edit" at \(\d+, \d+\)(?: [↑↓←→])? in tr "disk-1 asia-southeast1 Edit"/);
+  const second = Number(amb.message.match(/\[(\d+)\] button "Edit" at \(\d+, \d+\)(?: [↑↓←→])? in tr "disk-2/)[1]);
+  await ok('click', { ref: second });
+  assert.equal(await outOf(tab), 'edit:2');
+  await ok('click', { text: 'Edit', selector: 'tr:first-child button' });
+  assert.equal(await outOf(tab), 'edit:1');
+  // The heading says the same as the button: the button is the one meant (also ignoring case).
+  const c = await ok('click', { text: 'Create snapshot' });
+  assert.match(c.text, /^Clicked button "Create snapshot" at/);
+  assert.equal(await outOf(tab), 'create');
+  await pageEval(tab, 'document.getElementById("out").textContent = ""; true');
+  await ok('click', { text: 'create SNAPSHOT' });
+  assert.equal(await outOf(tab), 'create');
+  // Only "contains": nothing clicked, the candidates are listed.
+  const part = await fails('click', { text: 'snapsh' }, 'no_element');
+  assert.match(part.message, /No visible element has exactly the text "snapsh"; 2 contain it\./);
+  assert.match(part.message, /\(contains it\)/);
+  // A name in an attribute (aria-label), text broken by <br>, a button inside a shadow root.
+  await ok('click', { text: 'Close panel' });
+  assert.equal(await outOf(tab), 'close');
+  await ok('click', { text: 'New York' });
+  assert.equal(await outOf(tab), 'ny');
+  await ok('click', { text: 'Shadow action' });
+  assert.equal(await outOf(tab), 'shadow');
+  // A radio and its own label are one target: the radio if it can be clicked, else the label
+  // (inputs hidden as a pixel, or moved off the page).
+  for (const [name, value] of [['Premium', 'pre'], ['Standard', 'std'], ['Offscreen', 'off']]) {
+    await ok('click', { text: name });
+    assert.equal(await outOf(tab), `tier:${value}`, name);
+  }
+  // An exact name in one attribute counts even if another name only contains the text.
+  const save = await fails('click', { text: 'Save' }, 'ambiguous');
+  assert.match(save.message, /^2 visible elements have the text "Save"/);
+  const none = await fails('click', { text: 'No such thing' }, 'no_element');
+  assert.match(none.message, /No visible element has the text "No such thing"/);
+  // find lists exact matches first, then the ones that contain it.
+  const f = await ok('find', { text: 'Nav item 1' });
+  assert.match(f.text, /^11 elements match text "Nav item 1", 1 with exactly that text or name, listed first\./);
+  assert.match(f.text, /<untrusted-page-content>\n\[\d+\] a href="#nav1" "Nav item 1" at .*, (visible|offscreen .)\n\[\d+\] a href="#nav10" "Nav item 10" .*\(contains it\)/);
+  assert.match((await ok('find', { text: 'Delete', selector: 'button' })).text, /^1 element match text "Delete" among elements matching "button"/);
+  // hover and scroll take text too.
+  assert.match((await ok('hover', { text: 'Open dialog' })).text, /^Moved the mouse over button "Open dialog"/);
+  const sc = await ok('scroll', { text: 'Nav item 30' });
+  assert.match(sc.text, /^Scrolled link "Nav item 30" into view/);
+  await ok('close_tab', { tab });
+});
+
+test('click by text refuses when something covers the target', async () => {
+  const tab = await openShared('/pages/form.html?covered');
+  await pageEval(tab, 'document.getElementById("overlay").style.display = "block"; true');
+  const e = await fails('click', { text: 'Go' }, 'no_element');
+  assert.match(e.message, /^Did not click: div#overlay is on top of button "Go" at that point, so it would get the click\./);
+  assert.equal(await pageEval(tab, 'document.getElementById("out").textContent'), '');
+  // By selector it still clicks and says what got the click (unchanged).
+  assert.match((await ok('click', { selector: '#go' })).text, /div#overlay was on top of it/);
+  await ok('close_tab', { tab });
+  // Something that appears over it only when the mouse moves onto it.
+  const w = await openShared('/pages/widgets.html?hovertrap');
+  const t = await fails('click', { text: 'Hover trap' }, 'no_element');
+  assert.match(t.message, /^Did not click button "Hover trap": div#trap-cover "Danger" came on top of it when the mouse went over it\./);
+  assert.equal(await outOf(w), '');
+  await ok('close_tab', { tab: w });
+});
+
+test('select_option on custom dropdowns: only the list the dropdown names, real clicks, read back', async () => {
+  const tab = await openShared('/pages/widgets.html?select');
+  // A combobox whose list is appended to <body> on open and named (aria-controls) only then. The
+  // option is far down a list that scrolls, so it has to be scrolled into view inside the list.
+  const a = await ok('select_option', { selector: '#region', value: 'asia-southeast1' });
+  assert.equal(a.text, 'Opened combobox "Region" and clicked its option "asia-southeast1 (Singapore)". It now shows "asia-southeast1 (Singapore)".');
+  assert.equal(await outOf(tab), 'region:asia-southeast1:trusted');
+  // The only label containing the value.
+  await ok('select_option', { selector: '#region', value: 'tokyo' });
+  assert.equal(await outOf(tab), 'region:asia-northeast1:trusted');
+  // Several contain it: nothing clicked, the dropdown is left open with the matches listed.
+  const many = await fails('select_option', { selector: '#region', value: 'asia' }, 'not_found');
+  assert.match(many.message, /^6 options of combobox "Region" contain it \("asia"\), so cctether did not pick one; click the right one with click and its ref\. It is left open\. Matching options:\nContent below[^\n]*\n<untrusted-page-content>\n\[\d+\] option "asia-east1 \(Taiwan\)" value="asia-east1"/);
+  assert.equal(await pageEval(tab, 'document.getElementById("region").getAttribute("aria-expanded")'), 'true');
+  // Already open: not clicked again, the option is picked from the open list.
+  const open = await ok('select_option', { selector: '#region', value: 'europe-west4 (Netherlands)' });
+  assert.match(open.text, /^Clicked its option "europe-west4 \(Netherlands\)"\. It now shows "europe-west4 \(Netherlands\)"\.$/);
+  const no = await fails('select_option', { selector: '#region', value: 'Mars' }, 'not_found');
+  assert.match(no.message, /No option of combobox "Region" matches "Mars" \(by value or label\)\. It is left open\. Options:/);
+  await ok('press_key', { key: 'Escape' });
+  await pageEval(tab, 'document.getElementById("region").click(); true'); // close it
+  // Two options with the same label: not guessed; their values tell them apart.
+  const dup = await fails('select_option', { selector: '#plan', value: 'Standard' }, 'not_found');
+  assert.match(dup.message, /^2 options of combobox "Plan" have that label \("Standard"\), so cctether did not pick one/);
+  assert.match(dup.message, /option "Standard" value="std-1"\n\[\d+\] option "Standard" value="std-2"/);
+  await ok('select_option', { selector: '#plan', value: 'std-2' });
+  assert.equal(await outOf(tab), 'plan:std-2');
+  // An option that turns into something else when the mouse is over it is not clicked.
+  const trap = await fails('select_option', { selector: '#plan', value: 'Basic' }, 'no_element');
+  assert.match(trap.message, /^Did not click the option "Basic": it changed \(now option "Delete everything"\) when the mouse went over it\./);
+  assert.equal(await outOf(tab), 'plan:std-2');
+  await pageEval(tab, 'document.getElementById("plan").click(); true'); // close it
+  // A button that opens a list but doesn't name it: cctether doesn't guess; it lists the options.
+  const b = await fails('select_option', { selector: '#size', value: 'Large' }, 'not_found');
+  assert.match(b.message, /^Opened button "Size: Medium", but it does not say which list belongs to it .* so cctether did not pick an option\. It is left open\. Options visible on the page now; click the right one with click and its ref:\nContent below[^\n]*\n<untrusted-page-content>\n/);
+  const large = Number(b.message.match(/\[(\d+)\] option "Large"/)[1]);
+  await ok('click', { ref: large });
+  assert.equal(await outOf(tab), 'size:l');
+  // An autocomplete input that names its list.
+  const c = await ok('select_option', { selector: '#city', value: 'Tokyo' });
+  assert.match(c.text, /clicked its option "Tokyo"\. It now shows "Tokyo"\.$/);
+  assert.equal(await outOf(tab), 'city:Tokyo');
+  // A list on the page (multi-select): an option already selected is not clicked again.
+  assert.match((await ok('select_option', { selector: '#tags', value: 'beta' })).text, /^Clicked its option "beta"\. It now shows "beta"\.$/);
+  assert.match((await ok('select_option', { selector: '#tags', value: 'beta' })).text, /^"beta" is already selected in listbox "Tags" \(clicking it again would deselect it\), so nothing was clicked\.$/);
+  assert.equal(await outOf(tab), 'tags:beta');
+  const dis = await fails('select_option', { selector: '#tags', value: 'delta' }, 'not_found');
+  assert.match(dis.message, /The option "delta" of listbox "Tags" is disabled\./);
+  // Not dropdowns (no ARIA at all; a menu of commands): refused, nothing clicked.
+  const d = await fails('select_option', { selector: '#plain', value: 'Red' }, 'bad_args');
+  assert.match(d.message, /doesn't say it is a dropdown/);
+  await fails('select_option', { selector: '#actions', value: 'Rename' }, 'bad_args');
+  assert.equal(await pageEval(tab, 'document.getElementById("actions").getAttribute("aria-expanded")'), 'false');
+  await fails('select_option', { selector: '#region', value: ['a', 'b'] }, 'bad_args');
+  // Native <select> is unchanged.
+  await ok('close_tab', { tab });
+});
+
+test('read_page interactive: a label stands in for a hidden radio; no duplicates; dialog, main, navigation order', async () => {
+  const tab = await openShared('/pages/widgets.html?list');
+  const r = (await ok('read_page', { mode: 'interactive' })).text;
+  assert.match(r, /Grouped: open dialogs first, then the main content, then the rest of the page, navigation last\./);
+  const body = r.slice(r.indexOf('<untrusted-page-content>'));
+  assert.ok(body.indexOf('## Main content (') < body.indexOf('## Navigation (30)'), body);
+  assert.ok(body.indexOf('combobox "Region"') < body.indexOf('Nav item 1'), 'main content before the sidebar');
+  // Each radio once, as a radio (the hidden input's label stands in for it).
+  for (const name of ['Standard', 'Premium', 'Archive', 'Offscreen']) {
+    assert.equal(body.match(new RegExp(`"${name}"`, 'g'))?.length, 1, `${name} once:\n${body}`);
+    assert.match(body, new RegExp(`\\] radio "${name}"`));
+  }
+  assert.doesNotMatch(body, /clickable "(Standard|Premium|Archive|Offscreen)"/);
+  // A clickable card with its own button keeps both.
+  assert.match(body, /clickable "Project Alpha Delete"/);
+  assert.match(body, /button "Delete"/);
+  // A combobox shows what it displays.
+  assert.match(body, /combobox "Region" shows "us-central1 \(Iowa\)" collapsed/);
+  // The label's number selects the hidden radio.
+  await ok('click', { ref: refOf(body, /radio "Standard"/) });
+  assert.equal(await outOf(tab), 'tier:std');
+  assert.match((await ok('read_page', { mode: 'interactive', selector: '#radios' })).text, /radio "Standard" checked/);
+  // An open dialog comes first.
+  await ok('click', { text: 'Open dialog' });
+  const d = (await ok('read_page', { mode: 'interactive' })).text;
+  const dbody = d.slice(d.indexOf('<untrusted-page-content>'));
+  assert.match(dbody, /^<untrusted-page-content>\nTitle: Widgets fixture\n.*\n.*\n\n## Dialog "Confirm deletion" \(2\)\n\[\d+\] button "Delete it"\n\[\d+\] button "Cancel"\n## Main content/);
+  // With a selector: document order, no groups.
+  const scoped = (await ok('read_page', { mode: 'interactive', selector: '#radios' })).text;
+  assert.doesNotMatch(scoped, /## |Grouped/);
+  await ok('close_tab', { tab });
+});
+
+test('screenshot numbers: points on a scaled screenshot are converted; stale ones are refused', async () => {
+  const tab = await openShared('/pages/form.html?shots');
+  // A 1920×1080 viewport would be 1568×882 by the long edge alone, over Claude's token limit.
+  await ok('resize_viewport', { width: 1920, height: 1080 });
+  const v = await ok('screenshot', {});
+  assert.deepEqual(jpegSize(v.images[0].data), { width: 1456, height: 819 });
+  const id = Number(v.text.match(/This is screenshot (\d+):/)[1]);
+  const go = await pageEval(tab, '(() => { const r = document.getElementById("go").getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()');
+  const img = [Math.round(go[0] * 1456 / 1920), Math.round(go[1] * 819 / 1080)];
+  const c = await ok('click', { x: img[0], y: img[1], screenshot: id });
+  assert.match(c.text, new RegExp(`^Clicked at \\(\\d+, \\d+\\) \\(point \\(${img[0]}, ${img[1]}\\) of screenshot ${id}\\), on button "Go"\\.`));
+  assert.equal(await pageEval(tab, 'document.getElementById("out").textContent'), 'go clicked trusted');
+  // After the page scrolled, the same point shows something else: refused.
+  await pageEval(tab, 'scrollTo(0, 120); true');
+  const st = await fails('click', { x: img[0], y: img[1], screenshot: id }, 'stale_screenshot');
+  assert.match(st.message, new RegExp(`^Not done: since screenshot ${id}, the page scrolled \\(from x=0, y=0 to x=0, y=120\\)`));
+  await fails('click', { x: 5000, y: 5, screenshot: id }, 'bad_args');
+  await fails('hover', { x: 1, y: 1, screenshot: 1 }, 'bad_args');
+  // A full-page screenshot: a point below the viewport is scrolled to first.
+  await ok('resize_viewport', { reset: true });
+  await pageEval(tab, 'scrollTo(0, 0); true');
+  const full = await ok('screenshot', { full_page: true });
+  const fid = Number(full.text.match(/This is screenshot (\d+):/)[1]);
+  const fsize = jpegSize(full.images[0].data);
+  const docH = await pageEval(tab, 'document.documentElement.scrollHeight');
+  const far = await pageEval(tab, '(() => { const r = document.getElementById("far").getBoundingClientRect(); return [r.left + r.width / 2 + scrollX, r.top + r.height / 2 + scrollY]; })()');
+  const k = fsize.height / docH;
+  const fc = await ok('click', { x: Math.round(far[0] * k), y: Math.round(far[1] * k), screenshot: fid });
+  assert.match(fc.text, /\(scrolled the page to y=\d+ first\)\), on button "Far button"\./);
+  assert.equal(await pageEval(tab, 'document.getElementById("out").textContent'), 'far clicked');
+  // An element screenshot.
+  const el = await ok('screenshot', { selector: '#hoverbox' });
+  const eid = Number(el.text.match(/This is screenshot (\d+):/)[1]);
+  assert.match((await ok('hover', { x: 10, y: 10, screenshot: eid })).text, /over div "Hover me"/);
+  await pageEval(tab, 'scrollBy(0, 30); true');
+  await fails('hover', { x: 10, y: 10, screenshot: eid }, 'stale_screenshot');
+  // Another tab's screenshot; after a reload.
+  const other = await openShared('/pages/nav-a.html?shots');
+  const oid = Number((await ok('screenshot', { tab: other })).text.match(/This is screenshot (\d+):/)[1]);
+  const wrong = await fails('click', { tab, x: 1, y: 1, screenshot: oid }, 'bad_args');
+  assert.match(wrong.message, new RegExp(`^Screenshot ${oid} is of tab ${other}, not tab ${tab}\\.`));
+  await ok('navigate', { tab: other, action: 'reload' });
+  const re = await fails('click', { tab: other, x: 1, y: 1, screenshot: oid }, 'stale_screenshot');
+  assert.match(re.message, /the page navigated or reloaded/);
+  await ok('close_tab', { tab: other });
+  await ok('close_tab', { tab });
+});
+
+test('screenshot of an element\'s whole scrollable content: stitched, sticky bars once, position restored', async () => {
+  const tab = await openShared('/pages/scroller.html');
+  // The page itself doesn't scroll: full_page says where the content is.
+  const fp = await ok('screenshot', { full_page: true });
+  const hint = fp.text.match(/The page itself does not scroll: its content scrolls inside \[(\d+)\] div#pane \((\d+) CSS px tall\)\. To capture all of that, call screenshot with ref: \1 and full_page: true\./);
+  assert.ok(hint, fp.text);
+  assert.equal(Number(hint[2]), 1850);
+  await pageEval(tab, 'document.getElementById("pane").scrollTop = 100; window.scrolls = 0; true');
+  const [cw, ch] = await pageEval(tab, '[document.getElementById("pane").clientWidth, document.getElementById("pane").clientHeight]');
+  const s = await ok('screenshot', { ref: Number(hint[1]), full_page: true, format: 'png' });
+  assert.match(s.text, /^(\d+)×(\d+) PNG, the whole scrollable content of div#pane \(1850 CSS px tall\), stitched from \d+ captures while scrolling it/);
+  assert.doesNotMatch(s.text, /Rows not captured/);
+  const size = pngSize(s.images[0].data);
+  const k = size.width / cw;
+  assert.ok(Math.abs(size.height - Math.round(1850 * k)) <= 1, `${size.width}×${size.height} for ${cw}×1850`);
+  // Band i is rgb(20i, 250 - 20i, 100), at content y 30 + 150i … 180 + 150i.
+  const ys = [];
+  for (let i = 0; i < 12; i++) ys.push(30 + 150 * i + 75);
+  const px = await pixels(s.images[0], [[Math.round(10 * k), Math.round(15 * k)], ...ys.map((y) => [Math.round(cw * k / 2), Math.round(y * k)]),
+    [Math.round(cw * k / 2), size.height - 2]]);
+  assert.ok(px[0][0] < 30 && px[0][1] < 30 && px[0][2] < 30, `the sticky header at the top: ${px[0]}`);
+  px.slice(1, 13).forEach((p, i) => {
+    const want = [20 * i, 250 - 20 * i, 100];
+    assert.ok(p.slice(0, 3).every((v, j) => Math.abs(v - want[j]) <= 12), `band ${i}: got ${p}, want ${want}`);
+  });
+  assert.ok(px[13][0] > 200 && px[13][1] < 60 && px[13][2] > 200, `the sticky footer at the bottom: ${px[13]}`);
+  // Where a second part starts, the rows are content, not a repeated header or footer.
+  const seams = await pixels(s.images[0], [[Math.round(cw * k / 2), Math.round((ch + 5) * k)], [Math.round(cw * k / 2), Math.round((ch - 8) * k)]]);
+  for (const p of seams) assert.ok(!(p[0] < 30 && p[1] < 30 && p[2] < 30) && !(p[0] > 200 && p[1] < 60 && p[2] > 200), `seam pixel ${p}`);
+  // Back where it was; it did scroll meanwhile (which pages can notice).
+  assert.equal(await pageEval(tab, 'document.getElementById("pane").scrollTop'), 100);
+  assert.ok((await pageEval(tab, 'window.scrolls')) > 0);
+  assert.equal(await swEval(`chrome.tabs.get(${tab}).then((t) => t.active)`), false, 'still in the background');
+  // Not for coordinates; not for elements that don't scroll; a small scroller works too.
+  const sid = Number(s.text.match(/This is screenshot (\d+);/)[1]);
+  await fails('click', { x: 5, y: 5, screenshot: sid }, 'bad_args');
+  await fails('screenshot', { selector: '.top', full_page: true }, 'bad_args');
+  const small = await ok('screenshot', { selector: '#small', full_page: true, format: 'png' });
+  const sm = pngSize(small.images[0].data);
+  assert.equal(sm.height, 300);
+  await ok('close_tab', { tab });
+});
+
+test('evaluate awaits a returned Promise; calls at the same time keep their own results', async () => {
+  const tab = await openShared('/pages/nav-a.html?eval');
+  const a = await ok('evaluate', { expression: '(async () => 42)()' });
+  assert.match(a.text, /^Result \(number, ran in the page, after awaiting the returned Promise\):\nContent below[^\n]*\n<untrusted-page-content>\n42\n/);
+  const b = await ok('evaluate', { expression: 'const f = async () => ({ a: [1, 2] }); f()', world: 'isolated' });
+  assert.match(b.text, /after awaiting the returned Promise[\s\S]*\{"a":\[1,2\]\}/);
+  const top = await ok('evaluate', { expression: 'await (async () => 7)()' });
+  assert.match(top.text, /^Result \(number, ran in the page\):/);
+  const rej = await fails('evaluate', { expression: 'Promise.reject(new Error("boom"))' }, 'js_error');
+  assert.match(rej.message, /boom/);
+  await fails('evaluate', { expression: 'new Promise(() => {})', timeout_ms: 300 }, 'timeout');
+  const all = await Promise.all([0, 1, 2, 3, 4, 5].map((i) => ok('evaluate', {
+    expression: `new Promise((r) => setTimeout(() => r({ i: ${i}, s: "x".repeat(${i} * 20000) }), ${(5 - i) * 30}))`,
+  })));
+  all.forEach((r, i) => assert.match(r.text, new RegExp(`\\{"i":${i},"s":"x*`), `call ${i}: ${r.text.slice(0, 200)}`));
   await ok('close_tab', { tab });
 });

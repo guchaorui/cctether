@@ -42,6 +42,15 @@ export const listOf = (maxItems, item) => (v, k) => {
   v.forEach((x, i) => item(x, `${k}[${i}]`));
 };
 
+/** An object with only the given fields (each checked; null counts as absent). */
+export const obj = (spec) => (v, k) => {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) throw bad(`\`${k}\` must be an object.`);
+  for (const [kk, vv] of Object.entries(v)) {
+    if (!Object.hasOwn(spec, kk)) throw bad(`Unknown field \`${kk}\` in \`${k}\`. Valid fields: ${Object.keys(spec).join(', ')}.`);
+    if (vv != null) spec[kk](vv, `${k}.${kk}`);
+  }
+};
+
 export const pattern = (re, hint) => (v, k) => {
   if (typeof v !== 'string' || !re.test(v)) throw bad(`\`${k}\` must be ${hint}.`);
 };
@@ -51,6 +60,8 @@ export const A = {
   tab: int(0),
   ref: int(1),
   selector: str(1, 2000),
+  text: str(1, 1000),
+  screenshot: int(1),
   x: num(),
   y: num(),
   timeout: (max) => int(100, max),

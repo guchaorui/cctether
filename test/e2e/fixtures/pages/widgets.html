@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Widgets fixture</title>
+<style>
+  html, body { margin: 0; font: 14px sans-serif; }
+  .shell { display: flex; min-height: 100vh; }
+  nav { width: 160px; background: #eee; padding: 8px; }
+  nav a { display: block; }
+  main { flex: 1; padding: 12px; }
+  .row { margin: 8px 0; }
+  [role=combobox], .dd { display: inline-block; min-width: 180px; border: 1px solid #888; padding: 4px 8px; cursor: default; }
+  .panel { position: absolute; background: #fff; border: 1px solid #444; max-height: 90px; overflow: auto; min-width: 220px; z-index: 10; }
+  .panel [role=option], .panel [role=menuitem], .menu li { padding: 4px 8px; height: 22px; }
+  [aria-selected=true] { background: #cde; }
+  .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .radio-label, .field label, .wrap, .card { cursor: pointer; }
+  .menu { list-style: none; margin: 0; padding: 0; border: 1px solid #444; width: 180px; }
+  #tags [role=option] { display: inline-block; border: 1px solid #888; padding: 2px 6px; }
+  .modal { position: fixed; left: 200px; top: 60px; width: 260px; background: #fff; border: 2px solid #000; padding: 12px; z-index: 20; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <nav aria-label="Sidebar" id="side"></nav>
+  <main id="content">
+    <h1>Create snapshot</h1>
+
+    <!-- A: a Material-style select. The panel is created on open and appended to the end of <body>. -->
+    <div class="row">
+      <span id="region-label">Region</span>
+      <div id="region" role="combobox" tabindex="0" aria-haspopup="listbox" aria-expanded="false"
+           aria-labelledby="region-label"><span class="value">us-central1 (Iowa)</span></div>
+    </div>
+
+    <!-- B: a button with a listbox next to it, kept in the DOM while closed. -->
+    <div class="row">
+      <button id="size" type="button" aria-haspopup="listbox" aria-expanded="false">Size: Medium</button>
+      <ul id="size-list" class="menu" role="listbox" hidden>
+        <li role="option" data-value="s">Small</li>
+        <li role="option" data-value="m" aria-selected="true">Medium</li>
+        <li role="option" data-value="l">Large</li>
+        <li role="option" data-value="xl" aria-disabled="true">Extra large</li>
+      </ul>
+    </div>
+
+    <!-- C: an autocomplete input. -->
+    <div class="row">
+      <label for="city">City</label>
+      <input id="city" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="city-list" autocomplete="off">
+      <ul id="city-list" class="menu" role="listbox" hidden></ul>
+    </div>
+
+    <!-- G: a combobox whose list has two options with the same label. -->
+    <div class="row">
+      <div id="plan" role="combobox" tabindex="0" aria-controls="plan-list" aria-expanded="false" aria-label="Plan">Pick a plan</div>
+      <ul id="plan-list" class="menu" role="listbox" hidden>
+        <li role="option" data-value="std-1">Standard</li>
+        <li role="option" data-value="std-2">Standard</li>
+        <li role="option" data-value="pro">Pro</li>
+        <li role="option" data-value="trap" id="trap-option">Basic</li>
+      </ul>
+    </div>
+
+    <!-- D: a dropdown without any ARIA. -->
+    <div class="row">
+      <div id="plain" class="dd">Pick a colour</div>
+      <ul id="plain-menu" class="menu" style="display:none"><li>Red</li><li>Green</li><li>Blue</li></ul>
+    </div>
+
+    <!-- E: a menu button. -->
+    <div class="row">
+      <button id="actions" type="button" aria-haspopup="menu" aria-expanded="false">Actions</button>
+    </div>
+
+    <!-- F: an inline multi-select listbox. -->
+    <div class="row">
+      <div id="tags" role="listbox" aria-multiselectable="true" aria-label="Tags">
+        <span role="option" aria-selected="false">alpha</span>
+        <span role="option" aria-selected="false">beta</span>
+        <span role="option" aria-selected="false">gamma</span>
+        <span role="option" aria-selected="false" aria-disabled="true">delta</span>
+      </div>
+    </div>
+
+    <!-- Radios, three common builds. -->
+    <div class="row" id="radios">
+      <span class="radio"><label class="radio-label"><input type="radio" name="tier" value="std" class="visually-hidden"><span>Standard</span></label></span>
+      <span class="field"><input type="radio" name="tier" value="pre" id="tier-pre"><label for="tier-pre">Premium</label></span>
+      <span class="wrap"><span role="radio" aria-checked="false" tabindex="0" id="tier-arch">Archive</span></span>
+      <label class="radio-label"><input type="radio" name="tier" value="off" style="position:absolute;left:-9999px"><span>Offscreen</span></label>
+    </div>
+
+    <!-- A clickable card with one button that does something else: both must stay listed. -->
+    <div class="row"><div class="card" id="card">Project Alpha <button type="button" id="card-del">Delete</button></div></div>
+
+    <div class="row">
+      <button type="button" id="create"><span>Create snapshot</span></button>
+      <button type="button" id="close" aria-label="Close panel">×</button>
+      <button type="button" id="open-dialog">Open dialog</button>
+      <button type="button" id="ny">New<br>York</button>
+      <input type="button" id="save-draft" aria-label="Save" value="Save draft">
+      <button type="button" id="save">Save</button>
+      <button type="button" id="hover-trap">Hover trap</button>
+      <span id="host"></span>
+    </div>
+    <table>
+      <tr><td>disk-1</td><td>asia-southeast1</td><td><button type="button" class="edit">Edit</button></td></tr>
+      <tr><td>disk-2</td><td>europe-west4</td><td><button type="button" class="edit">Edit</button></td></tr>
+    </table>
+    <p id="out"></p>
+  </main>
+</div>
+<div id="overlays"></div>
+<script>
+  window.log = [];
+  const out = (t) => { window.log.push(t); document.getElementById('out').textContent = t; };
+  const side = document.getElementById('side');
+  for (let i = 1; i <= 30; i++) {
+    const a = document.createElement('a');
+    a.href = '#nav' + i;
+    a.textContent = 'Nav item ' + i;
+    side.appendChild(a);
+  }
+
+  // A
+  const REGIONS = ['us-central1 (Iowa)', 'us-east1 (South Carolina)', 'europe-west4 (Netherlands)', 'asia-east1 (Taiwan)',
+    'asia-east2 (Hong Kong)', 'asia-northeast1 (Tokyo)', 'asia-south1 (Mumbai)', 'asia-southeast1 (Singapore)', 'asia-southeast2 (Jakarta)'];
+  const region = document.getElementById('region');
+  function closeRegion() {
+    document.getElementById('region-panel')?.remove();
+    region.setAttribute('aria-expanded', 'false');
+    region.removeAttribute('aria-controls');
+  }
+  region.addEventListener('click', () => {
+    if (region.getAttribute('aria-expanded') === 'true') { closeRegion(); return; }
+    const panel = document.createElement('div');
+    panel.id = 'region-panel';
+    panel.className = 'panel';
+    panel.setAttribute('role', 'listbox');
+    const r = region.getBoundingClientRect();
+    panel.style.left = r.left + scrollX + 'px';
+    panel.style.top = r.bottom + scrollY + 'px';
+    for (const name of REGIONS) {
+      const o = document.createElement('div');
+      o.setAttribute('role', 'option');
+      o.dataset.value = name.split(' ')[0];
+      const s = document.createElement('span');
+      s.textContent = name;
+      o.appendChild(s);
+      o.addEventListener('click', (e) => {
+        region.querySelector('.value').textContent = name;
+        out('region:' + o.dataset.value + (e.isTrusted ? ':trusted' : ':untrusted'));
+        closeRegion();
+      });
+      panel.appendChild(o);
+    }
+    // Rendered a little later, as frameworks do.
+    setTimeout(() => {
+      document.getElementById('overlays').appendChild(panel);
+      region.setAttribute('aria-controls', 'region-panel');
+      region.setAttribute('aria-expanded', 'true');
+    }, 120);
+  });
+
+  // B
+  const size = document.getElementById('size');
+  const sizeList = document.getElementById('size-list');
+  size.addEventListener('click', () => {
+    const open = sizeList.hidden;
+    sizeList.hidden = !open;
+    size.setAttribute('aria-expanded', String(open));
+  });
+  sizeList.addEventListener('click', (e) => {
+    const o = e.target.closest('[role=option]');
+    if (!o || o.getAttribute('aria-disabled') === 'true') return;
+    for (const x of sizeList.children) x.setAttribute('aria-selected', String(x === o));
+    size.textContent = 'Size: ' + o.textContent;
+    out('size:' + o.dataset.value);
+    sizeList.hidden = true;
+    size.setAttribute('aria-expanded', 'false');
+  });
+
+  // C
+  const CITIES = ['Singapore', 'Sydney', 'Seoul', 'Tokyo', 'Taipei'];
+  const city = document.getElementById('city');
+  const cityList = document.getElementById('city-list');
+  function showCities() {
+    const f = city.value.toLowerCase();
+    cityList.textContent = '';
+    for (const c of CITIES.filter((x) => x.toLowerCase().includes(f))) {
+      const li = document.createElement('li');
+      li.setAttribute('role', 'option');
+      li.textContent = c;
+      li.addEventListener('mousedown', (e) => e.preventDefault());
+      li.addEventListener('click', () => {
+        city.value = c;
+        out('city:' + c);
+        cityList.hidden = true;
+        city.setAttribute('aria-expanded', 'false');
+      });
+      cityList.appendChild(li);
+    }
+    cityList.hidden = false;
+    city.setAttribute('aria-expanded', 'true');
+  }
+  city.addEventListener('click', showCities);
+  city.addEventListener('input', showCities);
+
+  // G
+  const plan = document.getElementById('plan');
+  const planList = document.getElementById('plan-list');
+  plan.addEventListener('click', () => {
+    planList.hidden = !planList.hidden;
+    plan.setAttribute('aria-expanded', String(!planList.hidden));
+  });
+  planList.addEventListener('click', (e) => {
+    const o = e.target.closest('[role=option]');
+    if (!o) return;
+    plan.textContent = o.textContent;
+    out('plan:' + o.dataset.value);
+    planList.hidden = true;
+    plan.setAttribute('aria-expanded', 'false');
+  });
+
+  // Hover effects that change what is under the mouse.
+  document.getElementById('trap-option').addEventListener('mouseover', (e) => { e.currentTarget.textContent = 'Delete everything'; });
+  const trap = document.getElementById('hover-trap');
+  trap.addEventListener('click', () => out('hover-trap'));
+  trap.addEventListener('mouseover', () => {
+    if (document.getElementById('trap-cover')) return;
+    const r = trap.getBoundingClientRect();
+    const c = document.createElement('div');
+    c.id = 'trap-cover';
+    c.textContent = 'Danger';
+    Object.assign(c.style, { position: 'fixed', left: `${r.left - 5}px`, top: `${r.top - 5}px`, width: `${r.width + 10}px`, height: `${r.height + 10}px`, background: '#c00', zIndex: 30 });
+    c.addEventListener('click', () => out('danger'));
+    document.body.appendChild(c);
+  });
+
+  // D
+  const plain = document.getElementById('plain');
+  const plainMenu = document.getElementById('plain-menu');
+  plain.addEventListener('click', () => { plainMenu.style.display = plainMenu.style.display === 'none' ? '' : 'none'; });
+  plainMenu.addEventListener('click', (e) => {
+    if (e.target.localName !== 'li') return;
+    plain.textContent = e.target.textContent;
+    out('colour:' + e.target.textContent);
+    plainMenu.style.display = 'none';
+  });
+
+  // E
+  const actions = document.getElementById('actions');
+  actions.addEventListener('click', () => {
+    const old = document.getElementById('actions-menu');
+    if (old) { old.remove(); actions.setAttribute('aria-expanded', 'false'); return; }
+    const m = document.createElement('div');
+    m.id = 'actions-menu';
+    m.className = 'panel';
+    m.setAttribute('role', 'menu');
+    const r = actions.getBoundingClientRect();
+    m.style.left = r.left + scrollX + 'px';
+    m.style.top = r.bottom + scrollY + 'px';
+    for (const name of ['Duplicate', 'Rename', 'Archive item']) {
+      const it = document.createElement('div');
+      it.setAttribute('role', 'menuitem');
+      it.textContent = name;
+      it.addEventListener('click', () => { out('action:' + name); m.remove(); actions.setAttribute('aria-expanded', 'false'); });
+      m.appendChild(it);
+    }
+    document.getElementById('overlays').appendChild(m);
+    actions.setAttribute('aria-expanded', 'true');
+  });
+
+  // F
+  document.getElementById('tags').addEventListener('click', (e) => {
+    const o = e.target.closest('[role=option]');
+    if (!o || o.getAttribute('aria-disabled') === 'true') return;
+    o.setAttribute('aria-selected', String(o.getAttribute('aria-selected') !== 'true'));
+    out('tags:' + [...document.querySelectorAll('#tags [aria-selected=true]')].map((x) => x.textContent).join(','));
+  });
+
+  // Radios
+  for (const r of document.querySelectorAll('input[name=tier]')) r.addEventListener('change', () => out('tier:' + r.value));
+  const arch = document.getElementById('tier-arch');
+  arch.parentElement.addEventListener('click', () => { arch.setAttribute('aria-checked', 'true'); out('tier:arch'); });
+
+  document.getElementById('card').addEventListener('click', (e) => { if (e.target.id !== 'card-del') out('card'); });
+  document.getElementById('card-del').addEventListener('click', () => out('card-del'));
+  document.getElementById('create').addEventListener('click', () => out('create'));
+  document.getElementById('ny').addEventListener('click', () => out('ny'));
+  const shadow = document.getElementById('host').attachShadow({ mode: 'open' });
+  shadow.innerHTML = '<button type="button">Shadow action</button>';
+  shadow.querySelector('button').addEventListener('click', () => out('shadow'));
+  document.getElementById('close').addEventListener('click', () => out('close'));
+  for (const [i, b] of [...document.querySelectorAll('.edit')].entries()) b.addEventListener('click', () => out('edit:' + (i + 1)));
+
+  document.getElementById('open-dialog').addEventListener('click', () => {
+    const d = document.createElement('div');
+    d.className = 'modal';
+    d.id = 'confirm';
+    d.setAttribute('role', 'dialog');
+    d.setAttribute('aria-modal', 'true');
+    d.setAttribute('aria-label', 'Confirm deletion');
+    d.innerHTML = '<p>Delete disk-1?</p><button type="button" id="dlg-ok">Delete it</button> <button type="button" id="dlg-cancel">Cancel</button>';
+    document.getElementById('overlays').appendChild(d);
+    d.querySelector('#dlg-ok').addEventListener('click', () => { out('dialog:ok'); d.remove(); });
+    d.querySelector('#dlg-cancel').addEventListener('click', () => { out('dialog:cancel'); d.remove(); });
+  });
+</script>
+</body>
+</html>

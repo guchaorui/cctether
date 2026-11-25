@@ -3,12 +3,13 @@
 // runTool(name, args) → { content: [{type:'text', text} | {type:'image', data, mimeType}], tab? }
 // Expected failures throw ToolError(code, message) with these codes:
 //   no_tab, not_shared, restricted_url, dialog_open, debugger_busy, no_element, stale_ref,
-//   timeout, js_error, navigated, bad_args, not_found, emulation_changed, internal
+//   ambiguous, stale_screenshot, timeout, js_error, navigated, bad_args, not_found,
+//   emulation_changed, internal
 // ("paused" and "not connected" are handled by the caller.) When the failing call had resolved
 // a tab, the error carries it as `error.tab` ({ id, title, url }).
 
 import { ToolError } from './errors.js';
-import { A, int, bool, str, oneOf, strOrStrings, listOf, pattern, checkArgs } from './args.js';
+import { A, int, bool, str, oneOf, strOrStrings, listOf, pattern, obj, checkArgs } from './args.js';
 import { resolveTab, setCurrentTab, isRestrictedUrl, restrictedMessage } from '../tabs.js';
 import { session, dialogError, takeLostEmulation } from '../debugger.js';
 import { listTabs, openTab, closeTab, listExtensions, reloadExtension, tabSummary } from './browser.js';
@@ -20,7 +21,17 @@ import { consoleMessages, networkRequests, handleDialog } from './logs.js';
 
 export { ToolError };
 
-const pointer = { ref: A.ref, selector: A.selector, x: A.x, y: A.y, tab: A.tab };
+const pointer = { ref: A.ref, selector: A.selector, text: A.text, x: A.x, y: A.y, screenshot: A.screenshot, tab: A.tab };
+
+/** How click / hover / scroll may name their target: an element or a point, not both. */
+function checkPointer(a) {
+  const bad = (m) => { throw new ToolError('bad_args', m); };
+  if (a.ref != null && (a.selector != null || a.text != null)) bad('Pass `ref` alone, or `selector` and/or `text`, not both kinds.');
+  const el = a.ref != null || a.selector != null || a.text != null;
+  const pt = a.x != null || a.y != null || a.screenshot != null;
+  if (el && pt) bad('Pass either an element (`ref`, `selector`, `text`) or a point (`x` and `y`), not both.');
+  if (pt && (a.x == null || a.y == null)) bad(a.screenshot != null ? 'Pass `x` and `y` (a point on the screenshot) with `screenshot`.' : 'Pass both `x` and `y`.');
+}
 
 /**
  * kind: 'browser' = run(args); 'page' = resolve tab, attach debugger, run({ tab, s }, args).
@@ -28,6 +39,7 @@ const pointer = { ref: A.ref, selector: A.selector, x: A.x, y: A.y, tab: A.tab }
  * dialogOk: the tool may run while a JS dialog is open.
  * ownsEmulation: the tool manages an emulation itself (resize_viewport, set_color_scheme), so it
  *   neither shows nor consumes the "emulation ended" note (see runPageTool).
+ * check(args): argument combinations to refuse before any tab is touched.
  */
 const TOOLS = {
   list_tabs: { kind: 'browser', args: {}, run: listTabs },
@@ -35,7 +47,10 @@ const TOOLS = {
   close_tab: { kind: 'browser', args: { tab: A.tab }, required: ['tab'], run: closeTab },
   navigate: {
     kind: 'page', restrictedOk: true,
-    args: { url: str(1, 8192), action: oneOf('back', 'forward', 'reload'), tab: A.tab, timeout_ms: A.timeout(120000) },
+    args: {
+      url: str(1, 8192), action: oneOf('back', 'forward', 'reload'), tab: A.tab, timeout_ms: A.timeout(120000),
+      wait_for: obj({ text: A.text, selector: A.selector }),
+    },
     run: navigate,
   },
   read_page: {
@@ -46,7 +61,11 @@ const TOOLS = {
     },
     run: readPage,
   },
-  find: { kind: 'page', args: { selector: A.selector, limit: int(1, 200), tab: A.tab }, required: ['selector'], run: find },
+  find: {
+    kind: 'page', args: { selector: A.selector, text: A.text, limit: int(1, 200), tab: A.tab },
+    check: (a) => { if (a.selector == null && a.text == null) throw new ToolError('bad_args', 'Pass `selector`, `text`, or both.'); },
+    run: find,
+  },
   screenshot: {
     kind: 'page',
     args: {
@@ -72,6 +91,7 @@ const TOOLS = {
       ...pointer, button: oneOf('left', 'right', 'middle'), click_count: int(1, 3),
       modifiers: listOf(4, oneOf('Alt', 'Control', 'Meta', 'Shift')),
     },
+    check: checkPointer,
     run: click,
   },
   type: {
@@ -84,9 +104,10 @@ const TOOLS = {
   scroll: {
     kind: 'page',
     args: { ...pointer, direction: oneOf('up', 'down', 'left', 'right'), amount: int(1, 100000) },
+    check: checkPointer,
     run: scroll,
   },
-  hover: { kind: 'page', args: pointer, run: hover },
+  hover: { kind: 'page', args: pointer, check: checkPointer, run: hover },
   select_option: {
     kind: 'page',
     args: { ref: A.ref, selector: A.selector, value: strOrStrings(100), tab: A.tab },
@@ -95,7 +116,7 @@ const TOOLS = {
   },
   wait_for: {
     kind: 'page',
-    args: { text: str(1, 1000), selector: A.selector, gone: bool(), timeout_ms: A.timeout(120000), tab: A.tab },
+    args: { text: str(1, 1000), selector: A.selector, gone: bool(), timeout_ms: A.timeout(600000), tab: A.tab },
     run: waitFor,
   },
   evaluate: {
@@ -222,6 +243,7 @@ export async function runTool(name, args) {
   if (!def) throw new ToolError('bad_args', `Unknown tool ${JSON.stringify(String(name)).slice(0, 80)}. Tools: ${TOOL_NAMES.join(', ')}.`);
   try {
     const clean = checkArgs(name, args, def.args, def.required);
+    def.check?.(clean);
     return def.kind === 'page' ? await runPageTool(def, clean) : await def.run(clean);
   } catch (e) {
     if (e instanceof ToolError) throw e;

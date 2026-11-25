@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Scroller fixture</title>
+<style>
+  /* An app shell: the document never scrolls, the content pane does. */
+  html, body { margin: 0; height: 100%; overflow: hidden; font: 14px sans-serif; }
+  .shell { display: flex; flex-direction: column; height: 100%; }
+  .top { height: 40px; flex: none; background: #333; color: #fff; }
+  .body { flex: 1; display: flex; min-height: 0; }
+  .side { width: 120px; flex: none; background: #ddd; }
+  #pane { flex: 1; overflow: auto; position: relative; }
+  #bar { position: sticky; top: 0; height: 30px; background: #000; color: #fff; }
+  .band { height: 150px; }
+  #foot { position: sticky; bottom: 0; height: 20px; background: #f0f; }
+  #small { position: absolute; right: 8px; top: 48px; width: 100px; height: 80px; overflow: auto; background: #fff; border: 1px solid #000; }
+  #small div { height: 300px; background: linear-gradient(#fff, #0a0); }
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="top">Top bar</div>
+  <div class="body">
+    <div class="side">Side</div>
+    <div id="pane">
+      <div id="bar">Sticky header</div>
+      <!-- 12 bands of 150 px, each a different colour: band i is rgb(20 * i, 250 - 20 * i, 100). -->
+      <div id="bands"></div>
+      <div id="foot"></div>
+    </div>
+  </div>
+</div>
+<div id="small"><div></div></div>
+<script>
+  const bands = document.getElementById('bands');
+  for (let i = 0; i < 12; i++) {
+    const d = document.createElement('div');
+    d.className = 'band';
+    d.style.background = `rgb(${20 * i}, ${250 - 20 * i}, 100)`;
+    d.textContent = 'Band ' + i;
+    bands.appendChild(d);
+  }
+  window.scrolls = 0;
+  document.getElementById('pane').addEventListener('scroll', () => { window.scrolls++; });
+</script>
+</body>
+</html>
