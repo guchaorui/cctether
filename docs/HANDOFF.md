@@ -4,6 +4,12 @@
 
 ## 零、现在到哪了（先看这里）
 
+> **下一步（主人 2026-11-26 定的，还没开始）：服务升级后，已经开着的 Claude Code 窗口自动拿到新的工具清单。** 做完再和 0.6.1 的插件一起上传商店（主人说一起传）。新窗口从这一段开始：
+> - 起因：服务升级、重启以后，已经开着的 Claude Code 会话手里还是旧的工具清单，用不了新工具、新参数（0.6.0 验证 `file` 时又撞上，只好自己写脚本走 `cctether mcp`）。
+> - **先查清楚再动手**：Claude Code 收到 MCP 的 `notifications/tools/list_changed` 会不会重新调 `tools/list`、马上就能用新参数（查 Claude Code 文档和更新记录，最好在真的会话里试）。不会的话，这件事就只能改成「提示 Claude 让用户重开会话」，先回来和主人商量。
+> - 大致做法（还没给 GPT 挑过刺）：`server/src/mcp.js` 的 initialize 回复里 `tools.listChanged` 改成 `true`；`server/src/shim.js` 记住客户端的 initialize 参数和第一次连上的服务版本，断线重连以后，用一个自己的 id 再向新的服务发一次 initialize（回复不转给客户端），版本变了就给客户端发 `notifications/tools/list_changed`。只对用新 shim 启动的会话有效（老会话里跑的是老 shim）。
+> - 测试：`server/test/` 里用假的服务模拟「重连后版本变了 / 没变」；改了 SPEC 先在 §13 记一笔（v0.19）。版本 0.6.2，照第三节发布（主人已授权做完就发）。
+
 **2026-11-26：0.6.0 做完并已发布，随后补发 0.6.1**（npm、GitHub Release、主人的服务器；商店的新包等主人上传，直接传 0.6.1 的）。起因是又一个项目的 Claude 在 Oracle 云控制台里用 cctether，主人转来反馈：控制台把整个表单放在同源 iframe 里，`read_page` 只读回页眉页脚，按文字找「创建」说没有；400 多行的脚本每次都要整段贴。做的过程中它又补了两条：往 iframe 里的输入框打字报「不是文本框」（同一个原因）；14 KB 的脚本又整段贴了两遍。规则全在 SPEC §5.2「同源 iframe，和 `evaluate` 读脚本文件」，经过在 §13 v0.17。
 - **同源 iframe 和页面本身一样能用**：读页面、按选择器和文字找、点击、输入、选下拉框、滚动、等待、截图都进得去；别的网站的、加了 sandbox 的写出它声明的地址（去掉参数）。跨页面不明确（好几个 iframe 都匹配、文字在不止一个页面里完全相同）就列出候选，不替 Claude 选。
 - **`evaluate` 的 `file`**：只读 cctether 自己的脚本目录（`~/.config/cctether/scripts/`，权限 700，不能是链接），由服务读出来当 `expression` 发出去，旧插件也能用。主人服务器上已经在真链路上试过（读到了 example.com 的标题，`../config.json` 被拦下）。
@@ -52,7 +58,7 @@
 
 **还等主人定的：**
 
-- **上传商店的 0.6.1 包**：照 `store/README.zh-CN.md` 末尾上传 `dist/cctether-extension-0.6.1-store.zip`（GitHub Release 里也有）。iframe 的支持在插件里，过审以后才到主人的 Mac 上。
+- **上传商店的包**：主人 2026-11-26 说等上面的下一步做完再一起传（照 `store/README.zh-CN.md` 末尾，传那时最新的 `-store.zip`）。iframe 的支持在插件里，过审以后才到主人的 Mac 上。
 - **请 Oracle 那个项目的 Claude 再用一次**（商店版更新以后）：看 iframe 和 `file` 在真的控制台里好不好用。它要重开 Claude Code 才拿得到 `file` 参数。
 
 - **请谷歌云那个项目的 Claude 再用一次**（不急，主人方便时）：看那六条反馈在真的控制台里是不是解决了。有新反馈就照这次的流程改。
