@@ -1,14 +1,15 @@
 # 交接
 
-> 2026-11-26 更新。新窗口读 `CLAUDE.md`、`CLAUDE.local.md`（这两个会自动加载）、`docs/SPEC.md` 和本文第零、一节，就能接上。
+> 2026-11-27 更新。新窗口读 `CLAUDE.md`、`CLAUDE.local.md`（这两个会自动加载）、`docs/SPEC.md` 和本文第零、一节，就能接上。
 
 ## 零、现在到哪了（先看这里）
 
-> **下一步（主人 2026-11-26 定的，还没开始）：服务升级后，已经开着的 Claude Code 窗口自动拿到新的工具清单。** 做完再和 0.6.1 的插件一起上传商店（主人说一起传）。新窗口从这一段开始：
-> - 起因：服务升级、重启以后，已经开着的 Claude Code 会话手里还是旧的工具清单，用不了新工具、新参数（0.6.0 验证 `file` 时又撞上，只好自己写脚本走 `cctether mcp`）。
-> - **先查清楚再动手**：Claude Code 收到 MCP 的 `notifications/tools/list_changed` 会不会重新调 `tools/list`、马上就能用新参数（查 Claude Code 文档和更新记录，最好在真的会话里试）。不会的话，这件事就只能改成「提示 Claude 让用户重开会话」，先回来和主人商量。
-> - 大致做法（还没给 GPT 挑过刺）：`server/src/mcp.js` 的 initialize 回复里 `tools.listChanged` 改成 `true`；`server/src/shim.js` 记住客户端的 initialize 参数和第一次连上的服务版本，断线重连以后，用一个自己的 id 再向新的服务发一次 initialize（回复不转给客户端），版本变了就给客户端发 `notifications/tools/list_changed`。只对用新 shim 启动的会话有效（老会话里跑的是老 shim）。
-> - 测试：`server/test/` 里用假的服务模拟「重连后版本变了 / 没变」；改了 SPEC 先在 §13 记一笔（v0.19）。版本 0.6.2，照第三节发布（主人已授权做完就发）。
+> **2026-11-27 夜里（主人睡前定的三件事）都做完了，等主人起来看。** 新窗口从这一段开始：
+> - **主人要做的**：① 上传商店的新包：`dist/cctether-extension-0.7.0-store.zip`（也在 GitHub Release v0.7.0 里），一次带上 0.6.x 的 iframe 和这次的拖拽，0.6.1 的不用传了；商店介绍里的功能列表多了「拖拽」（`store/listing*.md` 已改），上传时顺手把介绍文字也更新。② 看「上传文件」的方案（SPEC §5.2「上传文件 `upload_file`」），定做不做、20 MiB 的上限行不行、`tab` 和 `origin` 都必填行不行。③ 商店版过审以后，请 Oracle 那个项目的 Claude 再用一次（iframe、`file`、拖拽）。
+> - **0.6.2（已发布）**：服务升级以后，已经开着的 Claude Code 会话也能用上新工具（SPEC §4.5「服务换了以后」，§13 v0.19）。在真的 Claude Code 会话里试过：收到 `notifications/tools/list_changed` 以后新增的工具马上能用，但已经用过的工具 Claude Code 会一直沿用旧的说明（§11 第 15 条），所以还加了「下一次工具结果末尾附一段说明」，写清新参数，Claude 当场就能传。只对用 0.6.2 以后开的会话有效。
+> - **0.7.0（已发布）**：新工具 `drag`（SPEC §5.2「拖拽 `drag`」，§13 v0.20）。只用真的鼠标事件，Chrome 自己会把它们转成 HTML 拖放（§11 第 16 条）。插件改了，要等商店过审才到主人的 Mac 上。
+> - **上传文件**：只出了方案、写进 SPEC，没写代码（§13 v0.21）。三种交给网页的办法都在测试 Chrome 里试过（§11 第 17 条）。
+> - 每件都照规矩找 GPT 挑刺、复审、核验，意见和取舍记在 SPEC §13 对应的那一条里。GPT 的每周额度这次用到了 95%（11/28 20:15 重置），下次用之前看一眼 `codex-quota`。
 
 **2026-11-26：0.6.0 做完并已发布，随后补发 0.6.1**（npm、GitHub Release、主人的服务器；商店的新包等主人上传，直接传 0.6.1 的）。起因是又一个项目的 Claude 在 Oracle 云控制台里用 cctether，主人转来反馈：控制台把整个表单放在同源 iframe 里，`read_page` 只读回页眉页脚，按文字找「创建」说没有；400 多行的脚本每次都要整段贴。做的过程中它又补了两条：往 iframe 里的输入框打字报「不是文本框」（同一个原因）；14 KB 的脚本又整段贴了两遍。规则全在 SPEC §5.2「同源 iframe，和 `evaluate` 读脚本文件」，经过在 §13 v0.17。
 - **同源 iframe 和页面本身一样能用**：读页面、按选择器和文字找、点击、输入、选下拉框、滚动、等待、截图都进得去；别的网站的、加了 sandbox 的写出它声明的地址（去掉参数）。跨页面不明确（好几个 iframe 都匹配、文字在不止一个页面里完全相同）就列出候选，不替 Claude 选。
@@ -17,7 +18,7 @@
 - **GPT 把关**：方案挑了两轮刺，做完复审一轮（4 条要紧的、3 条次要的，都改了），核验两轮（第一轮又指出 4 处，都改了；0.6.0 发布后第二轮确认都修好了，又指出两处小的，改成 0.6.1，见 SPEC §13 v0.18，这两处没再送核验）。没采纳的和理由在 SPEC §13 v0.17。
 - **还不支持**：把 iframe 里滚动的内容一次截全（提示 Claude 边滚边截）；在旋转、缩放过的 iframe 里按位置点击。
 
-**顺带记一个这次自己用 cctether 时的不顺手**（全局 CLAUDE.md 要求汇报）：服务端升级以后，已经开着的 Claude Code 会话手里还是旧的工具清单，用不了新参数，只好自己写脚本走 `cctether mcp`（这次验证 `file` 又是这样）。列在第二节。
+**顺带记一个这次自己用 cctether 时的不顺手**（全局 CLAUDE.md 要求汇报）：服务端升级以后，已经开着的 Claude Code 会话手里还是旧的工具清单，用不了新参数，只好自己写脚本走 `cctether mcp`（这次验证 `file` 又是这样）。2026-11-27 的 0.6.2 解决了（见上）。
 
 **两个阶段都做完了，项目已经公开发布，主人自己每天在用。** 主人 2026-11-09 说先做到这里。2026-11-17 加了 `resize_viewport`、`set_color_scheme`（0.4.0），已发布，商店版 11-18 过审。
 
@@ -36,15 +37,15 @@
 
 | 在哪 | 版本 | 说明 |
 |---|---|---|
-| 仓库 `main` | 0.6.1 | 已公开（`guchaorui/cctether`），GitHub 上的测试全过 |
-| npm（`cctether`） | 0.6.1 | 2026-11-09 起由 GitHub Actions 可信发布，带来源证明。0.6.1 的包和 Release 里的逐字节一致 |
-| GitHub Release | v0.6.1 | 附插件 zip、npm 包和校验和；两个插件 zip 和本地打的一致 |
-| Chrome 应用商店 | 0.5.1 | **0.6.1 的包等主人上传**（`dist/cctether-extension-0.6.1-store.zip`，也在 GitHub Release 里；0.6.0 的不用传）。0.5.1 2026-11-26 过审，和 v0.5.1 逐文件核对过（只有 manifest 按预期不同，多了 `_metadata/`） |商店里的包和 `v0.4.0` 标签逐个文件核对过，只有 manifest 按预期不同（核对办法见「坑」→「发布」）。0.3.3 的插件代码没变，所以当时没提交。[商店页面](https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib)，插件 ID `mbkadoolgknacadjkfjjajldmllbkdib` |
-| 主人的服务器 | 0.6.1 | 2026-11-26 从 npm 装的，`cctether check` 全过（细节在 `CLAUDE.local.md`） |
-| 主人的 Mac | 商店版 0.5.1 | Chrome 158，2026-11-26 自动更新，连接正常 |
+| 仓库 `main` | 0.7.0 | 已公开（`guchaorui/cctether`），GitHub 上的测试全过 |
+| npm（`cctether`） | 0.7.0 | 2026-11-09 起由 GitHub Actions 可信发布，带来源证明。0.6.2、0.7.0 的包都和 Release 里的逐字节一致 |
+| GitHub Release | v0.7.0 | 附插件 zip、npm 包和校验和；两个插件 zip 和本地打的一致 |
+| Chrome 应用商店 | 0.5.1 | **0.7.0 的包等主人上传**（`dist/cctether-extension-0.7.0-store.zip`，也在 GitHub Release 里；0.6.x 的都不用传）。0.5.1 2026-11-26 过审，和 v0.5.1 逐文件核对过（只有 manifest 按预期不同，多了 `_metadata/`）。[商店页面](https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib)，插件 ID `mbkadoolgknacadjkfjjajldmllbkdib` |
+| 主人的服务器 | 0.7.0 | 2026-11-27 从 npm 装的，`cctether check` 全过（细节在 `CLAUDE.local.md`） |
+| 主人的 Mac | 商店版 0.5.1 | Chrome 158，连接正常（0.6.2 升级时断开十几秒后自己连回来了） |
 | 官网主页 | 已有卡片 | site-ops 做的。要改卡片交给 site-ops |
 
-- **测试**：服务端 89 个；端到端 84 个（83 个通过，1 个要有界面的 Chrome，GitHub 上会跳过）。0.6.0 新加的 iframe 测试在 `tools.test.mjs` 末尾，测试页 `fixtures/pages/frames.html`、`frame-inner.html`（别的网站用 localhost 对 127.0.0.1 来模拟）。
+- **测试**：服务端 102 个（0.6.2 的在 `server/test/shim.test.js`：假的常驻服务 + 子进程跑的 `cctether mcp`）；端到端 86 个（85 个通过，1 个要有界面的 Chrome，GitHub 上会跳过）。拖拽的两个测试在 `tools.test.mjs` 末尾，测试页 `fixtures/pages/drag.html`；iframe 的在它们前面，测试页 `fixtures/pages/frames.html`、`frame-inner.html`（别的网站用 localhost 对 127.0.0.1 来模拟）。
 - **两个新工具在主人的真 Mac 上试过的（2026-11-18，Chrome 157，Retina 屏，系统是浅色）**：调到 390 宽、只改高度、调到比窗口还高（1280×2000）；截图是 1 图片像素 = 1 CSS 像素，按截图坐标点击点得中；强制深色、再恢复跟随系统；跳到别的页面后两个模拟都还在；恢复后回到真实大小（1710×806）；标签页在前台和在后台都试了；在一个真实网站上（nodejs.org）也试了。模拟自动结束后的提醒两种情况都试了：5 分钟没操作后，下一次截图的说明末尾带了一句提醒，再下一次就不带了；Mac 断线几分钟再连上后，按旧坐标点击被拒绝了一次，之后正常。两种情况下页面都回到了真实大小和浅色。
 - **主人在真 Mac 上确认过的**：合盖再打开，连接很快恢复；常用快捷键都对（清单在 SPEC §13 v0.10）；商店版能连上服务端，整条链走通。
 - **外部反馈**：GitHub 上目前 0 个 star，没有 issue。还没有别人用过的反馈。
@@ -58,8 +59,9 @@
 
 **还等主人定的：**
 
-- **上传商店的包**：主人 2026-11-26 说等上面的下一步做完再一起传（照 `store/README.zh-CN.md` 末尾，传那时最新的 `-store.zip`）。iframe 的支持在插件里，过审以后才到主人的 Mac 上。
-- **请 Oracle 那个项目的 Claude 再用一次**（商店版更新以后）：看 iframe 和 `file` 在真的控制台里好不好用。它要重开 Claude Code 才拿得到 `file` 参数。
+- **上传商店的包**：传 `dist/cctether-extension-0.7.0-store.zip`（照 `store/README.zh-CN.md` 末尾），顺手把商店介绍更新成 `store/listing*.md` 里的（功能列表多了拖拽）。iframe 和拖拽都在插件里，过审以后才到主人的 Mac 上。
+- **上传文件的方案**：SPEC §5.2「上传文件 `upload_file`」，要主人定做不做、20 MiB 的上限、`tab` 和 `origin` 都必填行不行。动手前那一段就是施工图。
+- **请 Oracle 那个项目的 Claude 再用一次**（商店版更新以后）：看 iframe、`file`、拖拽在真的控制台里好不好用。它的会话要是开在 0.6.2 之前，要重开一次 Claude Code。
 
 - **请谷歌云那个项目的 Claude 再用一次**（不急，主人方便时）：看那六条反馈在真的控制台里是不是解决了。有新反馈就照这次的流程改。
 - 中英文介绍（不急，主人不提就别催）：Claude 写过草稿给主人，发不发、发到哪由主人定。Claude 不代发。
@@ -79,17 +81,17 @@
 2. **Mac 当服务端。** 代码里没有 Mac 的后台服务（launchd），setup 在 Mac 上不会装开机自启，靠 Claude Code 启动时把服务拉起来。文档写的是「没测过，欢迎反馈」。Claude 碰不到 Mac，要主人配合，或者等用户反馈。
 3. **WSL 当服务端。** 同样没测过，开发机上测不了。
 
-**再补工具的缺口。** 现在有 22 个工具，这几件事 Claude 做不了：
+**再补工具的缺口。** 现在有 23 个工具，这几件事 Claude 做不了：
 
-4. **上传文件。** 真实使用里最容易撞到。要先想清楚设计：文件在服务器上，浏览器在 Mac 上，内容要传过去，而现在一条消息上限是 1 MiB（要分片，要定总大小上限）；还要防止任意读服务器上的文件。动手前先写进 SPEC。
-5. **拖拽。** 拖动排序、拖进上传框这类页面现在操作不了。比上传简单，用现有的鼠标事件就能做。
+4. **上传文件。** 真实使用里最容易撞到。2026-11-27 方案已经写进 SPEC §5.2「上传文件 `upload_file`」（GPT 挑过刺），等主人定。估计要改协议（服务发给插件的消息也分段），版本 0.8.0。
+5. ~~拖拽~~：2026-11-27 做完，0.7.0。
 6. **每个 Claude 窗口各用一个标签组。** 现在所有窗口共用一个「cctether」组，同时开几个窗口时看得到彼此的标签页，可能互相干扰。这会改标签页范围，属于安全相关，必须配测试。
 7. **长页面分段截图。** 现在截整页时，很长的页面会被缩得很窄。
 8. **真正的手机模拟。** 要有触摸、UA、手机的视口规则；现在的 `resize_viewport` 只是「窄的桌面视口」。别的媒体模拟（减少动画、打印样式）也还没做。
 
 **iframe 里滚动的内容一次截全**（0.6.0 没做，SPEC §5.2「还不支持」）：GPT 认为要每一步核对 iframe 的位置和滚动、加锁、要求整个区域都在屏幕里。
 
-**工具清单跟着升级更新：** 服务端升级后，已经开着的会话还拿着旧的工具清单（2026-11-26 自己用时撞上）。可以让 `cctether mcp` 在常驻服务换版本后发 `notifications/tools/list_changed`（服务端要声明 `tools.listChanged: true`）。要先查 Claude Code 收到这个通知会不会重新拉清单。
+**拖拽的后续**（0.7.0 没做，SPEC §5.2「拖拽 `drag`」）：拖到视口外时自动滚动；对话框关掉以后自动松开鼠标；从页面拖进 iframe（跨文档）没专门测过；拖的过程中 iframe 换了页面不会让它停下。
 
 **这次反馈里没做、或者做了一半的：**
 
@@ -127,6 +129,9 @@
 | 主人的部署、账号、怎么升级 | `CLAUDE.local.md` |
 
 ## 开发机上测不了、还没专门确认过的
+
+- 拖拽在主人真 Mac 上的 Chrome 里（商店过审以后）：开发机上无界面、有界面的 Chrome for Testing 156 都测过。插件声明的最低版本 Chrome 120 上没试过「鼠标事件转成 HTML 拖放」。
+- 0.6.2 只在 `claude -p` 的会话里试过（§11 第 15 条），交互界面的 Claude Code 没专门试；用到的是同一套 MCP 客户端代码。
 
 - 真实断网时，扩展后台收不收得到 offline/online 事件（收不到也没关系，每秒会读一次联网状态）。
 - 界面在 Mac 上的样子：开发机没有苹方字体，截图里中文标题是常规粗细。
@@ -172,6 +177,9 @@
 - `xvfb-run` 在开发机上用不了（没有 xauth），要有界面的 Chrome 就直接起 `Xvfb :97`。
 
 **测试：**
+
+- 想在真的 Claude Code 会话里试 MCP 行为（比如工具清单的通知）：写一个假的 MCP 服务，用 `env -u CLAUDECODE claude -p --input-format stream-json --output-format stream-json --verbose --strict-mcp-config --mcp-config <临时配置> --model haiku --debug-file <日志>` 起会话，从 stdin 一条条发用户消息，中间改服务的状态（2026-11-27 的脚本思路记在 SPEC §11 第 15 条）。`--strict-mcp-config` 让它不加载主人自己的 cctether。
+- 工作区里有 `git add -N` 过的新文件时，`git stash` 会失败（「not uptodate. Cannot merge」），什么也没存。想在干净的代码上跑测试，用 `git worktree add --detach /tmp/xxx <提交>`，再把 `server/node_modules` 链接过去。
 
 - 在真实网站上试插件改动，不用发布：用 `test/e2e/lib/chrome.js` 的 `launchChrome` 带上工作区的插件起测试 Chrome，在插件后台调 `self.cctether.runTool(...)`（同 tools.test.mjs 的 `call`）。测试 Chrome 默认视口很小（780×437），很多网站会换成窄屏布局，先 `resize_viewport` 调成 1710×862（主人 Mac 的大小）。
 - 想经主人的 Mac 试服务端的新工具、而当前对话的工具清单是旧的（对话开在升级之前）：自己起 `cctether mcp`，按 MCP 发 initialize 和 tools/call，和 Claude Code 走的是同一条路。
