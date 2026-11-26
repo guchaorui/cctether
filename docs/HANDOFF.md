@@ -15,17 +15,17 @@
 - `screenshot` 给元素加 `full_page` 能把一个滚动区域整个截下来（边滚边截再拼）。
 - 新服务端配旧插件时，参数报错会说明是插件太旧。
 
-做完以后测试全过。GPT 复审提了 7 条，都改了，又核验了四轮才没有必须改的（细节在 SPEC §13 v0.15）。复审还顺带堵上了一个所有工具都有的时间差：标签页在「确认在组里」和「挂上调试器」之间被拖出组，原来会被操作一小会儿。**2026-11-26 商店 0.5.0 过审**，商店里的包和发布的逐个文件核对过。随后在主人的真 Mac 上用公开演示网站（MUI、Angular Material）试了新功能：截图编号点击、按文字点击、元素清单分组、整页截图的提示都正常；试出三处要改（自定义下拉框要等弹出动画放完再点、选完要等菜单关上；Angular 下拉框「显示的文字」算进了选项；截滚动区域时外面浮着的 cookie 提示框被截进每一段），**改成了 0.5.1**（SPEC §13 v0.16），测试全过，GPT 复审的 4 条都改了、核验过。0.5.1 还没发布，等主人同意。
+做完以后测试全过。GPT 复审提了 7 条，都改了，又核验了四轮才没有必须改的（细节在 SPEC §13 v0.15）。复审还顺带堵上了一个所有工具都有的时间差：标签页在「确认在组里」和「挂上调试器」之间被拖出组，原来会被操作一小会儿。**2026-11-26 商店 0.5.0 过审**，商店里的包和发布的逐个文件核对过。随后在主人的真 Mac 上用公开演示网站（MUI、Angular Material）试了新功能：截图编号点击、按文字点击、元素清单分组、整页截图的提示都正常；试出三处要改（自定义下拉框要等弹出动画放完再点、选完要等菜单关上；Angular 下拉框「显示的文字」算进了选项；截滚动区域时外面浮着的 cookie 提示框被截进每一段），**改成了 0.5.1**（SPEC §13 v0.16），测试全过，GPT 复审的 4 条都改了、核验过。**0.5.1 2026-11-26 已发布**（npm、GitHub Release、主人的服务器），商店包等主人上传、过审。
 
 已知还没解决的问题：有界面模式下有一条旧测试偶尔失败，原因还没查清（见「坑」→「测试」）。
 
 | 在哪 | 版本 | 说明 |
 |---|---|---|
-| 仓库 `main` | 0.5.1 | 已公开（`guchaorui/cctether`）。0.5.1 还没打标签、没发布 |
-| npm（`cctether`） | 0.5.0 | 2026-11-09 起由 GitHub Actions 可信发布，带来源证明。0.5.0 的包和 Release 里的逐字节一致 |
-| GitHub Release | v0.5.0 | 附插件 zip、npm 包和校验和；两个插件 zip 和本地打的一致 |
-| Chrome 应用商店 | 0.5.0 | 2026-11-26 过审，和 v0.5.0 逐文件核对过（只有 manifest 按预期不同，多了 `_metadata/`）。0.5.1 发布后要再上传一次（步骤在 `store/README.zh-CN.md` 末尾）。商店里的包和 `v0.4.0` 标签逐个文件核对过，只有 manifest 按预期不同（核对办法见「坑」→「发布」）。0.3.3 的插件代码没变，所以当时没提交。[商店页面](https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib)，插件 ID `mbkadoolgknacadjkfjjajldmllbkdib` |
-| 主人的服务器 | 0.5.0 | 2026-11-26 从 npm 装的，`cctether check` 全过（细节在 `CLAUDE.local.md`） |
+| 仓库 `main` | 0.5.1 | 已公开（`guchaorui/cctether`），GitHub 上的测试全过 |
+| npm（`cctether`） | 0.5.1 | 2026-11-09 起由 GitHub Actions 可信发布，带来源证明。0.5.1 的包和 Release 里的逐字节一致 |
+| GitHub Release | v0.5.1 | 附插件 zip、npm 包和校验和；两个插件 zip 和本地打的一致 |
+| Chrome 应用商店 | 0.5.0 | 2026-11-26 过审，和 v0.5.0 逐文件核对过（只有 manifest 按预期不同，多了 `_metadata/`）。**0.5.1 等主人上传 `cctether-extension-0.5.1-store.zip`、提交审核**（步骤在 `store/README.zh-CN.md` 末尾）。 |商店里的包和 `v0.4.0` 标签逐个文件核对过，只有 manifest 按预期不同（核对办法见「坑」→「发布」）。0.3.3 的插件代码没变，所以当时没提交。[商店页面](https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib)，插件 ID `mbkadoolgknacadjkfjjajldmllbkdib` |
+| 主人的服务器 | 0.5.1 | 2026-11-26 从 npm 装的，`cctether check` 全过（细节在 `CLAUDE.local.md`） |
 | 主人的 Mac | 商店版 0.5.0 | Chrome 158，2026-11-26 自动更新，连接正常 |
 | 官网主页 | 已有卡片 | site-ops 做的。要改卡片交给 site-ops |
 
@@ -36,13 +36,14 @@
 
 **主人已经定了的，不用再问：**
 
-- 发布前不加「在 GitHub 上点批准」（SPEC §8.3）。所以推版本标签就等于发布，推之前 Claude 必须先问主人。
+- 发布前不加「在 GitHub 上点批准」（SPEC §8.3），推版本标签就等于发布。
+- **做完了可以直接发布**（主人 2026-11-26：「以后做完了可以直接发」）：测试全过、GPT 复审过、提交 push、GitHub 上的测试过，就照第三节发布并升级主人的服务器，发完汇报。商店的新包仍让主人上传。
 - 商店只在插件代码改了才提交新版本，商店版可以落后于 npm。
 - npm 的发布权限（包的 Settings → Publishing access）：主人 2026-11-09 打开设置页，选的是第一项「要求两步验证，不接受绕过两步验证的令牌」。可信发布不受影响。Claude 看不到这个设置，只看过主人的截图。
 
 **还等主人定的：**
 
-- **发布 0.5.1**：主人同意后照第三节发布，再让主人上传商店包。过审以后在主人的 Mac 上把 MUI、Angular Material 的下拉框从关着的状态再选一次（0.5.0 在这里会拒绝或点不上）；有条件的话请谷歌云那个项目的 Claude 再用一次，看六条反馈是不是解决了。
+- **商店 0.5.1**：主人上传、提交审核。过审以后：核对商店里的包；在主人的 Mac 上把 MUI、Angular Material 的下拉框从关着的状态再选一次（0.5.0 在这里会拒绝或点不上），截一次 Angular 文档站的导航（cookie 提示框不该再出现在每一段里）；有条件的话请谷歌云那个项目的 Claude 再用一次，看六条反馈是不是解决了。
 - 中英文介绍（不急，主人不提就别催）：Claude 写过草稿给主人，发不发、发到哪由主人定。Claude 不代发。
 
 ## 一、新窗口怎么接手
@@ -85,7 +86,7 @@
 ## 三、发新版本的步骤
 
 1. `server/package.json`、`server/package-lock.json`、`extension/manifest.json` 的版本号一起加；测试全过；提交、push。
-2. **先问主人。** 同意后推标签：`git tag -a v<版本号> -m "cctether <版本号>" && git push origin v<版本号>`。这一推就会发布：GitHub Actions 跑全部测试，通过后用可信发布发到 npm（不用登录，也不用点确认），再建 Release 草稿。
+2. 确认这件事已经做完（测试全过、GPT 复审过、GitHub 上的测试过）。主人 2026-11-26 起授权做完就直接发，不用再问。推标签：`git tag -a v<版本号> -m "cctether <版本号>" && git push origin v<版本号>`。这一推就会发布：GitHub Actions 跑全部测试，通过后用可信发布发到 npm（不用登录，也不用点确认），再建 Release 草稿。
 3. 核对：`SHA256SUMS` 和本地 `node scripts/pack-extension.mjs`、`--flat` 打出来的一样，npm 包的 sha1 和 `npm view cctether@<版本号> dist.shasum` 一样。写说明，发布：`gh release edit v<版本号> --notes-file ... --draft=false --latest`。
 4. 插件代码改了的话：让主人照 `store/README.zh-CN.md` 末尾上传新的 `-store.zip`、提交审核。只改了服务端就不用，商店版可以落后。
 5. 升级主人的服务器（`npm install -g cctether@latest && systemctl --user restart cctether`），跑 `cctether check`。要回退：把 `latest` 换成旧版本号，再重启。
