@@ -208,6 +208,8 @@ Claude 能用这 22 个工具：
 1. `npm install -g cctether@latest`
 2. 重启服务。装了后台服务的：`systemctl --user restart cctether`。没装的：`cctether stop`，Claude Code 下次用到时它会自己再启动。
 
+已经开着的 Claude Code 会话不用重开：cctether 会告诉它们哪些工具是新增的、改了的（0.6.2 起；用更早版本开的会话，要重开才看得到新工具）。
+
 **自己加载的插件**：下载新的 zip，用新文件替换 `cctether-extension` 文件夹里的内容，然后在 `chrome://extensions` 里点 cctether 卡片上的重新加载按钮。
 
 配对信息都会保留。

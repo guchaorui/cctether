@@ -208,6 +208,8 @@ More: [SECURITY.md](SECURITY.md), [PRIVACY.md](PRIVACY.md) and [docs/PROTOCOL.md
 1. `npm install -g cctether@latest`
 2. Restart it. With the background service: `systemctl --user restart cctether`. Without it: `cctether stop`. It starts again by itself when Claude Code needs it.
 
+Claude Code sessions that are already open don't need a restart: cctether tells them which tools are new or changed (from 0.6.2 on; a session started with an older cctether needs a restart to see new tools).
+
 **If you loaded the extension yourself:** download the new zip, replace the contents of your `cctether-extension` folder with the new files, then click the reload button on the cctether card at `chrome://extensions`.
 
 Your pairing is kept either way.

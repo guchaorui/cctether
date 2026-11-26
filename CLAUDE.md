@@ -26,7 +26,7 @@ extension/          浏览器插件：MV3，零依赖，不打包，用户能直
   shared/           contract.js（后台和界面之间的约定）、pairing.js（连接码）、i18n、ui.css
   icons/            图标；源文件和生成脚本是 scripts/icons.mjs
 server/             npm 包 cctether：bin/cctether.js 命令行；src/ 里 gateway（插件入口）、control（控制入口）、
-                    mcp、shim（cctether mcp）、daemon、protocol、config、tools（工具定义，唯一来源）、evalfile（evaluate 读脚本文件）、
+                    mcp、shim（cctether mcp）、listwatch（服务换版本后通知客户端工具清单变了）、daemon、protocol、config、tools（工具定义，唯一来源）、evalfile（evaluate 读脚本文件）、
                     setup（安装向导）、check（自检）、system（探测 npm/systemd/claude）、text（setup 和 check 的中英文案）
 test/e2e/           端到端测试：无界面 Chrome for Testing + 插件 + 服务；lib/ 是自写的 CDP 客户端和 Chrome 启动器
 docs/               SPEC（施工图）、HANDOFF（交接）、install-mac.zh-CN.md（Mac 安装步骤）、
