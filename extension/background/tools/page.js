@@ -306,7 +306,7 @@ export async function shotPoint(s, tabId, id, x, y) {
   // What is at the point itself: the frames there and the areas that scroll there must be as
   // the screenshot showed them (SPEC §5.2).
   const c = await s.lib('shotCheck', [{ key: shot.key, frames: shot.frames, x: px - sx, y: py - sy }]);
-  if (c.refuse) throw new ToolError('bad_args', `Not done: ${c.refuse}. cctether can't check what is there, so points of screenshots can't be used there; a new screenshot won't change that. Use ref or text (from read_page or find) instead.`);
+  if (c.refuse) throw new ToolError('bad_args', `Not done: ${c.refuse}. cctether can't check what is there, so points of screenshots can't be used there; a new screenshot won't change that. ${c.instead}.`);
   if (c.changed.length) {
     throw new ToolError('stale_screenshot', `Not done: since screenshot ${id}, ${c.changed.join(' and ')}, so that point may show something else now. Take a new screenshot and use its number.`);
   }

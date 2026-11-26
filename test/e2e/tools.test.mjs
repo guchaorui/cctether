@@ -2235,7 +2235,7 @@ test('frames: screenshot points inside frames; refused once the frame or an area
   await pageEval(tab, '(document.getElementById("flip").style.transform = "scaleX(-1)", 1)');
   // On a mirrored frame, points of a screenshot are not used at all (a new one won't help).
   const e4 = await fails('click', { x: flip.x, y: flip.y, screenshot: id4 }, 'bad_args');
-  assert.match(e4.message, /on a frame that is rotated, scaled or zoomed \(CSS\)\. cctether can't check what is there.*a new screenshot won't change that\. Use ref or text/);
+  assert.match(e4.message, /on a frame that is rotated, scaled or zoomed \(CSS\)\. cctether can't check what is there.*a new screenshot won't change that\. Its elements can be read, but nothing in it can be pressed by position: use evaluate/);
   await ok('click', { x: 5, y: 5, screenshot: id4 }, 'elsewhere on that screenshot is fine');
   // Something of the page that lay over the middle of the frame when the screenshot was taken:
   // the frame scrolling underneath doesn't matter, the point still shows that thing.

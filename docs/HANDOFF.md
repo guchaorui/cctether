@@ -4,21 +4,14 @@
 
 ## 零、现在到哪了（先看这里）
 
-> **正在做（2026-11-26 开头，还没写代码）：0.6.0 = 同源 iframe 支持 + `evaluate` 读服务器上的文件。** 新窗口从这一段接着做。
->
-> **起因**：又一个项目的 Claude 在 Oracle 云控制台里用 cctether，主人转来两条反馈（原话大意）：
-> 1. 看不到 iframe 里的内容：控制台把整个表单放在同源 iframe 里，`read_page` 只读回页眉页脚 97 个字，`find` 按文字找「创建」说没有。只能每次用 `evaluate` 写 `iframe.contentDocument` 去读、去点。建议这些工具自动进同源 iframe；退一步，至少提示「内容在一个 1710×860 的 iframe 里」。
-> 2. 注入长脚本只能整段贴：400 多行的脚本每次都要当参数整段输出。建议 `evaluate` 能收一个服务器上的文件路径，由服务读文件再注入。
-> 它夸了：`network_requests` 没记录时会说明从哪一刻开始记、想看更早的怎么办。
->
-> **已经实验确认的**（Chrome for Testing 156，测试页 `test/e2e/fixtures/pages/frames.html`、`frame-inner.html`，已提交）：从主框架的隔离环境能读写同源 iframe：`contentDocument` 的文字、位置（相对 iframe 视口）、两种 `getComputedStyle`、`checkVisibility`、iframe 里的 `elementFromPoint` 都行；顶层 `elementFromPoint` 返回 `<iframe>` 本身。跨页面的 `instanceof` 不成立（iframe 是另一个 realm）。让 iframe 里的输入框 `focus()` 以后，顶层 `activeElement` 是 iframe，CDP `Input.insertText` 能打进去（现在的 `type` 会误报「不是输入框」，因为 `deepActive` 没往 iframe 里看）。在 iframe 里 `scrollIntoView` 会把外层页面也带着滚几个像素。
->
-> **方案**（已发 GPT 挑刺，回答在 `/tmp/cct-gpt/plan2-answer.md`，方案原文 `/tmp/cct-gpt/plan2-prompt.md`，GPT 会话 id `01a21764-8189-73c2-bfb4-761a3ae88edd`，续会话照 gpt skill。这两个文件在 /tmp，机器重启会丢；回答是空的或不见了，就用方案原文重新发一次）。先读 GPT 的意见、改方案、写进 SPEC §5.2 和 §13（v0.17），再写代码：
-> - **A. 同源 iframe**（`extension/background/page-scripts.js`，大约 40 个函数要改，74 处默认只有一个文档）：加跨框架的辅助函数（列出同源框架的文档、`parentOf`/`composedContains`/`kidsOf` 跨框架、按元素自己的窗口取样式、把位置换算成顶层视口坐标、命中测试和焦点往框架里钻、可见性也看外层框架）。`resolve`/`find`/`wait_for`/`select_option` 的选择器、按文字找、`read_page` 的元素清单都进同源框架；`read_page` 文字模式在主文档后面按框架分段列出；`type` 用元素自己文档的 selection；`scroll` 把框架的滚动当成内层滚动；元素截图和滚动区域截全支持框架（iframe 本身可当滚动区域，整页截图的提示也能指向它）。跨源框架进不去：在结果里列出它的地址和大小，建议用 `open_tab` 直接打开那个地址。
-> - **B. `evaluate` 的 `file` 参数**：由服务端（`server/src/mcp.js`）读文件，换成 `expression` 再发给插件，插件不用改，旧插件也能用。只收 `.js`/`.mjs`/`.cjs`、普通文件、路径里没有以点开头的目录（挡住 `~/.ssh`、`~/.config` 包括 cctether 自己的密钥）、不超过 200 KB / 20 万字符；报错不带文件内容。`expression` 和 `file` 二选一。工具定义里标成「只在服务端」，让端到端测试的参数名核对跳过它。
-> - 测试、版本 0.6.0、做完照规矩直接发布（主人已授权），商店包请主人上传。
->
-> **顺带记一个这次自己用 cctether 时的不顺手**（全局 CLAUDE.md 要求汇报）：服务端升级以后，已经开着的 Claude Code 会话手里还是旧的工具清单，用不了新参数，只好自己写脚本走 `cctether mcp`。可以考虑：服务端声明 `listChanged`，常驻服务换了版本时，`cctether mcp` 给客户端发 `notifications/tools/list_changed`。没做，列在第二节。
+**2026-11-26：0.6.0 做完并已发布**（npm、GitHub Release、主人的服务器；商店的新包等主人上传）。起因是又一个项目的 Claude 在 Oracle 云控制台里用 cctether，主人转来反馈：控制台把整个表单放在同源 iframe 里，`read_page` 只读回页眉页脚，按文字找「创建」说没有；400 多行的脚本每次都要整段贴。做的过程中它又补了两条：往 iframe 里的输入框打字报「不是文本框」（同一个原因）；14 KB 的脚本又整段贴了两遍。规则全在 SPEC §5.2「同源 iframe，和 `evaluate` 读脚本文件」，经过在 §13 v0.17。
+- **同源 iframe 和页面本身一样能用**：读页面、按选择器和文字找、点击、输入、选下拉框、滚动、等待、截图都进得去；别的网站的、加了 sandbox 的写出它声明的地址（去掉参数）。跨页面不明确（好几个 iframe 都匹配、文字在不止一个页面里完全相同）就列出候选，不替 Claude 选。
+- **`evaluate` 的 `file`**：只读 cctether 自己的脚本目录（`~/.config/cctether/scripts/`，权限 700，不能是链接），由服务读出来当 `expression` 发出去，旧插件也能用。主人服务器上已经在真链路上试过（读到了 example.com 的标题，`../config.json` 被拦下）。
+- **顺手修的**：发给插件的消息太大时，原来会把加密计数弄乱、连接断掉（以前就有的问题）；在 iframe 里把元素滚进来时，外层页面会被带着挪几个像素；截图坐标原来查不出页面里的 div 滚动过。
+- **GPT 把关**：方案挑了两轮刺，做完复审一轮（4 条要紧的、3 条次要的，都改了），核验两轮（第一轮又指出 4 处，都改了；第二轮的结果见下面一行）。没采纳的和理由在 SPEC §13 v0.17。
+- **还不支持**：把 iframe 里滚动的内容一次截全（提示 Claude 边滚边截）；在旋转、缩放过的 iframe 里按位置点击。
+
+**顺带记一个这次自己用 cctether 时的不顺手**（全局 CLAUDE.md 要求汇报）：服务端升级以后，已经开着的 Claude Code 会话手里还是旧的工具清单，用不了新参数，只好自己写脚本走 `cctether mcp`（这次验证 `file` 又是这样）。列在第二节。
 
 **两个阶段都做完了，项目已经公开发布，主人自己每天在用。** 主人 2026-11-09 说先做到这里。2026-11-17 加了 `resize_viewport`、`set_color_scheme`（0.4.0），已发布，商店版 11-18 过审。
 
@@ -37,15 +30,15 @@
 
 | 在哪 | 版本 | 说明 |
 |---|---|---|
-| 仓库 `main` | 0.5.1 | 已公开（`guchaorui/cctether`），GitHub 上的测试全过 |
-| npm（`cctether`） | 0.5.1 | 2026-11-09 起由 GitHub Actions 可信发布，带来源证明。0.5.1 的包和 Release 里的逐字节一致 |
-| GitHub Release | v0.5.1 | 附插件 zip、npm 包和校验和；两个插件 zip 和本地打的一致 |
-| Chrome 应用商店 | 0.5.1 | 2026-11-26 过审，和 v0.5.1 逐文件核对过（只有 manifest 按预期不同，多了 `_metadata/`） |商店里的包和 `v0.4.0` 标签逐个文件核对过，只有 manifest 按预期不同（核对办法见「坑」→「发布」）。0.3.3 的插件代码没变，所以当时没提交。[商店页面](https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib)，插件 ID `mbkadoolgknacadjkfjjajldmllbkdib` |
-| 主人的服务器 | 0.5.1 | 2026-11-26 从 npm 装的，`cctether check` 全过（细节在 `CLAUDE.local.md`） |
+| 仓库 `main` | 0.6.0 | 已公开（`guchaorui/cctether`），GitHub 上的测试全过 |
+| npm（`cctether`） | 0.6.0 | 2026-11-09 起由 GitHub Actions 可信发布，带来源证明。0.6.0 的包和 Release 里的逐字节一致 |
+| GitHub Release | v0.6.0 | 附插件 zip、npm 包和校验和；两个插件 zip 和本地打的一致 |
+| Chrome 应用商店 | 0.5.1 | **0.6.0 的包等主人上传**（`dist/cctether-extension-0.6.0-store.zip`，也在 GitHub Release 里）。0.5.1 2026-11-26 过审，和 v0.5.1 逐文件核对过（只有 manifest 按预期不同，多了 `_metadata/`） |商店里的包和 `v0.4.0` 标签逐个文件核对过，只有 manifest 按预期不同（核对办法见「坑」→「发布」）。0.3.3 的插件代码没变，所以当时没提交。[商店页面](https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib)，插件 ID `mbkadoolgknacadjkfjjajldmllbkdib` |
+| 主人的服务器 | 0.6.0 | 2026-11-26 从 npm 装的，`cctether check` 全过（细节在 `CLAUDE.local.md`） |
 | 主人的 Mac | 商店版 0.5.1 | Chrome 158，2026-11-26 自动更新，连接正常 |
 | 官网主页 | 已有卡片 | site-ops 做的。要改卡片交给 site-ops |
 
-- **测试**：服务端 80 个；端到端 80 个（79 个通过，1 个要有界面的 Chrome，GitHub 上会跳过）。有界面模式下新测试也都过（那两条老的偶尔失败照旧，见「坑」）。
+- **测试**：服务端 89 个；端到端 84 个（83 个通过，1 个要有界面的 Chrome，GitHub 上会跳过）。0.6.0 新加的 iframe 测试在 `tools.test.mjs` 末尾，测试页 `fixtures/pages/frames.html`、`frame-inner.html`（别的网站用 localhost 对 127.0.0.1 来模拟）。
 - **两个新工具在主人的真 Mac 上试过的（2026-11-18，Chrome 157，Retina 屏，系统是浅色）**：调到 390 宽、只改高度、调到比窗口还高（1280×2000）；截图是 1 图片像素 = 1 CSS 像素，按截图坐标点击点得中；强制深色、再恢复跟随系统；跳到别的页面后两个模拟都还在；恢复后回到真实大小（1710×806）；标签页在前台和在后台都试了；在一个真实网站上（nodejs.org）也试了。模拟自动结束后的提醒两种情况都试了：5 分钟没操作后，下一次截图的说明末尾带了一句提醒，再下一次就不带了；Mac 断线几分钟再连上后，按旧坐标点击被拒绝了一次，之后正常。两种情况下页面都回到了真实大小和浅色。
 - **主人在真 Mac 上确认过的**：合盖再打开，连接很快恢复；常用快捷键都对（清单在 SPEC §13 v0.10）；商店版能连上服务端，整条链走通。
 - **外部反馈**：GitHub 上目前 0 个 star，没有 issue。还没有别人用过的反馈。
@@ -58,6 +51,9 @@
 - npm 的发布权限（包的 Settings → Publishing access）：主人 2026-11-09 打开设置页，选的是第一项「要求两步验证，不接受绕过两步验证的令牌」。可信发布不受影响。Claude 看不到这个设置，只看过主人的截图。
 
 **还等主人定的：**
+
+- **上传商店的 0.6.0 包**：照 `store/README.zh-CN.md` 末尾上传 `dist/cctether-extension-0.6.0-store.zip`（GitHub Release 里也有）。iframe 的支持在插件里，过审以后才到主人的 Mac 上。
+- **请 Oracle 那个项目的 Claude 再用一次**（商店版更新以后）：看 iframe 和 `file` 在真的控制台里好不好用。它要重开 Claude Code 才拿得到 `file` 参数。
 
 - **请谷歌云那个项目的 Claude 再用一次**（不急，主人方便时）：看那六条反馈在真的控制台里是不是解决了。有新反馈就照这次的流程改。
 - 中英文介绍（不急，主人不提就别催）：Claude 写过草稿给主人，发不发、发到哪由主人定。Claude 不代发。
@@ -84,6 +80,8 @@
 6. **每个 Claude 窗口各用一个标签组。** 现在所有窗口共用一个「cctether」组，同时开几个窗口时看得到彼此的标签页，可能互相干扰。这会改标签页范围，属于安全相关，必须配测试。
 7. **长页面分段截图。** 现在截整页时，很长的页面会被缩得很窄。
 8. **真正的手机模拟。** 要有触摸、UA、手机的视口规则；现在的 `resize_viewport` 只是「窄的桌面视口」。别的媒体模拟（减少动画、打印样式）也还没做。
+
+**iframe 里滚动的内容一次截全**（0.6.0 没做，SPEC §5.2「还不支持」）：GPT 认为要每一步核对 iframe 的位置和滚动、加锁、要求整个区域都在屏幕里。
 
 **工具清单跟着升级更新：** 服务端升级后，已经开着的会话还拿着旧的工具清单（2026-11-26 自己用时撞上）。可以让 `cctether mcp` 在常驻服务换版本后发 `notifications/tools/list_changed`（服务端要声明 `tools.listChanged: true`）。要先查 Claude Code 收到这个通知会不会重新拉清单。
 
@@ -126,7 +124,7 @@
 
 - 真实断网时，扩展后台收不收得到 offline/online 事件（收不到也没关系，每秒会读一次联网状态）。
 - 界面在 Mac 上的样子：开发机没有苹方字体，截图里中文标题是常规粗细。
-- 0.5.x 的新功能没在真的谷歌云控制台上试过（那是主人登录的账号，Claude 不自己去点）。在主人的真 Mac 上用公开演示网站（MUI、Angular Material）试过的见 SPEC §11 第 13 条。
+- 0.5.x 的新功能没在真的谷歌云控制台上试过、0.6.0 的 iframe 没在真的 Oracle 控制台上试过（那是主人登录的账号，Claude 不自己去点）。0.6.0 的插件部分要等商店过审才到主人的 Mac 上，在那之前只在开发机的测试 Chrome 里测过。在主人的真 Mac 上用公开演示网站（MUI、Angular Material）试过的见 SPEC §11 第 13 条。
 - 第二节第 1、2、3 条：干净机器上真实的 systemd 流程（生成的服务文件用 `systemd-analyze --user verify` 验过）、Mac 和 WSL 当服务端。
 - `resize_viewport` 和 `set_color_scheme` 在主人的真 Mac 上还没试成的：
   - 主人的 Mac 是深色时强制浅色（试的时候系统是浅色）。自动测试里用 `--force-dark-mode` 测过。
@@ -135,7 +133,8 @@
 
 ## 已知的限制（文档里已经写了）
 
-- 跨域 iframe 里的元素、控制台和网络请求拿不到。
+- 别的网站的 iframe、加了 sandbox 的 iframe 里的元素、控制台和网络请求拿不到（会写出它声明的地址）。同源 iframe 一页最多跟 20 个、5 层；旋转、缩放过的 iframe 能读不能按位置点；iframe 里滚动的内容不能一次截全。
+- `evaluate` 的 `file` 只读 cctether 的脚本目录；这个目录是链接、或者别人有权限时，`file` 不能用。
 - CSS 选择器进不了 shadow DOM（`read_page` 的可交互元素清单能看到里面的）。
 - `reload_extension` 只能让代码改动生效，manifest 改了要用户手动在 chrome://extensions 点重载（SPEC §11 第 2 条）。
 - 截整页时，很长的页面会被缩得很窄（为了不超过图片尺寸上限）。
@@ -195,6 +194,9 @@
 - 调试会话挂上以后要等 `ready` 才能用（`session()` 会等）：挂上后会再确认一次标签页还在组里。
 
 - 后台标签页页面变化后截图会卡住，靠临时开 screencast 解决（SPEC §11 第 3 条）。
+- 页面库（`page-scripts.js`）每次调用有一份缓存（`cache`：iframe 清单、每层 iframe 的位置），调用结束时清掉。调用中途滚动过（`scrollIntoViewCentered` 里），位置缓存要作废，不然点击位置会差几个像素（0.6.0 施工时撞上过）。
+- 在 iframe 里 `scrollIntoView` 会把外层页面也带着滚，哪怕外层是 `overflow: hidden`。`scrollIntoViewCentered` 会把外层放回原位（元素照样看得清楚时）。别处要滚动 iframe 里的元素，也走这个函数。
+- 截图坐标的核对（`shotCheck`）：宁可少拒也不要「永远拒」。会让重截图也过不去的情况（旋转缩放过的 iframe、超出跟踪范围的 iframe）直接报 bad_args 并说明，不报 stale_screenshot。
 - 改了插件：版本号两边一起加（SPEC §8.3），主人能在设置页底部看到版本。商店版要上传、过审才到用户手里。想让主人马上试，就让主人临时自己加载（要先移除商店版，两个版本不能同时装着，配对也要重来）。
 - Chrome 不让任何插件操作应用商店页面，cctether 打开它会直接报 restricted。要看商店页面：`curl` 取（页面是服务端渲染的），或者让主人截图。
 - 在主人的 Chrome 里测粘贴要先防一手：粘贴会把主人剪贴板里原来的内容读出来（可能是密码）。先确认复制真的成功了，并在页面上挂 `paste` 监听，内容不是测试文字就拦下，只记长度。

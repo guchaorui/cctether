@@ -1379,10 +1379,10 @@ export function cctetherPageLib() {
     // Reasons a new screenshot wouldn't help: say so instead of "take a new screenshot".
     for (const fe of list) {
       if (!now.has(tokenOf(fe))) {
-        return { refuse: 'that point is in a frame cctether does not keep track of (it follows at most 20 frames, 5 deep)' };
+        return { refuse: 'that point is in a frame cctether does not keep track of (it follows at most 20 frames, 5 deep)', instead: 'Use ref or text (from read_page or find) instead' };
       }
       if (transformed(fe) || !plainDoc(fe.ownerDocument)) {
-        return { refuse: 'that point is on a frame that is rotated, scaled or zoomed (CSS)' };
+        return { refuse: 'that point is on a frame that is rotated, scaled or zoomed (CSS)', instead: 'Its elements can be read, but nothing in it can be pressed by position: use evaluate to work with them' };
       }
     }
     for (const fe of list) {

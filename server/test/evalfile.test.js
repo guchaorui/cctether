@@ -127,5 +127,9 @@ test('evaluate file: a scripts directory that is a link, or open to others, turn
   put(join(open, 'x.js'), '1');
   ensureScriptsDir(open);
   assert.equal(statSync(open).mode & 0o777, 0o777);
+  // A missing one is created private (also when its parent is missing).
+  const fresh = scriptsDir(join(base, 'config4', 'nested'));
+  ensureScriptsDir(fresh);
+  assert.equal(statSync(fresh).mode & 0o777, 0o700);
   await assert.rejects(readEvalFile('x.js', open), /not a private directory/);
 });

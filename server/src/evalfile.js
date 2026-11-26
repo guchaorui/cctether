@@ -3,10 +3,10 @@
 // scripts Claude wrote there for the browser, so `file` can't be used to push other files on this
 // computer (keys, configs, files Claude Code's own permissions keep it from reading) into a page.
 
-import { mkdirSync, chmodSync, lstatSync, constants } from 'node:fs';
+import { mkdirSync, constants } from 'node:fs';
 import { open, realpath, lstat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 export const FILE_MAX_BYTES = 200 * 1024;
 export const FILE_MAX_CHARS = 200_000; // the same limit as `expression`
@@ -24,13 +24,11 @@ export const scriptsDir = (configDir) => join(configDir, 'scripts');
  */
 export function ensureScriptsDir(dir) {
   try {
-    lstatSync(dir);
-    return;
-  } catch { /* not there */ }
-  try {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    chmodSync(dir, 0o700); // whatever the umask
-  } catch { /* reported when a file is read from it */ }
+    mkdirSync(dirname(dir), { recursive: true, mode: 0o700 });
+    // Not recursive: if anything (a link put there meanwhile) is in the way, EEXIST, and it is
+    // left alone. No chmod by path, which would follow such a link; the umask only takes bits away.
+    mkdirSync(dir, { mode: 0o700 });
+  } catch { /* there already, or reported when a file is read from it */ }
 }
 
 /** Is dir itself (not a link to one) a directory of this user that nobody else can use? */
