@@ -5,6 +5,7 @@ import { keyFingerprint } from './pairing.js';
 import { Gateway } from './gateway.js';
 import { startControl, adminRequest, AlreadyRunningError } from './control.js';
 import { createMcpSession, lineSplitter } from './mcp.js';
+import { scriptsDir, ensureScriptsDir } from './evalfile.js';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 /**
@@ -38,6 +39,8 @@ export async function runDaemon({ dir, version, log, port: portOverride, exitOnS
   }
 
   const startedAt = Date.now();
+  const scripts = scriptsDir(P.dir);
+  ensureScriptsDir(scripts);
   let sessions = 0;
   let control;
   try {
@@ -47,7 +50,8 @@ export async function runDaemon({ dir, version, log, port: portOverride, exitOnS
       onMcp(socket, rest) {
         sessions++;
         const write = (line) => { if (!socket.destroyed) socket.write(line + '\n'); };
-        const session = createMcpSession({ write, browser: gateway, version, log });
+        ensureScriptsDir(scripts); // again here: it may have been deleted meanwhile
+        const session = createMcpSession({ write, browser: gateway, version, log, scriptsDir: scripts });
         const feed = lineSplitter((line) => {
           session.handleLine(line).catch((e) => log(`mcp error: ${e.message}`));
         }, { onOverflow: () => socket.destroy() });

@@ -3,6 +3,7 @@
 
 import { TOOLS, mcpToolList, toolTimeoutMs } from './tools.js';
 import { validate } from './schema.js';
+import { expandEvalFile } from './evalfile.js';
 
 export const SUPPORTED_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 const MAX_TEXT = 2_000_000;
@@ -27,8 +28,9 @@ const NOT_CONNECTED = [
  * @param {string} opts.version
  * @param {(msg: string) => void} [opts.log]
  * @param {string} [opts.unavailable]  if set, every tool call fails with this message (used by the shim's fallback)
+ * @param {string} [opts.scriptsDir]  where evaluate's `file` is read from (SPEC §5.2); none: no `file`
  */
-export function createMcpSession({ write, browser, version, log = () => {}, unavailable = null }) {
+export function createMcpSession({ write, browser, version, log = () => {}, unavailable = null, scriptsDir = null }) {
   const reply = (id, result) => write(JSON.stringify({ jsonrpc: '2.0', id, result }));
   const replyError = (id, code, message) => write(JSON.stringify({ jsonrpc: '2.0', id: id ?? null, error: { code, message } }));
 
@@ -60,10 +62,20 @@ export function createMcpSession({ write, browser, version, log = () => {}, unav
     const name = params?.name;
     const tool = TOOLS.find((t) => t.name === name);
     if (!tool) return { error: { code: -32602, message: `Unknown tool: ${String(name).slice(0, 100)}` } };
-    const args = params.arguments ?? {};
+    let args = params.arguments ?? {};
     const invalid = validate(tool.inputSchema, args);
     if (invalid) return { result: errorResult(`Invalid arguments: ${invalid}.`) };
     if (unavailable) return { result: errorResult(unavailable) };
+    let pinned; // for `file`: the browser connection when the call came, the only one it may go to
+    if (name === 'evaluate') {
+      // The service reads `file` and sends the script as `expression` (SPEC §5.2).
+      if ('file' in args) pinned = browser?.browser ?? null;
+      const ex = await expandEvalFile(args, scriptsDir);
+      if (ex.error) return { result: errorResult(ex.error) };
+      args = ex.args;
+      const bad = validate(tool.inputSchema, args);
+      if (bad) return { result: errorResult(`Invalid arguments: ${bad}.`) };
+    }
     // Calls an older extension accepts but answers differently, without an error (SPEC §5.2).
     const needs = minExtensionFor(name, args);
     const ext = browser?.status?.()?.info?.extension;
@@ -72,7 +84,7 @@ export function createMcpSession({ write, browser, version, log = () => {}, unav
         + `Ask the user to update the extension. Until then: ${needs.instead}`) };
     }
     try {
-      const r = await browser.call(name, args, toolTimeoutMs(name, args));
+      const r = await browser.call(name, args, toolTimeoutMs(name, args), pinned !== undefined ? { connection: pinned } : undefined);
       if (!r.ok && isUnknownToolAnswer(r.error)) return { result: errorResult(outdatedExtension(name)) };
       if (!r.ok && r.error?.code === 'bad_args') return { result: errorResult(withVersionNote(r.error.message)) };
       if (!r.ok) return { result: errorResult(r.error.message) };
@@ -81,6 +93,7 @@ export function createMcpSession({ write, browser, version, log = () => {}, unav
       if (e.code === 'no_browser') return { result: errorResult(NOT_CONNECTED) };
       if (e.code === 'timeout') return { result: errorResult(`${e.message} The page may be busy or frozen; try again, or check the tab.`) };
       if (e.code === 'disconnected') return { result: errorResult(`${e.message} It may reconnect in a few seconds; try again.`) };
+      if (e.code === 'too_large') return { result: errorResult(`${e.message} Nothing was sent; the connection is fine. Send less (e.g. a shorter script).`) };
       log(`tool ${name} failed: ${e.message}`);
       return { result: errorResult(`cctether error: ${e.message}`) };
     }
@@ -107,7 +120,7 @@ export function createMcpSession({ write, browser, version, log = () => {}, unav
       case 'ping':
         return isRequest && reply(id, {});
       case 'tools/list':
-        return reply(id, { tools: mcpToolList() });
+        return reply(id, { tools: mcpToolList(scriptsDir) });
       case 'tools/call': {
         const r = await callTool(params);
         return r.error ? replyError(id, r.error.code, r.error.message) : reply(id, r.result);

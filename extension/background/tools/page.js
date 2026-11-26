@@ -151,24 +151,37 @@ export async function readPage({ s }, args) {
   if (mode === 'text') {
     const r = await s.lib('readText', [{ selector: sel }]);
     header = `Title: ${r.title}\nURL: ${r.url}${sel ? `\nSelector: ${sel}` : ''}`;
+    if (r.frames || r.blind) header += `\n${frameNote(r)}`;
     body = r.text || '(no visible text)';
   } else if (mode === 'interactive') {
     const r = await s.lib('interactive', [{ selector: sel }]);
     header = `Title: ${r.title}\nURL: ${r.url}\n${r.total} interactive elements${r.total > r.shown ? ` (first ${r.shown} listed)` : ''}`
       + `${sel ? ` inside ${sel}` : ''}. Viewport ${r.vw}×${r.vh}; ↑ ↓ ← → = outside the viewport in that direction.`
-      + `${r.grouped ? ' Grouped: open dialogs first, then the main content, then the rest of the page, navigation last.' : ''}`;
+      + `${r.grouped ? ' Grouped: open dialogs first, then the main content, then the rest of the page, navigation last.' : ''}`
+      + `${r.frames ? ' Elements inside frames (iframes) are listed where the frame is, after a "── in frame … ──" line; they work like the others.' : ''}`
+      + `${r.blind ? ` ${r.blind === 1 ? 'One frame' : `${r.blind} frames`} can't be seen into (another site's, or sandboxed): listed as iframe.` : ''}`;
     body = r.lines.join('\n') || '(no interactive elements found)';
     after = 'Pass a [number] as `ref` to click, type, hover, select_option, scroll or screenshot. Numbers stay valid until the page navigates or reloads.';
   } else {
     const r = await s.lib('html', [{ selector: sel }]);
     const removed = [r.scripts && `${r.scripts} inline <script> bodies`, r.styles && `${r.styles} <style> bodies`, r.attrs && `${r.attrs} long attribute values`]
       .filter(Boolean);
-    header = `Title: ${r.title}\nURL: ${r.url}\nHTML of ${sel || 'body'} (${r.html.length} characters)${removed.length ? `; shortened: ${removed.join(', ')}` : ''}.`;
+    header = `Title: ${r.title}\nURL: ${r.url}\nHTML of ${sel || 'body'} (${r.html.length} characters)${removed.length ? `; shortened: ${removed.join(', ')}` : ''}.`
+      + `${r.frames ? ` The documents of ${r.frames} frame${r.frames === 1 ? '' : 's'} (iframes) inside it are not included: pass a selector for the iframe to get its HTML.` : ''}`;
     body = r.html;
   }
   const p = page(body, offset, max);
   const out = untrusted(`${header}\n\n${p.slice}`) + [p.note, after].filter(Boolean).map((x) => `\n${x}`).join('');
   return { content: [text(out)] };
+}
+
+/** What read_page's text says about frames. */
+function frameNote(r) {
+  const parts = [];
+  if (r.frames) parts.push(`The text of ${r.frames} frame${r.frames === 1 ? '' : 's'} (iframes) follows the page's own, each after a "── frame … ──" line.`);
+  if (r.blind) parts.push(`${r.blind === 1 ? 'One frame' : `${r.blind} frames`} can't be read (another site's, or sandboxed).`);
+  if (r.capped) parts.push('Only the first 20 frames were read.');
+  return parts.join(' ');
 }
 
 // ---- find --------------------------------------------------------------------------------------
@@ -180,16 +193,16 @@ export async function find({ s }, args) {
     ? `text ${q(args.text, 200)}${args.selector != null ? ` among elements matching ${q(args.selector, 200)}` : ''}`
     : q(args.selector, 200);
   if (!r.count) {
-    return { content: [text(args.text != null ? `No visible element has ${what}.` : `No elements match ${what}.`)] };
+    return { content: [text((args.text != null ? `No visible element has ${what}.` : `No elements match ${what}.`) + (r.blind || ''))] };
   }
   const lines = r.items.map((it) => {
     const [x, y, w, h] = it.rect;
-    return `[${it.ref}] ${it.tag}${it.attrs.length ? ` ${it.attrs.join(' ')}` : ''}${it.text ? ` ${JSON.stringify(it.text)}` : ''} at (${x}, ${y}) ${w}×${h}, ${it.vis}${it.contains ? ' (contains it)' : ''}`;
+    return `[${it.ref}] ${it.tag}${it.attrs.length ? ` ${it.attrs.join(' ')}` : ''}${it.text ? ` ${JSON.stringify(it.text)}` : ''} at (${x}, ${y}) ${w}×${h}, ${it.vis}${it.contains ? ' (contains it)' : ''}${it.frame}`;
   });
   const exact = r.exact != null ? `, ${r.exact} with exactly that text or name, listed first` : '';
   const head = `${r.count} element${r.count === 1 ? '' : 's'} match ${what}${exact}${r.count > r.items.length ? ` (showing the first ${r.items.length})` : ''}.`;
   return {
-    content: [text(`${head}\n${untrusted(lines.join('\n'))}\nPositions are viewport CSS pixels (x, y, width×height). Pass a [number] as \`ref\` to other tools.`)],
+    content: [text(`${head}\n${untrusted(lines.join('\n'))}\nPositions are viewport CSS pixels (x, y, width×height), also for elements in frames. Pass a [number] as \`ref\` to other tools.`)],
   };
 }
 
@@ -290,6 +303,13 @@ export async function shotPoint(s, tabId, id, x, y) {
     if (!inside()) throw new ToolError('bad_args', `Could not scroll page point (${Math.round(px)}, ${Math.round(py)}) of screenshot ${id} into the viewport.`);
     note = ` (scrolled the page to y=${Math.round(sy)} first)`;
   }
+  // What is at the point itself: the frames there and the areas that scroll there must be as
+  // the screenshot showed them (SPEC §5.2).
+  const c = await s.lib('shotCheck', [{ key: shot.key, frames: shot.frames, x: px - sx, y: py - sy }]);
+  if (c.refuse) throw new ToolError('bad_args', `Not done: ${c.refuse}. cctether can't check what is there, so points of screenshots can't be used there; a new screenshot won't change that. Use ref or text (from read_page or find) instead.`);
+  if (c.changed.length) {
+    throw new ToolError('stale_screenshot', `Not done: since screenshot ${id}, ${c.changed.join(' and ')}, so that point may show something else now. Take a new screenshot and use its number.`);
+  }
   return { x: px - sx, y: py - sy, note };
 }
 
@@ -358,15 +378,16 @@ export async function screenshot({ tab, s }, args) {
   let m;
   if (args.ref != null || args.selector != null) {
     const r = await s.lib('elementRect', [{ ref: args.ref, selector: args.selector }]);
-    m = await s.lib('metrics');
+    m = await s.lib('metrics', [{ shot: true }]);
     const x = Math.max(0, r.x + m.scrollX);
     const y = Math.max(0, r.y + m.scrollY);
     clip = { x, y, width: Math.min(r.width, m.docW - x), height: Math.min(r.height, m.docH - y) };
     beyond = r.x < 0 || r.y < 0 || r.x + r.width > r.vw || r.y + r.height > r.vh;
     if (clip.height > FULL_PAGE_MAX_HEIGHT) { clip.height = FULL_PAGE_MAX_HEIGHT; cut = ` Cut at ${FULL_PAGE_MAX_HEIGHT} CSS px tall.`; }
+    if (r.cut) cut += ' Only the part that can be seen through its frame (iframe) is in the image.';
     mode = `element ${r.desc}`;
   } else if (args.full_page) {
-    m = await s.lib('metrics');
+    m = await s.lib('metrics', [{ shot: true }]);
     const lm = await s.guardDialog(s.send('Page.getLayoutMetrics'));
     const W = Math.ceil(lm.cssContentSize?.width ?? m.docW);
     const H = Math.ceil(lm.cssContentSize?.height ?? m.docH);
@@ -375,7 +396,7 @@ export async function screenshot({ tab, s }, args) {
     beyond = true;
     mode = 'full page';
   } else {
-    m = await s.lib('metrics');
+    m = await s.lib('metrics', [{ shot: true }]);
     clip = { x: m.scrollX, y: m.scrollY, width: m.vw, height: m.vh };
     mode = 'viewport';
   }
@@ -404,6 +425,7 @@ export async function screenshot({ tab, s }, args) {
   // Each axis on its own: the image size is rounded per axis.
   const id = remember(s, tab.id, {
     kind: mode === 'viewport' ? 'viewport' : mode === 'full page' ? 'page' : 'element', doc: m.doc, vw: m.vw, vh: m.vh, scrollX: m.scrollX, scrollY: m.scrollY,
+    key: m.key, frames: m.frames,
     x0: clip.x, y0: clip.y, rx: clip.width / size.width, ry: clip.height / size.height, w: size.width, h: size.height,
   });
   const ratio = round3(clip.width / size.width);
@@ -414,10 +436,12 @@ export async function screenshot({ tab, s }, args) {
     + `${mode === 'full page' ? ' (the page is scrolled to it first if needed)' : ''}; cctether converts them.`;
   if (mode === 'full page') desc += ` The viewport is currently scrolled to y=${Math.round(m.scrollY)}.`;
   desc += cut;
-  if (mode === 'full page' && clip.height <= m.vh + 1) {
+  if (mode === 'full page' && (clip.height <= m.vh + 1 || m.locked)) {
     // An app shell: the page doesn't scroll, a pane inside it does. Say how to get all of it.
     const pane = await s.lib('mainScroller').catch(() => null);
-    if (pane) {
+    if (pane?.frame) {
+      desc += ` The page itself does not scroll: its content scrolls inside [${pane.ref}] ${pane.desc} (${pane.height} CSS px tall), which is a frame or in one. Capturing all of a frame's content in one image isn't supported yet: scroll it with scroll (ref: ${pane.ref}, direction "down") and take more screenshots.`;
+    } else if (pane) {
       desc += ` The page itself does not scroll: its content scrolls inside [${pane.ref}] ${pane.desc} (${pane.height} CSS px tall). To capture all of that, call screenshot with ref: ${pane.ref} and full_page: true.`;
     }
   }
@@ -964,12 +988,13 @@ function waitWhat(c) {
 async function waitUntil(s, c, deadline) {
   const started = Date.now();
   let first = true;
+  let blind = 0; // frames that could not be searched, at the last check
   for (;;) {
     if (s.closed) throw new ToolError('no_tab', 'The tab was closed or the debugger was detached while waiting.');
     if (s.dialog) throw dialogError(s.tabId, s.dialog);
     let r = null;
     try {
-      r = await s.lib('waitCheck', [{ text: c.text, selector: c.selector }], {
+      r = await s.lib('waitCheck', [{ text: c.text, selector: c.selector, locate: !c.gone && !c.selector }], {
         timeoutMs: Math.max(500, Math.min(3000, deadline - Date.now())),
       });
     } catch (e) {
@@ -981,26 +1006,24 @@ async function waitUntil(s, c, deadline) {
       return { met: false, changed: true, first, ms: Date.now() - started, desc: '' };
     }
     if (c.moved?.()) return { met: false, changed: true, first, ms: Date.now() - started, desc: '' };
-    if (r && r.found !== !!c.gone) {
-      let desc = r.desc;
-      if (!c.gone && !c.selector) {
-        try { desc = (await s.lib('locateText', [{ text: c.text, doc: r.doc }], { timeoutMs: 3000 })).desc; } catch { /* busy: skip */ }
-      }
-      return { met: true, first, ms: Date.now() - started, desc };
-    }
+    if (r) blind = r.blind;
+    if (r && r.found !== !!c.gone) return { met: true, first, ms: Date.now() - started, desc: r.desc, blind };
     if (r) first = false;
-    if (Date.now() >= deadline) return { met: false, first, ms: Date.now() - started, desc: '' };
+    if (Date.now() >= deadline) return { met: false, first, ms: Date.now() - started, desc: '', blind };
     // Often at first, then once a second for long waits.
     await sleep(Math.min(Date.now() - started < 10000 ? 200 : 1000, Math.max(0, deadline - Date.now())));
   }
 }
+
+/** ' (N frames … were not searched)', when the page has frames cctether can't look into. */
+const blindText = (w) => (w.blind ? ` (${w.blind === 1 ? 'One frame' : `${w.blind} frames`} on the page can't be searched: another site's, or sandboxed.)` : '');
 
 /** The sentence for a met condition. */
 function metText(c, w) {
   const what = waitWhat(c);
   const What = what[0].toUpperCase() + what.slice(1);
   const secs = (w.ms / 1000).toFixed(1);
-  if (c.gone) return w.first ? `${What} was not there at the first check.` : `${What} is gone (after ${secs} s).`;
+  if (c.gone) return (w.first ? `${What} was not there at the first check.` : `${What} is gone (after ${secs} s).`) + blindText(w);
   const at = w.desc ? `\n${untrusted(w.desc)}` : '';
   return w.first
     ? `${What} was already there when the wait started (found at the first check, so it may not be the new content you are waiting for).${at}`
@@ -1018,7 +1041,7 @@ export async function waitFor({ s }, args) {
   const what = waitWhat(c);
   throw new ToolError('timeout', c.gone
     ? `Waited ${timeoutMs} ms, but ${what} is still there.`
-    : `Waited ${timeoutMs} ms, but ${what} did not appear. Check the page with read_page or screenshot, or wait longer with timeout_ms.`);
+    : `Waited ${timeoutMs} ms, but ${what} did not appear.${blindText(w)} Check the page with read_page or screenshot, or wait longer with timeout_ms.`);
 }
 
 /**

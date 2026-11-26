@@ -6,14 +6,24 @@
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; font: 14px sans-serif; }
   header { height: 40px; background: #333; color: #fff; }
-  #app { position: absolute; top: 40px; left: 60px; width: calc(100% - 70px); height: calc(100% - 50px); border: 3px solid #888; padding: 4px; }
+  #app { position: absolute; top: 40px; left: 60px; width: calc(100% - 330px); height: calc(100% - 50px); border: 3px solid #888; padding: 4px; }
+  .side { position: absolute; right: 0; width: 250px; height: 80px; border: 0; }
   footer { position: absolute; bottom: 0; left: 0; height: 10px; }
 </style>
 </head>
 <body>
+<!-- A console shell: its own header button, the app in a same-origin frame (border and padding),
+     another site's frame (localhost vs 127.0.0.1), a sandboxed one, an inline (srcdoc) one, and
+     a mirrored one. -->
 <header>Cloud console <button type="button" id="top-create">Create</button></header>
 <iframe id="app" src="/pages/frame-inner.html" title="Workload"></iframe>
-<iframe id="ext" title="Help widget" style="position:absolute; left:0; top:40px; width:50px; height:50px; border:0"></iframe>
+<div id="xo-wrap"><iframe id="xo" class="side" style="top: 40px" title="Help widget"></iframe></div>
+<iframe id="sb" class="side" style="top: 125px" title="Sandboxed" sandbox="allow-scripts" srcdoc="<button>Sandboxed button</button>"></iframe>
+<iframe id="sd" class="side" style="top: 210px" title="Inline help" srcdoc="<p>Help center</p><button id='help' onclick='window.log=(window.log||[]).concat(&quot;help&quot;)'>Open help</button><span class='both'>inline</span>"></iframe>
+<iframe id="flip" class="side" style="top: 295px; transform: scaleX(-1)" title="Mirrored" srcdoc="<button style='margin-left:10px'>Mirror</button>"></iframe>
 <footer>footer</footer>
+<script>
+  document.getElementById('xo').src = `http://localhost:${location.port}/pages/frame-inner.html?other-site`;
+</script>
 </body>
 </html>

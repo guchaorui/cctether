@@ -47,6 +47,25 @@ test('large results arrive intact through fragments', async (t) => {
   ext.stop();
 });
 
+test('a call too large to send is refused without breaking the connection', async (t) => {
+  const g = await startGateway();
+  t.after(() => g.gw.close());
+  const ext = makeExtension({ url: g.url, key: g.key });
+  ext.start();
+  await ext.waitFor((s) => s.conn === 'connected');
+  // 200 000 control characters: each is 6 bytes once JSON-escaped, so about 1.2 MB.
+  await assert.rejects(g.gw.call('evaluate', { expression: '\u0001'.repeat(200_000) }, 2000),
+    (e) => e.code === 'too_large' && /too large/.test(e.message));
+  // A call meant for another connection is not sent to this one.
+  await assert.rejects(g.gw.call('find', {}, 2000, { connection: {} }), (e) => e.code === 'disconnected');
+  assert.equal((await g.gw.call('find', {}, 2000, { connection: g.gw.browser })).ok, true);
+  // Nothing was sent, and the next call works (a skipped cipher counter would break it).
+  const r = await g.gw.call('find', { selector: 'a' }, 2000);
+  assert.equal(r.ok, true);
+  assert.equal(g.gw.status().connected, true);
+  ext.stop();
+});
+
 test('wrong key: the extension refuses the server (server_auth_failed) and does not retry soon', async (t) => {
   const g = await startGateway();
   t.after(() => g.gw.close());

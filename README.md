@@ -151,8 +151,8 @@ Claude gets these 22 tools:
 | `open_tab` | Opens a new tab in the group and makes it the current tab. |
 | `close_tab` | Closes a tab in the group. |
 | `navigate` | Loads a URL, or goes back, forward or reloads. Waits for the page to load, and optionally for some text or element to appear. |
-| `read_page` | Reads the page: visible text, a numbered list of interactive elements, or the HTML of a selector. Long output is split. |
-| `find` | Finds elements by CSS selector and/or visible text. |
+| `read_page` | Reads the page, including same-origin iframes: visible text, a numbered list of interactive elements, or the HTML of a selector. Long output is split. |
+| `find` | Finds elements by CSS selector and/or visible text, also inside same-origin iframes. |
 | `screenshot` | Screenshots the visible area, the full page, one element, or all the content of an element that scrolls. Each screenshot has a number, so points on it can be clicked directly. |
 | `resize_viewport` | Resizes a tab's viewport (for example to a phone width) without resizing the browser window. |
 | `set_color_scheme` | Makes a tab see a dark or light color scheme (to check dark mode) without changing the browser's own setting. |
@@ -163,7 +163,7 @@ Claude gets these 22 tools:
 | `hover` | Moves the mouse over an element or a point. |
 | `select_option` | Chooses options in a `<select>`, or in a custom dropdown that declares itself (`role=combobox` / `listbox`). |
 | `wait_for` | Waits until text or an element appears (or disappears), for up to 10 minutes. |
-| `evaluate` | Runs JavaScript in the page and returns the result as JSON (a returned Promise is awaited). |
+| `evaluate` | Runs JavaScript in the page and returns the result as JSON (a returned Promise is awaited). A long script can be saved once in cctether's scripts directory and then run by its file name. |
 | `console_messages` | Reads console messages and uncaught errors. |
 | `network_requests` | Lists network requests, or shows headers and body of one. |
 | `handle_dialog` | Accepts or dismisses an alert, confirm or prompt. |
@@ -223,13 +223,13 @@ Your pairing is kept either way.
 
 ## Does it cost much?
 
-- **Claude's context:** the 22 tool descriptions take about 4,700 tokens, a little over 2% of a 200k context. Recent Claude Code versions load MCP tools on demand when there are many of them, so until Claude actually uses the browser, only the tool names (about 150 tokens) and a short note (about 120 tokens) sit in the context.
+- **Claude's context:** the 22 tool descriptions take about 4,900 tokens, a little over 2% of a 200k context. Recent Claude Code versions load MCP tools on demand when there are many of them, so until Claude actually uses the browser, only the tool names (about 150 tokens) and a short note (about 120 tokens) sit in the context.
 - **Memory on the Claude Code computer:** the service uses about 75 MB, and each open Claude Code window adds a small relay process of about 55 MB.
 - **The browser:** the extension does nothing while Claude isn't using it, apart from a tiny heartbeat every 10 seconds.
 
 ## Known limitations
 
-- Elements, console messages and network requests inside cross-origin iframes aren't available.
+- Iframes from other sites, and sandboxed ones, can't be read or searched; their console messages and network requests aren't available either. Same-origin iframes work like the page itself, except that capturing all of what scrolls inside one in a single screenshot isn't supported yet, and iframes rotated, scaled or zoomed with CSS can be read but not clicked by position.
 - CSS selectors don't reach into shadow DOM. The interactive list from `read_page` and finding by text do see inside.
 - `reload_extension` applies code changes, but not `manifest.json` changes. For those, click reload on `chrome://extensions` yourself.
 - Very long full-page screenshots are scaled down (to stay under the image size limit), so they come out narrow.

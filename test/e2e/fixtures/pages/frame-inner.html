@@ -7,6 +7,8 @@
   body { margin: 0; padding: 12px; font: 14px sans-serif; }
   .tall { height: 1400px; }
   #sticky { position: sticky; top: 0; background: #000; color: #fff; height: 24px; }
+  #list { height: 60px; overflow: auto; border: 1px solid #ccc; }
+  #list div { height: 30px; }
 </style>
 </head>
 <body>
@@ -16,6 +18,9 @@
 <input id="name" type="text">
 <select id="shape" aria-label="Shape"><option value="a1">VM.Standard.A1</option><option value="e4">VM.Standard.E4</option></select>
 <button type="button" id="create">Create</button>
+<input id="jumpy" aria-label="Jumpy" value="abc"> <input id="other" aria-label="Other" value="keep">
+<span class="both">inner</span>
+<div id="list"><div>Row one</div><div>Row two</div><div>Row three</div><div>Row four</div></div>
 <p id="out"></p>
 <div class="tall">Lots of settings</div>
 <button type="button" id="far">Far inside</button>
@@ -25,12 +30,16 @@
   document.getElementById('create').addEventListener('click', (e) => out('create' + (e.isTrusted ? ':trusted' : '')));
   document.getElementById('far').addEventListener('click', () => out('far'));
   document.getElementById('shape').addEventListener('change', (e) => out('shape:' + e.target.value));
-  setTimeout(() => {
-    const d = document.createElement('div');
-    d.id = 'late';
-    d.textContent = 'Work request accepted';
-    document.body.appendChild(d);
-  }, 600);
+  // A field whose Backspace handler moves the focus elsewhere (as some widgets do).
+  document.getElementById('jumpy').addEventListener('keydown', (e) => { if (e.key === 'Backspace') document.getElementById('other').focus(); });
+  if (!location.search.includes('quiet')) {
+    setTimeout(() => {
+      const d = document.createElement('div');
+      d.id = 'late';
+      d.textContent = 'Work request accepted';
+      document.body.appendChild(d);
+    }, 600);
+  }
 </script>
 </body>
 </html>

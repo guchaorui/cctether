@@ -2,6 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createMcpSession, sanitizeContent, lineSplitter, compareVersions, minExtensionFor } from '../src/mcp.js';
 import { GatewayError } from '../src/gateway.js';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 function session(browser) {
   const out = [];
@@ -150,4 +153,68 @@ test('lineSplitter handles split chunks and overflow', () => {
   assert.deepEqual(lines, ['abc', 'de']);
   feed('x'.repeat(20));
   assert.equal(overflow, 1);
+});
+
+test('evaluate file: the service reads the script and sends it as expression', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'cct-mcp-scripts-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, 'hello.js'), 'document.title + "!"');
+  const calls = [];
+  const browser = { async call(tool, args) { calls.push({ tool, args }); return { ok: true, data: { content: [{ type: 'text', text: 'ran' }] } }; } };
+  const out = [];
+  const s = createMcpSession({ write: (l) => out.push(JSON.parse(l)), browser, version: '1.2.3', scriptsDir: dir });
+  const send = (m) => s.handleLine(JSON.stringify(m));
+  await send({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+  const ev = out[0].result.tools.find((x) => x.name === 'evaluate');
+  assert.ok(ev.inputSchema.properties.file.description.includes(dir), 'the description names the directory');
+  assert.equal(ev.inputSchema.required, undefined);
+  await send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'evaluate', arguments: { file: 'hello.js', world: 'isolated' } } });
+  assert.equal(out[1].result.content[0].text, 'ran');
+  assert.deepEqual(calls, [{ tool: 'evaluate', args: { expression: 'document.title + "!"', world: 'isolated' } }]);
+  for (const [args, re] of [
+    [{ file: 'hello.js', expression: '1' }, /not both/],
+    [{}, /Pass `expression`/],
+    [{ file: '../x.js' }, /There is no file|not in cctether's scripts directory/],
+    [{ file: 'nope.txt' }, /not a \.js file/],
+  ]) {
+    await send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'evaluate', arguments: args } });
+    const r = out.at(-1).result;
+    assert.equal(r.isError, true);
+    assert.match(r.content[0].text, re);
+  }
+  assert.equal(calls.length, 1, 'refused calls never reach the browser');
+  // A session without a scripts directory (the shim's fallback) has no `file` at all.
+  const plain = session(null);
+  await plain.send({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+  assert.equal(plain.out[0].result.tools.find((x) => x.name === 'evaluate').inputSchema.properties.file, undefined);
+});
+
+test('evaluate file: the call goes only to the browser connection there was when it came', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'cct-mcp-scripts-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, 'a.js'), '1');
+  const A = { id: 'A' };
+  const seen = [];
+  const browser = {
+    browser: A,
+    async call(tool, args, timeoutMs, opts) {
+      seen.push(opts);
+      if (opts && opts.connection !== this.browser) throw new GatewayError('disconnected', 'The browser connection changed while cctether was preparing the call, so nothing was run.');
+      return { ok: true, data: { content: [{ type: 'text', text: 'ran' }] } };
+    },
+  };
+  const out = [];
+  const s = createMcpSession({ write: (l) => out.push(JSON.parse(l)), browser, version: '1.2.3', scriptsDir: dir });
+  await s.handleLine(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'evaluate', arguments: { file: 'a.js' } } }));
+  assert.equal(out[0].result.content[0].text, 'ran');
+  assert.equal(seen[0].connection, A);
+  // Another browser connected while the file was read: not sent to it.
+  const p = s.handleLine(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'evaluate', arguments: { file: 'a.js' } } }));
+  browser.browser = { id: 'B' };
+  await p;
+  assert.equal(out[1].result.isError, true);
+  assert.match(out[1].result.content[0].text, /connection changed/);
+  // A plain expression is not pinned.
+  await s.handleLine(JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'evaluate', arguments: { expression: '1' } } }));
+  assert.equal(seen.at(-1), undefined);
 });

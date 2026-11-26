@@ -99,9 +99,13 @@ export class Gateway extends EventEmitter {
    * Run a tool in the browser.
    * @returns {Promise<{ ok: true, data: any } | { ok: false, error: { code: string, message: string } }>}
    */
-  call(tool, args, timeoutMs) {
+  call(tool, args, timeoutMs, { connection } = {}) {
     if (!this.#browser) {
       return Promise.reject(new GatewayError('no_browser', 'No browser is connected.'));
+    }
+    // A call prepared for one connection (evaluate's file was read meanwhile) goes to it only.
+    if (connection !== undefined && connection !== this.#browser) {
+      return Promise.reject(new GatewayError('disconnected', 'The browser connection changed while cctether was preparing the call, so nothing was run.'));
     }
     return this.#browser.call(tool, args, timeoutMs);
   }
@@ -308,9 +312,9 @@ export class BrowserConnection extends EventEmitter {
   }
 
   #send(obj) {
-    const frame = this.#cipher.seal(obj);
-    if (frame.length > MAX_TO_EXTENSION) throw new Error('Message to the browser is too large.');
-    this.#ws.send(frame);
+    // Checked before sealing (SessionCipher.seal): a frame sealed but not sent would leave the
+    // extension expecting a counter value we've moved past.
+    this.#ws.send(this.#cipher.seal(obj, MAX_TO_EXTENSION));
   }
 
   #touch() {

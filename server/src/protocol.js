@@ -75,6 +75,13 @@ function ivFor(counter) {
   return iv;
 }
 
+export class TooLargeError extends Error {
+  constructor(bytes) {
+    super(`The message for the browser is too large (${Math.ceil(bytes / 1024)} KB encoded; at most ${MAX_TO_EXTENSION / 1024} KB).`);
+    this.bytes = bytes;
+  }
+}
+
 /** Encrypts outgoing and decrypts incoming frames for one direction pair. */
 export class SessionCipher {
   #sendKey;
@@ -87,9 +94,13 @@ export class SessionCipher {
     this.#recvKey = recvKey;
   }
 
-  /** @returns {Buffer} ciphertext || 16-byte tag */
-  seal(obj) {
+  /**
+   * @returns {Buffer} ciphertext || 16-byte tag. Throws TooLargeError, without using up a counter
+   * value, if that would be longer than maxBytes: a counter value skipped would break the stream.
+   */
+  seal(obj, maxBytes = Infinity) {
     const plain = Buffer.from(JSON.stringify(obj), 'utf8');
+    if (plain.length + 16 > maxBytes) throw new TooLargeError(plain.length + 16);
     const c = createCipheriv('aes-256-gcm', this.#sendKey, ivFor(this.#sendCounter++));
     return Buffer.concat([c.update(plain), c.final(), c.getAuthTag()]);
   }

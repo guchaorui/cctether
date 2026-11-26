@@ -12,17 +12,28 @@ export function cctetherPageLib() {
   'use strict';
 
   // ---- element refs: numbers that stay valid for the life of this document -------------------
-  const refs = new Map(); // number -> WeakRef<Element>
+  // Elements of same-origin frames get numbers from the same map. Each number remembers the
+  // document its element was in: when the frame navigates, or the element is moved to another
+  // document, the number is stale (an element of an old document can still be "connected").
+  const refs = new Map(); // number -> { el: WeakRef<Element>, doc: WeakRef<Document> }
   const refOf = new WeakMap(); // Element -> number
   let nextRef = 1;
 
   function ref(el) {
     const n = refOf.get(el);
-    if (n && refs.get(n)?.deref() === el) return n;
+    if (n && refs.get(n)?.el.deref() === el && refs.get(n).doc.deref() === el.ownerDocument) return n;
     const m = nextRef++;
-    refs.set(m, new WeakRef(el));
+    refs.set(m, { el: new WeakRef(el), doc: new WeakRef(el.ownerDocument) });
     refOf.set(el, m);
     return m;
+  }
+
+  /** The element number n stands for, if it is still where it was (else null). */
+  function refEl(n) {
+    const e = refs.get(n);
+    const el = e?.el.deref();
+    if (!el || !el.isConnected || el.ownerDocument !== e.doc.deref() || !docLive(el.ownerDocument)) return null;
+    return el;
   }
 
   /**
@@ -48,29 +59,63 @@ export function cctetherPageLib() {
       return ERR('stale_ref', 'The page navigated or reloaded in the meantime, so cctether stopped. Check the page and try again.');
     }
     if (t && t.ref != null) {
-      const el = refs.get(t.ref)?.deref();
-      if (!el) {
+      if (!refs.get(t.ref)?.el.deref()) {
         return ERR('stale_ref', `Element ${t.ref} is not known on the current page (numbers are reset when the page navigates or reloads). ${AGAIN}`);
       }
-      if (!el.isConnected) return ERR('stale_ref', `Element ${t.ref} has been removed from the page. ${AGAIN}`);
+      const el = refEl(t.ref);
+      if (!el) return ERR('stale_ref', `Element ${t.ref} has been removed from the page (or the frame it was in has navigated). ${AGAIN}`);
       return el;
     }
     if (t && t.text != null) return byText(t.text, t.selector);
-    if (t && t.selector != null) {
-      let list;
-      try { list = document.querySelectorAll(t.selector); } catch (e) {
-        return ERR('bad_args', `Invalid CSS selector ${JSON.stringify(t.selector)}: ${e.message}`);
-      }
-      if (!list.length) return ERR('no_element', `No element matches the selector ${JSON.stringify(t.selector)}. Check it with find, or use wait_for if it appears later.`);
+    if (t && t.selector != null) return bySelector(t.selector, firstMatch);
+    return ERR('bad_args', 'Pass ref or selector to say which element.');
+  }
+
+  function queryAll(root, selector) {
+    try { return root.querySelectorAll(selector); } catch (e) {
+      return ERR('bad_args', `Invalid CSS selector ${JSON.stringify(selector)}: ${e.message}`);
+    }
+  }
+
+  /**
+   * The element a selector means: in the page itself if anything there matches (as always);
+   * otherwise in the one same-origin frame where something matches. Matches in several frames:
+   * refused, with candidates (two forms side by side may both have #create).
+   */
+  function bySelector(selector, firstMatch) {
+    const pick = (list) => {
       if (!firstMatch) for (const el of list) if (rendered(el)) return el;
       return list[0];
+    };
+    const top = queryAll(document, selector);
+    if (top.__error) return top;
+    if (top.length) return pick(top);
+    const hits = [];
+    for (const d of frameDocs()) {
+      const l = queryAll(d, selector);
+      if (l.length) hits.push(l);
     }
-    return ERR('bad_args', 'Pass ref or selector to say which element.');
+    if (hits.length === 1) return pick(hits[0]);
+    if (hits.length > 1) {
+      return ERR('ambiguous', `Nothing in the page itself matches the selector ${JSON.stringify(selector)}, but elements in ${hits.length} of its frames (iframes) do, so cctether did not pick one. Pass the ref of the right one:`,
+        hits.slice(0, 10).map((l) => candidate(pick(l), 0)));
+    }
+    return ERR('no_element', `No element matches the selector ${JSON.stringify(selector)}. Check it with find, or use wait_for if it appears later.${blindNote()}`);
+  }
+
+  /** The element itself, or for a frame cctether can reach, its document's body. */
+  function frameRoot(el) {
+    if (isFrameEl(el)) {
+      const d = frameDoc(el);
+      if (d) return d.body || d.documentElement;
+    }
+    return el;
   }
 
   function rootOf(selector) {
     if (!selector) return document.body || document.documentElement;
-    return resolve({ selector });
+    const el = resolve({ selector });
+    return el.__error ? el : frameRoot(el);
   }
 
   // ---- small helpers ---------------------------------------------------------------------------
@@ -86,34 +131,285 @@ export function cctetherPageLib() {
     return r.width > 0 || r.height > 0;
   }
 
-  /** '' if the rect is (partly) inside the viewport, else an arrow saying where it is. */
-  function where(r) {
-    if (r.bottom <= 0) return '↑';
-    if (r.top >= vh()) return '↓';
-    if (r.right <= 0) return '←';
-    if (r.left >= vw()) return '→';
+  // ---- same-origin frames (SPEC §5.2) -----------------------------------------------------------
+  // Frames whose document can be reached from here (same origin, srcdoc, about:blank...) are
+  // searched and listed like the page itself; the others are described as such, never guessed at.
+  // Positions given to Claude and points pressed are always in the top viewport's CSS px.
+  const MAX_FRAMES = 20;
+  const MAX_DEPTH = 5;
+  const INF = { left: -Infinity, top: -Infinity, right: Infinity, bottom: Infinity };
+  let cache = {}; // for one library call (cleared after each, see the end)
+
+  const isFrameEl = (el) => !!el && el.nodeType === 1 && (el.localName === 'iframe' || el.localName === 'frame');
+
+  /** The document shown in a frame element, if cctether can reach it; else null. */
+  function frameDoc(fe) {
+    try {
+      const d = fe.contentDocument;
+      return d && d.documentElement ? d : null;
+    } catch { return null; }
+  }
+
+  /** The frame element a document other than the page's is shown in, else null. */
+  function hostFrame(d) {
+    if (!d || d === document) return null;
+    try { return d.defaultView?.frameElement || null; } catch { return null; }
+  }
+
+  /** The page's document, or the current document of a frame that is itself still live. */
+  function docLive(d) {
+    for (let i = 0; d !== document; i++) {
+      const fe = hostFrame(d);
+      if (!fe || i > MAX_DEPTH || !fe.isConnected || frameDoc(fe) !== d) return false;
+      d = fe.ownerDocument;
+    }
+    return true;
+  }
+
+  /** Frame elements inside root (a document, shadow root or element), open shadow roots too. */
+  function frameEls(root) {
+    const out = [];
+    let n = 0;
+    const walk = (r) => {
+      for (const el of r.querySelectorAll('*')) {
+        if (++n > 50000) return;
+        if (isFrameEl(el)) out.push(el);
+        if (el.shadowRoot) walk(el.shadowRoot);
+      }
+    };
+    walk(root);
+    return out;
+  }
+
+  /**
+   * Rendered frames (at least 4×4 px) in document order, each followed by those inside it:
+   * [{ el, doc (null: cctether can't reach it) }]. At most MAX_FRAMES, MAX_DEPTH deep.
+   */
+  function frames() {
+    if (cache.frames) return cache.frames;
+    const out = [];
+    const walk = (root, depth) => {
+      for (const fe of frameEls(root)) {
+        if (out.length >= MAX_FRAMES) { cache.capped = true; return; }
+        if (!rendered(fe)) continue;
+        const r = fe.getBoundingClientRect();
+        if (r.width < 4 || r.height < 4) continue;
+        const doc = frameDoc(fe);
+        out.push({ el: fe, doc });
+        if (doc && depth < MAX_DEPTH) walk(doc, depth + 1);
+      }
+    };
+    walk(document, 1);
+    cache.frames = out;
+    return out;
+  }
+  const frameDocs = () => frames().filter((f) => f.doc).map((f) => f.doc);
+  const allDocs = () => [document, ...frameDocs()];
+  const reachable = (fe) => frames().some((f) => f.el === fe && f.doc);
+
+  /** ' (N frames … can't be searched)' when the page has frames cctether can't look into. */
+  function blindNote() {
+    const n = frames().filter((f) => !f.doc).length;
+    return n ? ` (${n === 1 ? 'One frame' : `${n} frames`} on the page can't be searched: another site's, or sandboxed.)` : '';
+  }
+
+  /** 'frame "Workload"' (or 'a frame'): how results name a frame. */
+  function frameName(fe) {
+    const n = clip(norm(fe.title || fe.name || fe.getAttribute('aria-label') || ''), 60);
+    return n ? `frame ${JSON.stringify(n)}` : 'a frame';
+  }
+  /** ' in frame "Workload"' for an element in a frame, else ''. */
+  const inFrame = (el) => {
+    const fe = el && hostFrame(el.ownerDocument);
+    return fe ? ` in ${frameName(fe)}` : '';
+  };
+
+  /**
+   * The address a frame declares, shortened: http(s) as origin and path (query, fragment and
+   * credentials dropped: they may hold tokens), other kinds by name only. { text, open: the
+   * address to suggest for open_tab, or null }.
+   */
+  function frameSrc(fe) {
+    if (fe.hasAttribute('srcdoc')) return { text: 'inline content (srcdoc)', open: null };
+    const raw = (fe.getAttribute('src') || '').trim();
+    if (!raw) return { text: '', open: null };
+    let u;
+    try { u = new URL(raw, fe.ownerDocument.baseURI); } catch { return { text: 'an invalid address', open: null }; }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return { text: `a ${u.protocol.slice(0, -1).slice(0, 20)}: address`, open: null };
+    const open = clip(u.origin + u.pathname, 150);
+    const more = u.search || u.hash ? '?…' : '';
+    return { text: (u.origin === location.origin ? clip(u.pathname, 120) : open) + more, open };
+  }
+
+  /** 'frame "Workload" → /app/form (1200×800)' */
+  function frameLine(fe) {
+    const src = frameSrc(fe).text;
+    const b = contentBox(fe);
+    return `${frameName(fe)}${src ? ` → ${src}` : ''} (${Math.round(b.right - b.left)}×${Math.round(b.bottom - b.top)})`;
+  }
+
+  /** Does el, or an element around it in its document, rotate, scale, flip or zoom it? */
+  function transformed(el) {
+    for (let p = el, i = 0; p && i < 300; p = parentOf(p), i++) {
+      const cs = getComputedStyle(p);
+      if ((cs.rotate && cs.rotate !== 'none') || (cs.scale && cs.scale !== 'none')) return true;
+      if (cs.zoom && cs.zoom !== '1' && cs.zoom !== 'normal') return true;
+      const t = cs.transform;
+      if (t && t !== 'none') {
+        const m = /^matrix\(([^)]*)\)$/.exec(t);
+        if (!m) return true; // matrix3d
+        const [a, b, c, d] = m[1].split(',').map(Number);
+        if (Math.abs(a - 1) > 1e-6 || Math.abs(b) > 1e-6 || Math.abs(c) > 1e-6 || Math.abs(d - 1) > 1e-6) return true;
+      }
+    }
+    return false;
+  }
+
+  /** Can positions in document d be turned into page positions (nothing but moves on the way)? */
+  function plainDoc(d) {
+    if (d === document) return true;
+    cache.plain ??= new Map();
+    if (!cache.plain.has(d)) {
+      let ok = true;
+      for (let cur = d, i = 0; cur !== document; i++) {
+        const fe = hostFrame(cur);
+        if (!fe || i > MAX_DEPTH || transformed(fe)) { ok = false; break; }
+        cur = fe.ownerDocument;
+      }
+      cache.plain.set(d, ok);
+    }
+    return cache.plain.get(d);
+  }
+
+  const transformedError = (el) => ERR('no_element', `${labelIn(el)} is in a frame that is rotated, scaled or zoomed (CSS), so cctether can't tell where it is on the screen. Use evaluate to work with it.`);
+
+  /** Where a frame element shows its document (its content box), in its own document's px. */
+  function contentBox(fe) {
+    const r = fe.getBoundingClientRect();
+    const cs = getComputedStyle(fe);
+    const pl = parseFloat(cs.paddingLeft) || 0;
+    const pt = parseFloat(cs.paddingTop) || 0;
+    const left = r.left + fe.clientLeft + pl;
+    const top = r.top + fe.clientTop + pt;
+    const w = fe.clientWidth - pl - (parseFloat(cs.paddingRight) || 0);
+    const h = fe.clientHeight - pt - (parseFloat(cs.paddingBottom) || 0);
+    return { left, top, right: left + Math.max(0, w), bottom: top + Math.max(0, h) };
+  }
+
+  const shift = (r, o) => ({ left: r.left + o.x, top: r.top + o.y, right: r.right + o.x, bottom: r.bottom + o.y, width: r.right - r.left, height: r.bottom - r.top });
+  const meet = (a, b) => ({ left: Math.max(a.left, b.left), top: Math.max(a.top, b.top), right: Math.min(a.right, b.right), bottom: Math.min(a.bottom, b.bottom) });
+  const viewport = () => ({ left: 0, top: 0, right: vw(), bottom: vh() });
+
+  /** Where document d's viewport is in the page's viewport: { x, y }. */
+  function docOffset(d) {
+    if (d === document) return { x: 0, y: 0 };
+    cache.offsets ??= new Map();
+    if (!cache.offsets.has(d)) {
+      let x = 0;
+      let y = 0;
+      for (let cur = d, i = 0; cur !== document && i <= MAX_DEPTH; i++) {
+        const fe = hostFrame(cur);
+        if (!fe) break;
+        const b = contentBox(fe);
+        x += b.left;
+        y += b.top;
+        cur = fe.ownerDocument;
+      }
+      cache.offsets.set(d, { x, y });
+    }
+    return cache.offsets.get(d);
+  }
+
+  /** el's bounding box in the page's viewport. */
+  const topRect = (el) => shift(el.getBoundingClientRect(), docOffset(el.ownerDocument));
+
+  /**
+   * The part of the page's viewport where document d can be seen: inside every frame it is in,
+   * and inside the scrolling boxes around those frames.
+   */
+  function docClip(d) {
+    let c = viewport();
+    for (let cur = d, i = 0; cur !== document && i <= MAX_DEPTH; i++) {
+      const fe = hostFrame(cur);
+      if (!fe) break;
+      const o = docOffset(fe.ownerDocument);
+      c = meet(c, shift(contentBox(fe), o));
+      c = meet(c, shift(clipBy(scrollers(fe), INF), o));
+      cur = fe.ownerDocument;
+    }
+    return c;
+  }
+
+  /** '' if (part of) el is where its document can be seen, else an arrow saying where it is. */
+  function where(el) {
+    const r = topRect(el);
+    const c = el.ownerDocument === document ? viewport() : docClip(el.ownerDocument);
+    if (r.bottom <= c.top) return '↑';
+    if (r.top >= c.bottom) return '↓';
+    if (r.right <= c.left) return '←';
+    if (r.left >= c.right) return '→';
     return '';
   }
 
-  function fullyVisible(r) {
-    return r.top >= 0 && r.left >= 0 && r.bottom <= vh() && r.right <= vw();
+  function fullyVisible(el) {
+    const r = topRect(el);
+    const c = el.ownerDocument === document ? viewport() : docClip(el.ownerDocument);
+    return r.top >= c.top && r.left >= c.left && r.bottom <= c.bottom && r.right <= c.right;
   }
 
-  function scrollIntoViewCentered(el) {
-    try {
-      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
-    } catch {
-      el.scrollIntoView({ block: 'center', inline: 'center' });
+  /**
+   * Scroll el into view (block: 'center' or 'start'). For an element in a frame, the documents
+   * around the frame (and the boxes around the frame in them) are put back where they were if el
+   * can be seen as well that way: scrollIntoView moves them too, even a page the user can't
+   * scroll (on a console shell whose frame was a few px too tall, its header moved up 6 px).
+   */
+  function scrollIntoViewCentered(el, block = 'center') {
+    const outer = []; // [window, x, y, [[box, left, top]...]] for each document around el's frames
+    for (let d = el.ownerDocument, i = 0; d !== document && i <= MAX_DEPTH; i++) {
+      const fe = hostFrame(d);
+      if (!fe) break;
+      const w = fe.ownerDocument.defaultView;
+      outer.push([w, w.scrollX, w.scrollY, scrollers(fe).map((b) => [b.el, b.el.scrollLeft, b.el.scrollTop])]);
+      d = fe.ownerDocument;
     }
+    try {
+      el.scrollIntoView({ block, inline: block, behavior: 'instant' });
+    } catch {
+      el.scrollIntoView({ block, inline: block });
+    }
+    cache.offsets = null; // positions worked out before this are out of date now
+    if (!outer.length) return;
+    const now = outer.map(([w, , , boxes]) => [w, w.scrollX, w.scrollY, boxes.map(([b]) => [b, b.scrollLeft, b.scrollTop])]);
+    const put = (list) => {
+      for (const [w, x, y, boxes] of list) {
+        for (const [b, left, top] of boxes) { b.scrollLeft = left; b.scrollTop = top; }
+        try { w.scrollTo({ left: x, top: y, behavior: 'instant' }); } catch { w.scrollTo(x, y); }
+      }
+      cache.offsets = null;
+    };
+    const seen = () => {
+      const m = meet(topRect(el), docClip(el.ownerDocument));
+      return Math.max(0, m.right - m.left) * Math.max(0, m.bottom - m.top);
+    };
+    const moved = seen();
+    put(outer);
+    if (seen() + 1 < moved) put(now); // the frame itself had to move for el to be seen
   }
 
+  /** The node above n: its parent, a shadow root's host, or the frame element a document is in. */
+  const upNode = (n) => (n.nodeType === 9 ? hostFrame(n) : n.parentNode || n.host || null);
+
+  /** Is node inside ancestor, counting shadow roots and frames? */
   function composedContains(ancestor, node) {
-    for (let n = node; n; n = n.parentNode || n.host) if (n === ancestor) return true;
+    for (let n = node, i = 0; n && i < 5000; n = upNode(n), i++) if (n === ancestor) return true;
     return false;
   }
 
   /** Parent element, stepping out of a shadow root to its host. */
   const parentOf = (el) => el.parentElement || (el.parentNode && el.parentNode.host) || null;
+  /** parentOf, also stepping out of a frame's document to the frame element. */
+  const parentX = (el) => parentOf(el) || (el === el.ownerDocument.documentElement ? hostFrame(el.ownerDocument) : null);
+  const isRootEl = (el) => el === el.ownerDocument.body || el === el.ownerDocument.documentElement;
 
   /** Element children, including those of an open shadow root. */
   function kidsOf(node) {
@@ -126,7 +422,7 @@ export function cctetherPageLib() {
   function scrollers(el) {
     const out = [];
     for (let p = parentOf(el), i = 0; p && i < 60; p = parentOf(p), i++) {
-      if (p === document.body || p === document.documentElement) break;
+      if (isRootEl(p)) break;
       const cs = getComputedStyle(p);
       const y = SCROLLS.test(cs.overflowY) && p.scrollHeight > p.clientHeight + 1;
       const x = SCROLLS.test(cs.overflowX) && p.scrollWidth > p.clientWidth + 1;
@@ -149,7 +445,37 @@ export function cctetherPageLib() {
 
   const cutOff = (c, r) => c.left > r.left + 1 || c.top > r.top + 1 || c.right < r.right - 1 || c.bottom < r.bottom - 1;
 
-  function deepElementFromPoint(x, y) {
+  /**
+   * The element on top at a viewport point, inside open shadow roots and inside the frames
+   * cctether can reach (only within a frame's content box: on its border it is the frame
+   * element). { el, frames: the frame elements entered, outermost first }.
+   */
+  function deepHit(x, y) {
+    let root = document;
+    let lx = x;
+    let ly = y;
+    const entered = [];
+    for (;;) {
+      let h = root.elementFromPoint(lx, ly);
+      while (h && h.shadowRoot) {
+        const inner = h.shadowRoot.elementFromPoint(lx, ly);
+        if (!inner || inner === h) break;
+        h = inner;
+      }
+      if (!isFrameEl(h) || entered.length >= MAX_DEPTH) return { el: h, frames: entered };
+      const d = frameDoc(h);
+      if (!d || transformed(h)) return { el: h, frames: entered };
+      const b = contentBox(h);
+      if (lx < b.left || ly < b.top || lx >= b.right || ly >= b.bottom) return { el: h, frames: entered };
+      entered.push(h);
+      lx -= b.left;
+      ly -= b.top;
+      root = d;
+    }
+  }
+  const deepElementFromPoint = (x, y) => deepHit(x, y).el;
+  /** The element on top at a viewport point in the page itself (inside shadow roots, not frames). */
+  function pageElementFromPoint(x, y) {
     let h = document.elementFromPoint(x, y);
     while (h && h.shadowRoot) {
       const inner = h.shadowRoot.elementFromPoint(x, y);
@@ -159,9 +485,17 @@ export function cctetherPageLib() {
     return h;
   }
 
+  /** The focused element, inside shadow roots and frames cctether can reach. */
   function deepActive() {
     let a = document.activeElement;
-    while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
+    for (let i = 0; a && i < 50; i++) {
+      if (a.shadowRoot && a.shadowRoot.activeElement) { a = a.shadowRoot.activeElement; continue; }
+      if (isFrameEl(a)) {
+        const d = frameDoc(a);
+        if (d && d.activeElement) { a = d.activeElement; continue; }
+      }
+      break;
+    }
     return a;
   }
 
@@ -237,7 +571,7 @@ export function cctetherPageLib() {
   function textOfIds(el, ids) {
     const root = el.getRootNode();
     return ids.split(/\s+/).map((id) => {
-      const n = (root.getElementById ? root.getElementById(id) : null) || document.getElementById(id);
+      const n = (root.getElementById ? root.getElementById(id) : null) || el.ownerDocument.getElementById(id);
       return n ? norm(n.innerText || n.textContent) : '';
     }).filter(Boolean).join(' ');
   }
@@ -300,6 +634,8 @@ export function cctetherPageLib() {
     const name = clip(accName(el), 60);
     return name ? `${kind} ${JSON.stringify(name)}` : (el.id ? `${kind}#${clip(el.id, 30)}` : kind);
   }
+  /** label(), saying which frame the element is in, if it is in one. */
+  const labelIn = (el) => label(el) + inFrame(el);
 
   // ---- finding elements by their text --------------------------------------------------------
   /** The best (lowest) of several tiers, or -1 if none matched. */
@@ -345,27 +681,27 @@ export function cctetherPageLib() {
    * name (aria-label, alt, placeholder...) matches. Open shadow roots are searched too. With a
    * selector: the visible elements matching it whose text or name matches.
    */
-  function textMatches(text, selector) {
+  function textMatches(text, selector, docs = null) {
     const needle = norm(text);
     if (!needle) return ERR('bad_args', '`text` is empty.');
     const low = needle.toLowerCase();
     const found = new Map(); // Element -> best tier, in the order found
     const add = (el, tier) => {
-      if (tier < 0 || el === document.body || el === document.documentElement) return;
+      if (tier < 0 || isRootEl(el)) return;
       const had = found.get(el);
       if (had === undefined || tier < had) found.set(el, tier);
     };
     if (selector != null) {
-      let list;
-      try { list = document.querySelectorAll(selector); } catch (e) {
-        return ERR('bad_args', `Invalid CSS selector ${JSON.stringify(selector)}: ${e.message}`);
-      }
       let n = 0;
-      for (const el of list) {
-        if (++n > 5000) break;
-        if (!rendered(el)) continue;
-        add(el, tierOf(norm(el.innerText || ''), needle, low));
-        add(el, bestTier([accName(el), ...attrNames(el)].map((x) => tierOf(x, needle, low))));
+      for (const d of docs || allDocs()) {
+        const list = queryAll(d, selector);
+        if (list.__error) return list;
+        for (const el of list) {
+          if (++n > 5000) break;
+          if (!rendered(el)) continue;
+          add(el, tierOf(norm(el.innerText || ''), needle, low));
+          add(el, bestTier([accName(el), ...attrNames(el)].map((x) => tierOf(x, needle, low))));
+        }
       }
     } else {
       // Cheap necessary condition first: rendered text is a rearrangement of the text content
@@ -393,8 +729,11 @@ export function cctetherPageLib() {
         }
         return inner || hit;
       };
-      const top = document.body || document.documentElement;
-      if (top) walk(top);
+      // The page first, then the frames cctether can reach.
+      for (const d of docs || allDocs()) {
+        const top = d.body || d.documentElement;
+        if (top) walk(top);
+      }
     }
     return [...found].map(([el, tier]) => ({ el, tier })).sort((a, b) => a.tier - b.tier);
   }
@@ -404,7 +743,7 @@ export function cctetherPageLib() {
     if (kindOf(el) || (el.localName === 'label' && labelled(el))) return el;
     let p = parentOf(el);
     for (let i = 0; p && i < 6; i++, p = parentOf(p)) {
-      if (p === document.body || p === document.documentElement) break;
+      if (isRootEl(p)) break;
       if (norm(p.innerText || '') !== own) break;
       if (kindOf(p) || (p.localName === 'label' && labelled(p))) return p;
     }
@@ -427,14 +766,14 @@ export function cctetherPageLib() {
 
   /** A line about a candidate element, with where it is, for "which one?" lists. */
   function candidate(el, tier) {
-    const r = el.getBoundingClientRect();
-    let s = `[${ref(el)}] ${label(el)} at (${Math.round(r.left + r.width / 2)}, ${Math.round(r.top + r.height / 2)})`;
-    const w = where(r);
+    const r = topRect(el);
+    let s = `[${ref(el)}] ${labelIn(el)} at (${Math.round(r.left + r.width / 2)}, ${Math.round(r.top + r.height / 2)})`;
+    const w = where(el);
     if (w) s += ` ${w}`;
     // Some context to tell look-alikes apart, e.g. the table row an "Edit" button is in.
     const own = norm(el.innerText || accName(el));
     for (let p = parentOf(el), i = 0; p && i < 4; p = parentOf(p), i++) {
-      if (p === document.body) break;
+      if (p === el.ownerDocument.body) break;
       const t = norm(p.innerText || '');
       if (t.length > own.length + 2) { s += ` in ${tagDesc(p)} ${JSON.stringify(clip(t, 70))}`; break; }
     }
@@ -454,6 +793,15 @@ export function cctetherPageLib() {
     if (all.__error) return all;
     const want = JSON.stringify(clip(norm(text), 100));
     const scope = selector != null ? ` among elements matching ${JSON.stringify(selector)}` : '';
+    // Exact matches in more than one document (the page and a frame, or two frames): which one is
+    // meant can't be told by the usual preferences (exact case, a button over a heading), which
+    // only compare elements of one document.
+    const exact = oneOfLabelled(all.filter((m) => m.tier <= 1));
+    const docs = new Set(exact.map((m) => m.el.ownerDocument));
+    if (docs.size > 1) {
+      const places = docs.has(document) ? `the page and ${docs.size - 1} of its frames (iframes)` : `${docs.size} frames (iframes)`;
+      return ERR('ambiguous', `Elements${scope} in ${places} have the text ${want}, so cctether did not pick one. Pass the ref of the right one:`, candidates(exact));
+    }
     let pick = oneOfLabelled(all.filter((m) => m.tier === 0));
     if (!pick.length) pick = oneOfLabelled(all.filter((m) => m.tier === 1));
     // A page title and a button often say the same ("Create snapshot"): when exactly one of the
@@ -469,7 +817,7 @@ export function cctetherPageLib() {
     if (all.length) {
       return ERR('no_element', `No visible element${scope} has exactly the text ${want}; ${all.length === 1 ? 'one contains' : `${all.length} contain`} it. Pass the ref of the right one, or its full text:`, candidates(all));
     }
-    return ERR('no_element', `No visible element${scope} has the text ${want}. Check the page with read_page or screenshot, or use wait_for if it appears later.`);
+    return ERR('no_element', `No visible element${scope} has the text ${want}. Check the page with read_page or screenshot, or use wait_for if it appears later.${blindNote()}`);
   }
 
   function valueText(el) {
@@ -516,8 +864,10 @@ export function cctetherPageLib() {
       const v = norm(el.innerText);
       parts.push(v ? `editable value=${JSON.stringify(clip(v, 80))}` : 'editable');
     } else if (kind === 'iframe') {
-      const src = el.getAttribute('src');
-      if (src) parts.push(`→ ${clip(src, 100)}`);
+      // Only frames cctether can't look into are listed (the others are entered).
+      const src = frameSrc(el).text;
+      if (src) parts.push(`→ ${src}`);
+      parts.push(frameDoc(el) ? '(not searched: too many frames)' : "(cctether can't see inside: another site's, or sandboxed)");
     }
     const ac = el.getAttribute('aria-checked');
     if (ac === 'true' && !(tag === 'input')) parts.push('checked');
@@ -532,7 +882,7 @@ export function cctetherPageLib() {
     }
     if (el.disabled || el.getAttribute('aria-disabled') === 'true') parts.push('disabled');
     if (el.readOnly) parts.push('readonly');
-    const w = where(at.getBoundingClientRect());
+    const w = where(at);
     if (w) parts.push(w);
     return parts.join(' ');
   }
@@ -545,8 +895,25 @@ export function cctetherPageLib() {
   function readText(o) {
     const root = rootOf(o.selector);
     if (root.__error) return root;
-    const text = tidy(root.innerText ?? root.textContent ?? '');
-    return { title: document.title, url: location.href, text };
+    let text = tidy(root.innerText ?? root.textContent ?? '');
+    // Then each frame inside it, in order: its text, or why it can't be read.
+    const parts = [];
+    let n = 0;
+    let blind = 0;
+    for (const f of frames()) {
+      if (!composedContains(root, f.el)) continue;
+      if (f.doc) {
+        n++;
+        const body = f.doc.body || f.doc.documentElement;
+        parts.push(`── ${frameLine(f.el)} ──\n${tidy(body.innerText ?? body.textContent ?? '') || '(no visible text)'}`);
+      } else {
+        blind++;
+        const { open } = frameSrc(f.el);
+        parts.push(`── ${frameLine(f.el)}: cctether can't read inside it (another site's, or sandboxed).${open ? ' Its declared address can be opened on its own with open_tab, but it may not work the same there.' : ''} ──`);
+      }
+    }
+    if (parts.length) text = [text || '(no visible text in the page itself)', ...parts].join('\n\n');
+    return { title: document.title, url: location.href, text, frames: n, blind, capped: !!cache.capped };
   }
 
   /**
@@ -557,7 +924,8 @@ export function cctetherPageLib() {
     if (!rendered(el)) return false;
     const r = el.getBoundingClientRect();
     if (r.width < 4 || r.height < 4) return false;
-    if (r.right + window.scrollX <= 0 || r.bottom + window.scrollY <= 0) return false;
+    const w = el.ownerDocument.defaultView || window;
+    if (r.right + w.scrollX <= 0 || r.bottom + w.scrollY <= 0) return false;
     const cp = getComputedStyle(el).clipPath || '';
     return !/inset\(\s*50%/.test(cp);
   }
@@ -595,7 +963,7 @@ export function cctetherPageLib() {
   /** The dialog an element is in (the element), or 'main' / 'nav' (nearest landmark), or 'rest'. */
   function sectionOf(el) {
     let nearest = null;
-    for (let p = el, i = 0; p && i < 300; p = parentOf(p), i++) {
+    for (let p = el, i = 0; p && i < 300; p = parentX(p), i++) {
       if (isDialog(p)) return p;
       if (!nearest) {
         const r = roleOf(p);
@@ -616,9 +984,18 @@ export function cctetherPageLib() {
     // Iterative DFS in document order, piercing open shadow roots. `inside` = an ancestor is
     // already listed (then cursor:pointer alone doesn't make a descendant interesting).
     const stack = [[root, false]];
+    let entered = 0;
     while (stack.length) {
       const [node, inside] = stack.pop();
       let listed = false;
+      // A frame cctether can reach: its elements are listed where it is, instead of the frame.
+      if (isFrameEl(node) && reachable(node)) {
+        const d = frameDoc(node);
+        const top = d.body || d.documentElement;
+        if (top) stack.push([top, false]);
+        entered++;
+        continue;
+      }
       if (node.nodeType === 1) {
         const control = node.localName === 'label' ? labelled(node) : null;
         if (control) {
@@ -633,7 +1010,7 @@ export function cctetherPageLib() {
         } else {
           let kind = kindOf(node);
           let heuristic = kind === 'clickable' || kind === 'focusable';
-          if (!kind && !inside && node !== document.body && node !== document.documentElement) {
+          if (!kind && !inside && !isRootEl(node)) {
             const cs = getComputedStyle(node);
             if (cs.cursor === 'pointer' && (!node.parentElement || getComputedStyle(node.parentElement).cursor !== 'pointer')) {
               kind = 'clickable';
@@ -687,16 +1064,30 @@ export function cctetherPageLib() {
     }
     const lines = [];
     const shown = Math.min(max, order.length);
+    // A line wherever the listed elements go into a frame, or back out of one.
+    let prev = root.ownerDocument;
     for (let i = 0; i < shown; i++) {
-      if (heads.has(i)) lines.push(heads.get(i));
+      if (heads.has(i)) {
+        lines.push(heads.get(i));
+        prev = document;
+      }
+      const d = order[i].at.ownerDocument;
+      if (d !== prev) {
+        lines.push(d === document ? '── back in the page ──' : `── in ${frameName(hostFrame(d))} ──`);
+        prev = d;
+      }
       lines.push(line(order[i].el, order[i].kind, order[i].at));
     }
-    return { title: document.title, url: location.href, lines, total: items.length, shown, grouped: heads.size > 0, vw: vw(), vh: vh() };
+    return {
+      title: document.title, url: location.href, lines, total: items.length, shown, grouped: heads.size > 0, vw: vw(), vh: vh(),
+      frames: entered, blind: frames().filter((f) => !f.doc && composedContains(root, f.el)).length,
+    };
   }
 
   function html(o) {
-    const root = o.selector ? resolve({ selector: o.selector }, { firstMatch: true }) : (document.body || document.documentElement);
-    if (root.__error) return root;
+    const found = o.selector ? resolve({ selector: o.selector }, { firstMatch: true }) : (document.body || document.documentElement);
+    if (found.__error) return found;
+    const root = frameRoot(found);
     // Work on a copy inside an inert document: nothing in it loads or runs.
     const doc = document.implementation.createHTMLDocument('');
     const clone = doc.importNode(root, true);
@@ -717,7 +1108,9 @@ export function cctetherPageLib() {
         }
       }
     }
-    return { title: document.title, url: location.href, html: clone.outerHTML, scripts, styles, attrs };
+    // Frames' documents are not in it: say so (a selector naming the frame shows its HTML).
+    const inner = frames().filter((f) => f.doc && composedContains(root, f.el)).length;
+    return { title: document.title, url: location.href, html: clone.outerHTML, scripts, styles, attrs, frames: inner };
   }
 
   // ---- find ------------------------------------------------------------------------------------
@@ -732,26 +1125,32 @@ export function cctetherPageLib() {
       list = ms.map((m) => m.el);
       tiers = ms.map((m) => m.tier);
     } else {
-      try { list = document.querySelectorAll(o.selector); } catch (e) {
-        return ERR('bad_args', `Invalid CSS selector ${JSON.stringify(o.selector)}: ${e.message}`);
+      // The page first, then the frames cctether can reach.
+      list = [];
+      for (const d of allDocs()) {
+        const l = queryAll(d, o.selector);
+        if (l.__error) return l;
+        for (const el of l) list.push(el);
       }
     }
     const items = [];
     const n = Math.min(list.length, o.limit || 20);
     for (let i = 0; i < n; i++) {
       const el = list[i];
-      const r = el.getBoundingClientRect();
+      const r = topRect(el);
       const attrs = [];
       for (const a of FIND_ATTRS) {
-        const v = el.getAttribute(a);
+        let v = el.getAttribute(a);
+        if (a === 'src' && isFrameEl(el) && v != null) v = frameSrc(el).text;
         if (v != null && v !== '') attrs.push(`${a}=${JSON.stringify(clip(v, a === 'href' || a === 'src' ? 120 : 60))}`);
       }
+      if (isFrameEl(el)) attrs.push(frameDoc(el) ? 'same-origin (searched too)' : "cross-origin or sandboxed (can't be searched)");
       const v = valueText(el);
       if ((el.localName === 'input' || el.localName === 'textarea') && v) attrs.push(`value=${JSON.stringify(clip(v, 80))}`);
       if (el.localName === 'select') attrs.push(`value=${JSON.stringify(clip(selectedLabels(el).join(', '), 80))}`);
       if (el.checked) attrs.push('checked');
       if (el.disabled) attrs.push('disabled');
-      const vis = rendered(el) ? (where(r) ? `offscreen ${where(r)}` : 'visible') : 'hidden';
+      const vis = rendered(el) ? (where(el) ? `offscreen ${where(el)}` : 'visible') : 'hidden';
       let text = '';
       if (el.localName !== 'select' && el.localName !== 'input' && el.localName !== 'textarea') {
         text = clip(norm(el.innerText ?? el.textContent ?? ''), 100);
@@ -761,12 +1160,12 @@ export function cctetherPageLib() {
       const cls = [...el.classList].slice(0, 3).map((c) => clip(c, 30));
       if (cls.length) tag += `.${cls.join('.')}`;
       items.push({
-        ref: ref(el), tag, attrs, text, vis,
+        ref: ref(el), tag, attrs, text, vis, frame: inFrame(el),
         rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)],
         contains: tiers ? tiers[i] === 2 : false,
       });
     }
-    return { count: list.length, exact: tiers ? tiers.filter((t) => t < 2).length : null, items };
+    return { count: list.length, exact: tiers ? tiers.filter((t) => t < 2).length : null, items, blind: blindNote() };
   }
 
   // ---- pointer targets -------------------------------------------------------------------------
@@ -774,38 +1173,63 @@ export function cctetherPageLib() {
   function point(o) {
     const el = resolve(o);
     if (el.__error) return el;
+    if (!plainDoc(el.ownerDocument)) return transformedError(el);
     // Also scroll it in when a scrolling box around it cuts it off (an option far down a list),
     // even if that part of the box is inside the viewport.
-    const sc = scrollers(el);
     const r0 = el.getBoundingClientRect();
-    if (!fullyVisible(r0) || cutOff(clipBy(sc, r0), r0)) scrollIntoViewCentered(el);
+    if (!fullyVisible(el) || cutOff(clipBy(scrollers(el), r0), r0)) scrollIntoViewCentered(el);
+    return pointOf(el);
+  }
+
+  /** The point to press on el as things are now (no scrolling), in the page's viewport. */
+  function pointOf(el) {
     const rects = [...el.getClientRects()].filter((x) => x.width > 0 && x.height > 0);
     if (!rects.length || !rendered(el)) {
-      return ERR('no_element', `${label(el)} is not visible (hidden or zero size). Check it with find, or wait_for it to appear.`);
+      return ERR('no_element', `${labelIn(el)} is not visible (hidden or zero size). Check it with find, or wait_for it to appear.`);
     }
-    const W = vw();
-    const H = vh();
-    const rr = rects.find((x) => x.bottom > 0 && x.right > 0 && x.top < H && x.left < W) || rects[0];
-    let left = Math.max(rr.left, 0);
-    let right = Math.min(rr.right, W);
-    let top = Math.max(rr.top, 0);
-    let bottom = Math.min(rr.bottom, H);
-    // Aim at the part the scrolling boxes leave visible (if the calculation finds none, e.g. for
-    // a positioned element that escapes its box, keep the viewport part).
-    const c = clipBy(sc, { left, top, right, bottom });
-    if (c.right > c.left && c.bottom > c.top) ({ left, top, right, bottom } = c);
-    if (right <= left || bottom <= top) {
-      return ERR('no_element', `${label(el)} could not be scrolled into the viewport.`);
+    const d = el.ownerDocument;
+    const framed = d !== document;
+    const o = docOffset(d);
+    const view = framed ? docClip(d) : viewport();
+    const tr = rects.map((x) => shift(x, o));
+    const rr = tr.find((x) => x.bottom > view.top && x.right > view.left && x.top < view.bottom && x.left < view.right) || tr[0];
+    let box = meet(rr, view);
+    // Aim at the part the scrolling boxes leave visible. If the calculation finds none (e.g. a
+    // positioned element that escapes its box), keep the viewport part; but in a frame, the
+    // frame's edge really does cut it off.
+    const c = meet(box, shift(clipBy(scrollers(el), INF), o));
+    if ((c.right > c.left && c.bottom > c.top) || framed) box = c;
+    if (box.right <= box.left || box.bottom <= box.top) {
+      return ERR('no_element', framed
+        ? `${labelIn(el)} could not be scrolled into view: its frame cuts it off.`
+        : `${label(el)} could not be scrolled into the viewport.`);
     }
-    const x = (left + right) / 2;
-    const y = (top + bottom) / 2;
+    const x = (box.left + box.right) / 2;
+    const y = (box.top + box.bottom) / 2;
     const hit = deepElementFromPoint(x, y);
     let covered = null;
     if (hit && hit !== el && !composedContains(el, hit)) {
       const viaLabel = el.labels && [...el.labels].some((l) => composedContains(l, hit));
-      if (!viaLabel) covered = shortDesc(hit);
-    }
-    return { x, y, desc: label(el), covered, ref: ref(el), doc: docToken };
+      if (!viaLabel) covered = shortDesc(hit) + inFrame(hit);
+    } else if (!hit && framed) covered = 'nothing that cctether can see';
+    return { x, y, desc: labelIn(el), covered, ref: ref(el), doc: docToken, framed };
+  }
+
+  /**
+   * Right before pressing at (x, y), with no scrolling: is o.ref's element still the one on top
+   * at that very point, unchanged and where it was? { why: null } if so, else why not.
+   */
+  function pressCheck(o) {
+    const el = resolve({ ref: o.ref, doc: o.doc });
+    if (el.__error) return el;
+    const p = pointOf(el);
+    if (p.__error) return { why: 'it is no longer visible' };
+    if (p.desc !== o.desc) return { why: `it changed (now ${p.desc})` };
+    if (Math.abs(p.x - o.x) > 2 || Math.abs(p.y - o.y) > 2) return { why: 'it moved' };
+    const hit = deepElementFromPoint(o.x, o.y);
+    const onIt = !!hit && (hit === el || composedContains(el, hit) || (!!el.labels && [...el.labels].some((l) => composedContains(l, hit))));
+    if (!onIt) return { why: `${hit ? shortDesc(hit) + inFrame(hit) : 'something cctether can\'t see'} came on top of it` };
+    return { why: null };
   }
 
   /** What is at a viewport point. */
@@ -816,40 +1240,179 @@ export function cctetherPageLib() {
       return ERR('bad_args', `(${o.x}, ${o.y}) is outside the viewport, which is ${W}×${H} CSS pixels. Scroll first, or use ref/selector.`);
     }
     const hit = deepElementFromPoint(o.x, o.y);
-    return { desc: hit ? label(hit) : 'nothing', vw: W, vh: H };
+    return { desc: hit ? labelIn(hit) : 'nothing', vw: W, vh: H };
   }
 
   function elementRect(o) {
     const el = resolve(o);
     if (el.__error) return el;
-    let r = el.getBoundingClientRect();
-    if (!fullyVisible(r)) {
-      if (r.height > vh() || r.width > vw()) {
-        try { el.scrollIntoView({ block: 'start', inline: 'start', behavior: 'instant' }); } catch { el.scrollIntoView(true); }
+    const d = el.ownerDocument;
+    if (!plainDoc(d)) return transformedError(el);
+    if (!fullyVisible(el)) {
+      const v = d === document ? viewport() : docClip(d);
+      const r0 = el.getBoundingClientRect();
+      if (r0.height > v.bottom - v.top || r0.width > v.right - v.left) {
+        scrollIntoViewCentered(el, 'start');
       } else {
         scrollIntoViewCentered(el);
       }
-      r = el.getBoundingClientRect();
     }
+    let r = topRect(el);
     if (!(r.width > 0 && r.height > 0)) {
-      return ERR('no_element', `${label(el)} has no size (it is hidden or empty), so there is nothing to screenshot.`);
+      return ERR('no_element', `${labelIn(el)} has no size (it is hidden or empty), so there is nothing to screenshot.`);
     }
-    return { x: r.left, y: r.top, width: r.width, height: r.height, desc: label(el), vw: vw(), vh: vh() };
+    // In a frame, only what can be seen through the frame is drawn.
+    let cut = false;
+    if (d !== document) {
+      const m = meet(r, docClip(d));
+      if (!(m.right > m.left && m.bottom > m.top)) return ERR('no_element', `${labelIn(el)} can't be seen through its frame (scrolled away or cut off), so there is nothing to screenshot.`);
+      cut = m.left > r.left + 0.5 || m.top > r.top + 0.5 || m.right < r.right - 0.5 || m.bottom < r.bottom - 0.5;
+      r = { left: m.left, top: m.top, width: m.right - m.left, height: m.bottom - m.top };
+    }
+    return { x: r.left, y: r.top, width: r.width, height: r.height, desc: labelIn(el), vw: vw(), vh: vh(), cut };
   }
 
-  function metrics() {
+  function metrics(o) {
     const se = document.scrollingElement || document.documentElement;
     return {
+      ...(o && o.shot ? shotState() : {}),
       dpr: window.devicePixelRatio || 1,
       vw: vw(), vh: vh(),
       scrollX: window.scrollX, scrollY: window.scrollY,
       docW: Math.max(se.scrollWidth, document.documentElement.clientWidth),
       docH: Math.max(se.scrollHeight, document.documentElement.clientHeight),
       dark: matchMedia('(prefers-color-scheme: dark)').matches,
+      // The page hides its own scrollbar (overflow: hidden): its user can't scroll it.
+      locked: getComputedStyle(document.documentElement).overflowY === 'hidden'
+        || (!!document.body && getComputedStyle(document.documentElement).overflowY === 'visible' && getComputedStyle(document.body).overflowY === 'hidden'),
       doc: docToken,
       // When this document's navigation started (ms since 1970).
       t0: performance.timeOrigin,
     };
+  }
+
+  // ---- what a screenshot showed (SPEC §5.2) ------------------------------------------------------
+  // To check, before pressing at a point of a screenshot, that what is there now is what the
+  // screenshot showed: the frames (position, document, scroll) and the scrolled areas.
+  const shotMarks = new Map(); // key -> WeakMap<Element, [scrollTop, scrollLeft]> (non-zero only)
+  let nextMark = 1;
+  const tokens = new WeakMap(); // frame element or document -> token
+  function tokenOf(x) {
+    if (x === document) return docToken;
+    let t = tokens.get(x);
+    if (!t) { t = `${nextMark++}.${Math.random().toString(36).slice(2, 8)}`; tokens.set(x, t); }
+    return t;
+  }
+
+  /**
+   * A frame as recorded: its content box in page px, whether it is drawn plainly (no rotation or
+   * scaling), and its document and scroll if reachable.
+   */
+  function frameRecord(f) {
+    const b = shift(contentBox(f.el), docOffset(f.el.ownerDocument));
+    const w = f.doc ? f.doc.defaultView : null;
+    return {
+      t: tokenOf(f.el), d: f.doc ? tokenOf(f.doc) : null, p: !transformed(f.el) && plainDoc(f.el.ownerDocument),
+      x: b.left + window.scrollX, y: b.top + window.scrollY, w: b.right - b.left, h: b.bottom - b.top,
+      sx: w ? w.scrollX : null, sy: w ? w.scrollY : null,
+    };
+  }
+
+  /** The frame elements a point goes to now: those entered, and the frame element hit itself. */
+  function framesAt(x, y) {
+    const h = deepHit(x, y);
+    return { h, list: isFrameEl(h.el) ? [...h.frames, h.el] : h.frames };
+  }
+
+  /** Is the frame on top all over the part of it that can be seen (sampled on a 3×3 grid)? */
+  function onTop(fe) {
+    const c = meet(shift(contentBox(fe), docOffset(fe.ownerDocument)), fe.ownerDocument === document ? viewport() : docClip(fe.ownerDocument));
+    if (!(c.right - c.left >= 3 && c.bottom - c.top >= 3)) return false;
+    for (const fx of [0.1, 0.5, 0.9]) {
+      for (const fy of [0.1, 0.5, 0.9]) {
+        if (!framesAt(c.left + (c.right - c.left) * fx, c.top + (c.bottom - c.top) * fy).list.includes(fe)) return false;
+      }
+    }
+    return true;
+  }
+
+  function shotState() {
+    const marks = new WeakMap();
+    let n = 0;
+    const scan = (root) => {
+      for (const el of root.querySelectorAll('*')) {
+        if (++n > 60000) return;
+        if (el.scrollTop || el.scrollLeft) marks.set(el, [el.scrollTop, el.scrollLeft]);
+        if (el.shadowRoot) scan(el.shadowRoot);
+      }
+    };
+    for (const d of allDocs()) scan(d);
+    const key = nextMark++;
+    shotMarks.set(key, marks);
+    while (shotMarks.size > 25) shotMarks.delete(shotMarks.keys().next().value);
+    return { key, frames: frames().map((f) => ({ ...frameRecord(f), top: onTop(f.el) })) };
+  }
+
+  /**
+   * Is viewport point (x, y) still as screenshot o.key showed it? { changed: [reasons] }.
+   * - Each frame the point goes to now must have been there, unchanged (document, place, scroll,
+   *   drawn plainly).
+   * - A frame that was at the point but is not what the point goes to now: if it is gone, the
+   *   point shows something else; if it was on top all over then (the screenshot showed it
+   *   there) and has changed since, too. Unchanged, or partly covered then (it may have been
+   *   covered right there), it doesn't matter: what is on top now gets the click, and the
+   *   result says what that was, as for the page's own elements.
+   * - The areas that scroll around the point must not have scrolled.
+   */
+  function shotCheck(o) {
+    const out = [];
+    const near = (a, b) => Math.abs((a ?? 0) - (b ?? 0)) <= 1;
+    const rec = new Map((o.frames || []).map((r) => [r.t, r]));
+    const now = new Map(frames().map((f) => [tokenOf(f.el), f]));
+    const same = (r, fe) => {
+      const c = frameRecord({ el: fe, doc: frameDoc(fe) });
+      return (c.d ?? null) === (r.d ?? null) && c.p === !!r.p && near(c.x, r.x) && near(c.y, r.y) && near(c.w, r.w) && near(c.h, r.h)
+        && near(c.sx, r.sx) && near(c.sy, r.sy);
+    };
+    const { h, list } = framesAt(o.x, o.y);
+    const at = new Set(list.map((fe) => tokenOf(fe)));
+    // Reasons a new screenshot wouldn't help: say so instead of "take a new screenshot".
+    for (const fe of list) {
+      if (!now.has(tokenOf(fe))) {
+        return { refuse: 'that point is in a frame cctether does not keep track of (it follows at most 20 frames, 5 deep)' };
+      }
+      if (transformed(fe) || !plainDoc(fe.ownerDocument)) {
+        return { refuse: 'that point is on a frame that is rotated, scaled or zoomed (CSS)' };
+      }
+    }
+    for (const fe of list) {
+      const r = rec.get(tokenOf(fe));
+      if (!r || !same(r, fe) || !r.p) {
+        out.push('the frame at that point has navigated, scrolled, moved or changed');
+        break;
+      }
+    }
+    const px = o.x + window.scrollX;
+    const py = o.y + window.scrollY;
+    for (const r of o.frames || []) {
+      if (at.has(r.t) || px < r.x || py < r.y || px >= r.x + r.w || py >= r.y + r.h) continue;
+      const f = now.get(r.t);
+      if (!f) { out.push('the frame that was at that point is gone'); break; }
+      if (r.top && !same(r, f.el)) { out.push('the frame that was at that point has changed'); break; }
+    }
+    const marks = shotMarks.get(o.key);
+    if (!marks) out.push('cctether no longer has its record of that screenshot');
+    else {
+      for (let n = h.el, i = 0; n && i < 5000; n = upNode(n), i++) {
+        if (n.nodeType !== 1 || n === n.ownerDocument.scrollingElement) continue;
+        const [t, l] = marks.get(n) ?? [0, 0];
+        if (Math.abs(n.scrollTop - t) > 1 || Math.abs(n.scrollLeft - l) > 1) {
+          out.push('an area that scrolls at that point was scrolled');
+          break;
+        }
+      }
+    }
+    return { changed: out };
   }
 
   /** Scroll the page so that page point (x, y) is in the middle of the viewport. */
@@ -874,38 +1437,87 @@ export function cctetherPageLib() {
     return !!el.isContentEditable;
   }
 
+  /** Does focus on a mean typing goes where el says: el itself, inside it, or label el's control? */
+  function owns(el, a) {
+    if (!a) return false;
+    if (a === el || composedContains(el, a)) return true;
+    return el.localName === 'label' && !!el.control && el.control === a;
+  }
+
+  /** The focused element is a frame cctether can't look into (e.g. another site's card field). */
+  const blindFocus = (a) => isFrameEl(a) && !frameDoc(a);
+
   function focus(o) {
     const el = resolve(o);
     if (el.__error) return el;
-    if (!fullyVisible(el.getBoundingClientRect())) scrollIntoViewCentered(el);
-    if (el.disabled) return ERR('no_element', `${label(el)} is disabled, so it can't be typed into.`);
+    if (!fullyVisible(el)) scrollIntoViewCentered(el);
+    if (el.disabled) return ERR('no_element', `${labelIn(el)} is disabled, so it can't be typed into.`);
+    if (blindFocus(el)) {
+      return ERR('no_element', `${labelIn(el)} is a frame cctether can't see into (another site's, or sandboxed), so it can't check where the text would go. Click the field inside it (e.g. at a point of a screenshot), then call type without ref or selector (and without clear or submit).`);
+    }
     try { el.focus({ preventScroll: true }); } catch { /* not focusable */ }
     const a = deepActive();
-    const focused = !!a && (a === el || composedContains(el, a));
-    return { focused, desc: label(el), editable: isEditable(focused ? a : el) };
+    const focused = owns(el, a);
+    return {
+      focused, desc: labelIn(el), editable: isEditable(focused ? a : el), ref: focused ? ref(a) : null, doc: docToken,
+      target: ref(el), blind: focused && blindFocus(a),
+    };
+  }
+
+  /** After clicking el to focus it: did focus go to it? Then the focused element, as from active(). */
+  function focusedOn(o) {
+    const el = resolve(o);
+    if (el.__error) return el;
+    const a = deepActive();
+    if (!owns(el, a)) return { ok: false, now: a && !isRootEl(a) ? labelIn(a) : 'nothing' };
+    return { ok: true, ...active() };
   }
 
   /** Describe the focused element. */
   function active() {
     const a = deepActive();
-    if (!a || a === document.body || a === document.documentElement) return { none: true };
+    if (!a || isRootEl(a)) return { none: true };
     const v = valueText(a);
-    return { none: false, desc: label(a), editable: isEditable(a), value: v == null ? null : clip(v, 300), password: a.type === 'password' };
+    return {
+      none: false, desc: labelIn(a), editable: isEditable(a), value: v == null ? null : clip(v, 300), password: a.type === 'password',
+      ref: ref(a), doc: docToken, blind: blindFocus(a),
+    };
   }
 
-  /** Select the whole content of the focused field, so the next key press replaces it. */
-  function selectAllInFocused() {
+  /**
+   * The element typing was pinned to (o.pin: { ref, doc }) if it still has the focus, else an
+   * error saying where the focus went: the page may move it (a key handler, autocomplete), and
+   * then clearing or typing would hit another field.
+   */
+  function pinned(o) {
+    const el = resolve(o.pin);
+    if (el.__error) return el;
     const a = deepActive();
-    if (!a) return { kind: 'none', len: 0 };
+    if (a !== el) {
+      return ERR('no_element', `Stopped ${o.when || 'typing'}: the focus moved from ${labelIn(el)} to ${a && !isRootEl(a) ? labelIn(a) : 'nothing'}. Check the page (read_page or screenshot) before trying again.`);
+    }
+    return el;
+  }
+
+  const checkFocus = (o) => {
+    const el = pinned(o);
+    return el.__error ? el : { ok: true };
+  };
+
+  /** Select the whole content of the pinned field, so the next key press replaces it. */
+  function selectAllInFocused(o) {
+    const a = pinned(o);
+    if (a.__error) return a;
     if (a.localName === 'input' || a.localName === 'textarea') {
       try { a.select(); } catch { /* some input types can't be selected */ }
       return { kind: 'field', len: a.value.length };
     }
     const host = editingHost(a);
     if (host) {
-      const range = document.createRange();
+      const doc = host.ownerDocument;
+      const range = doc.createRange();
       range.selectNodeContents(host);
-      const sel = window.getSelection();
+      const sel = (doc.defaultView || window).getSelection();
       sel.removeAllRanges();
       sel.addRange(range);
       return { kind: 'editable', len: host.innerText.replace(/\n$/, '').length };
@@ -913,20 +1525,22 @@ export function cctetherPageLib() {
     return { kind: 'other', len: 0 };
   }
 
-  function focusedLength() {
-    const a = deepActive();
-    if (!a) return 0;
+  function focusedLength(o) {
+    const a = pinned(o);
+    if (a.__error) return a;
     if (a.localName === 'input' || a.localName === 'textarea') return a.value.length;
     const host = editingHost(a);
     return host ? host.innerText.replace(/\n$/, '').length : 0;
   }
 
   /** Last resort for clearing: set the value directly and fire an input event. */
-  function forceClear() {
-    const a = deepActive();
-    if (!a) return false;
+  function forceClear(o) {
+    const a = pinned(o);
+    if (a.__error) return a;
     if (a.localName === 'input' || a.localName === 'textarea') {
-      const proto = a.localName === 'input' ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+      // The value setter of the element's own window (a page may hook the element's own one).
+      const w = a.ownerDocument.defaultView || window;
+      const proto = a.localName === 'input' ? w.HTMLInputElement.prototype : w.HTMLTextAreaElement.prototype;
       Object.getOwnPropertyDescriptor(proto, 'value').set.call(a, '');
       a.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'deleteContentBackward' }));
       a.dispatchEvent(new Event('change', { bubbles: true }));
@@ -941,14 +1555,22 @@ export function cctetherPageLib() {
     return false;
   }
 
+  /** The value of the pinned element (wherever the focus is now). */
+  function valueOf(o) {
+    const el = resolve(o.pin);
+    if (el.__error) return el;
+    const v = valueText(el);
+    return { value: v == null ? null : clip(v, 300), password: el.type === 'password' };
+  }
+
   // ---- select_option ---------------------------------------------------------------------------
   function selectOption(o) {
     const el = resolve(o, { firstMatch: true });
     if (el.__error) return el;
     if (el.localName !== 'select') {
-      return ERR('bad_args', `${label(el)} is a <${el.localName}>, not a <select>. For a custom dropdown, click it to open it, then click the option (read_page mode "interactive" lists them).`);
+      return ERR('bad_args', `${labelIn(el)} is a <${el.localName}>, not a <select>. For a custom dropdown, click it to open it, then click the option (read_page mode "interactive" lists them).`);
     }
-    if (el.disabled) return ERR('bad_args', `${label(el)} is disabled.`);
+    if (el.disabled) return ERR('bad_args', `${labelIn(el)} is disabled.`);
     const opts = [...el.options];
     const chosen = [];
     const unmatched = [];
@@ -962,7 +1584,7 @@ export function cctetherPageLib() {
     if (!chosen.length) {
       return {
         matched: false,
-        desc: label(el),
+        desc: labelIn(el),
         options: opts.slice(0, 30).map((x) => ({ value: x.value, label: norm(x.label || x.text), disabled: x.disabled })),
         total: opts.length,
       };
@@ -976,7 +1598,7 @@ export function cctetherPageLib() {
     }
     el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
-    return { matched: true, desc: label(el), chosen: selectedLabels(el), unmatched, multiple: el.multiple };
+    return { matched: true, desc: labelIn(el), chosen: selectedLabels(el), unmatched, multiple: el.multiple };
   }
 
   // ---- ARIA dropdowns (select_option on something that is not a <select>) ----------------------
@@ -995,7 +1617,7 @@ export function cctetherPageLib() {
   function dropdownOf(el) {
     if (declaresList(el)) return el;
     for (let p = parentOf(el), i = 0; p && i < 5; p = parentOf(p), i++) {
-      if (p === document.body) break;
+      if (p === el.ownerDocument.body) break;
       if (declaresList(p)) return p;
     }
     const inner = [...el.querySelectorAll('[role],[aria-haspopup]')].filter((x) => declaresList(x) && rendered(x));
@@ -1006,7 +1628,7 @@ export function cctetherPageLib() {
     const ids = (el.getAttribute(attr) || '').trim();
     if (!ids) return [];
     const root = el.getRootNode();
-    return ids.split(/\s+/).map((id) => (root.getElementById ? root.getElementById(id) : null) || document.getElementById(id)).filter(Boolean);
+    return ids.split(/\s+/).map((id) => (root.getElementById ? root.getElementById(id) : null) || el.ownerDocument.getElementById(id)).filter(Boolean);
   }
 
   /** Rendered option-like elements under root (open shadow roots too), in document order. */
@@ -1053,7 +1675,7 @@ export function cctetherPageLib() {
     const el = resolve({ ref: o.ref, doc: o.doc });
     if (el.__error) return el;
     let left = 0;
-    for (const a of document.getAnimations()) {
+    for (const a of el.ownerDocument.getAnimations()) {
       const t = a.effect && a.effect.target;
       if (!t || !(a.playState === 'running' || a.pending) || !composedContains(t, el)) continue;
       const timing = a.effect.getComputedTiming();
@@ -1066,16 +1688,17 @@ export function cctetherPageLib() {
   function ddTarget(o) {
     const el = resolve(o, { firstMatch: true });
     if (el.__error) return el;
-    if (el.localName === 'select') return { native: true };
+    // The native select is named by its number from here on: resolved once (SPEC §5.2).
+    if (el.localName === 'select') return { native: true, ref: ref(el), doc: docToken, desc: labelIn(el) };
     const d = dropdownOf(el);
     if (!d) {
-      return ERR('bad_args', `${label(el)} is a <${el.localName}>: not a <select>, and it doesn't say it is a dropdown (role "combobox" or "listbox", or aria-haspopup="listbox"), so cctether won't guess how to use it. Click it to open it, then click the option (click with text, or a ref from read_page mode "interactive").`);
+      return ERR('bad_args', `${labelIn(el)} is a <${el.localName}>: not a <select>, and it doesn't say it is a dropdown (role "combobox" or "listbox", or aria-haspopup="listbox"), so cctether won't guess how to use it. Click it to open it, then click the option (click with text, or a ref from read_page mode "interactive").`);
     }
     if (d.disabled || d.getAttribute('aria-disabled') === 'true') return ERR('bad_args', `${label(d)} is disabled.`);
     const name = clip(accName(d), 60);
     const kind = kindOf(d) || roleOf(d) || d.localName;
     return {
-      native: false, ref: ref(d), doc: docToken, desc: name ? `${kind} ${JSON.stringify(name)}` : kind, list: roleOf(d) === 'listbox',
+      native: false, ref: ref(d), doc: docToken, desc: (name ? `${kind} ${JSON.stringify(name)}` : kind) + inFrame(d), list: roleOf(d) === 'listbox',
       expanded: d.getAttribute('aria-expanded') === 'true', shown: shownValue(d),
     };
   }
@@ -1143,7 +1766,7 @@ export function cctetherPageLib() {
     const opt = r.option;
     // (A null in the arguments arrives as a missing field: compare "no value" as one.)
     const same = !!opt && opt.ref === o.opt.ref && (opt.value ?? null) === (o.opt.value ?? null) && opt.label === o.opt.label && !opt.disabled;
-    const el = refs.get(o.opt.ref)?.deref();
+    const el = refEl(o.opt.ref);
     const hit = deepElementFromPoint(o.x, o.y);
     const onTop = !!el && !!hit && (hit === el || composedContains(el, hit));
     return { same, now: opt || null, selected: !!opt?.selected, multi: !!r.multi, onTop, hit: hit ? shortDesc(hit) : 'nothing' };
@@ -1154,9 +1777,9 @@ export function cctetherPageLib() {
    * list, a backdrop) still lies over its middle. { gone: true } if it is no longer there.
    */
   function ddShown(o) {
-    const d = o.doc === docToken ? refs.get(o.ref)?.deref() : null;
-    if (!d || !d.isConnected) return { gone: true };
-    const r = d.getBoundingClientRect();
+    const d = o.doc === docToken ? refEl(o.ref) : null;
+    if (!d) return { gone: true };
+    const r = topRect(d);
     const x = r.left + r.width / 2;
     const y = r.top + r.height / 2;
     let covered = false;
@@ -1169,7 +1792,8 @@ export function cctetherPageLib() {
 
   /** Option-like elements visible anywhere now (for "click the right one yourself"). */
   function visibleOptions(o) {
-    const opts = optionsIn(document.body || document.documentElement, []);
+    const opts = [];
+    for (const d of allDocs()) optionsIn(d.body || d.documentElement, opts);
     return { total: opts.length, lines: opts.slice(0, o.limit || 30).map((x) => candidate(x, 0)) };
   }
 
@@ -1220,7 +1844,8 @@ export function cctetherPageLib() {
       for (const [y, atTop] of [[box.top + dy, true], [bottomEdge - 1 - dy, false]]) {
         if (!atTop && box.cut) continue;
         for (const x of cols) {
-          const hit = deepElementFromPoint(x, y);
+          // A frame floating over it counts as one thing (positions inside it are its own).
+          const hit = pageElementFromPoint(x, y);
           if (!hit || composedContains(el, hit) || composedContains(hit, el)) continue;
           // Something as big as the page (a backdrop, a transparent layer) can't be avoided by
           // scrolling: name it only.
@@ -1273,6 +1898,9 @@ export function cctetherPageLib() {
     if (el === se || el === document.body || el === document.documentElement) {
       return ERR('bad_args', 'That is the page itself: use screenshot with full_page: true and no element.');
     }
+    if (isFrameEl(el) || el.ownerDocument !== document) {
+      return ERR('bad_args', `${labelIn(el)} is ${isFrameEl(el) ? 'a frame' : 'in a frame'} (iframe): capturing all of what scrolls inside a frame in one image isn't supported yet. Scroll it with scroll (direction "down") and take more screenshots.`);
+    }
     const cs = getComputedStyle(el);
     if (!(SCROLLS.test(cs.overflowY) && el.scrollHeight > el.clientHeight + 1)) {
       return ERR('bad_args', `${label(el)} does not scroll vertically (its content fits). Screenshot it without full_page, or pass the element that scrolls.`);
@@ -1304,76 +1932,137 @@ export function cctetherPageLib() {
 
   /** Put the scroll position back, unless someone else moved it meanwhile. */
   function scrollerRestore(o) {
-    const el = o.doc === docToken ? refs.get(o.ref)?.deref() : null;
-    if (!el || !el.isConnected) return false;
+    const el = o.doc === docToken ? refEl(o.ref) : null;
+    if (!el) return false;
     if (Math.abs(el.scrollTop - o.expect) > 2) return false;
     try { el.scrollTo({ top: o.top, behavior: 'instant' }); } catch { el.scrollTop = o.top; }
     return true;
   }
 
-  /** The element the page's content scrolls in, when the page itself doesn't scroll. */
+  /** Does a frame's document scroll vertically (as a whole)? */
+  function docScrollsY(d) {
+    const se = d.scrollingElement || d.documentElement;
+    if (!(se.scrollHeight > se.clientHeight + 1)) return false;
+    if (getComputedStyle(d.documentElement).overflowY === 'hidden') return false;
+    return !(d.body && getComputedStyle(d.documentElement).overflowY === 'visible' && getComputedStyle(d.body).overflowY === 'hidden');
+  }
+
+  /**
+   * The element the page's content scrolls in, when the page itself doesn't scroll. It may be a
+   * frame (its document scrolls) or inside one: then frame is true (it can't be stitched yet).
+   */
   function mainScroller() {
-    const best = { el: null, area: 0 };
+    const best = { el: null, area: 0, frame: null };
     const seen = new Set();
     for (const [fx, fy] of [[0.5, 0.5], [0.3, 0.6], [0.7, 0.6], [0.5, 0.8]]) {
-      for (let p = deepElementFromPoint(vw() * fx, vh() * fy); p && p !== document.body && p !== document.documentElement; p = parentOf(p)) {
+      const h = deepHit(vw() * fx, vh() * fy);
+      for (let p = h.el; p && !isRootEl(p); p = parentOf(p)) {
         if (seen.has(p)) continue;
         seen.add(p);
         const cs = getComputedStyle(p);
         if (!(SCROLLS.test(cs.overflowY) && cs.overflowY !== 'hidden' && p.scrollHeight > p.clientHeight + 1)) continue;
         const area = p.clientWidth * p.clientHeight;
-        if (area > best.area) { best.el = p; best.area = area; }
+        if (area > best.area) Object.assign(best, { el: p, area, frame: null });
+      }
+      for (const fe of h.frames) {
+        if (seen.has(fe)) continue;
+        seen.add(fe);
+        const d = frameDoc(fe);
+        if (!d || !docScrollsY(d)) continue;
+        const b = contentBox(fe);
+        const area = (b.right - b.left) * (b.bottom - b.top);
+        if (area > best.area) Object.assign(best, { el: fe, area, frame: d });
       }
     }
     if (!best.el || best.area < vw() * vh() * 0.3) return null;
-    return { ref: ref(best.el), desc: tagDesc(best.el), height: best.el.scrollHeight };
+    if (best.frame) {
+      const se = best.frame.scrollingElement || best.frame.documentElement;
+      return { ref: ref(best.el), desc: frameName(best.el), height: se.scrollHeight, frame: true };
+    }
+    const framed = best.el.ownerDocument !== document;
+    return { ref: ref(best.el), desc: tagDesc(best.el) + inFrame(best.el), height: best.el.scrollHeight, frame: framed };
   }
 
   // ---- wait_for --------------------------------------------------------------------------------
+  /**
+   * One check of a wait_for condition, in the page and the frames cctether can reach. With
+   * o.locate, a text found is also located (in this same check, so it names where it was found).
+   */
   function waitCheck(o) {
     let found = false;
     let desc = '';
     if (o.selector) {
-      let list;
-      try { list = document.querySelectorAll(o.selector); } catch (e) {
-        return ERR('bad_args', `Invalid CSS selector ${JSON.stringify(o.selector)}: ${e.message}`);
-      }
-      for (const el of list) {
-        // Visible text only: a hidden "Ready" inside a visible box doesn't count.
-        if (rendered(el) && (!o.text || (el.innerText || '').includes(o.text))) {
-          found = true;
-          desc = `[${ref(el)}] ${label(el)}`;
-          break;
+      outer: for (const d of allDocs()) {
+        const list = queryAll(d, o.selector);
+        if (list.__error) return list;
+        for (const el of list) {
+          // Visible text only: a hidden "Ready" inside a visible box doesn't count.
+          if (rendered(el) && (!o.text || (el.innerText || '').includes(o.text))) {
+            found = true;
+            desc = `[${ref(el)}] ${labelIn(el)}`;
+            break outer;
+          }
         }
       }
     } else {
-      found = (document.body ? document.body.innerText : document.documentElement.textContent || '').includes(o.text);
+      let where = null;
+      for (const d of allDocs()) {
+        if ((d.body ? d.body.innerText : d.documentElement.textContent || '').includes(o.text)) { found = true; where = d; break; }
+      }
+      // Located in the document the text was found in, not wherever something else matches.
+      if (found && o.locate) {
+        const ms = textMatches(o.text, null, [where]);
+        if (!ms.__error && ms.length) {
+          const more = ms.length > 1 ? ` (and ${ms.length - 1} more place${ms.length > 2 ? 's' : ''})` : '';
+          desc = `[${ref(ms[0].el)}] ${labelIn(ms[0].el)}${more}`;
+        }
+      }
     }
-    return { found, desc, ready: document.readyState, doc: docToken };
-  }
-
-  /** The element the text was found in (innermost), for the wait_for result. */
-  function locateText(o) {
-    if (o.doc != null && o.doc !== docToken) return { desc: '' };
-    const ms = textMatches(o.text);
-    if (ms.__error || !ms.length) return { desc: '' };
-    const more = ms.length > 1 ? ` (and ${ms.length - 1} more place${ms.length > 2 ? 's' : ''})` : '';
-    return { desc: `[${ref(ms[0].el)}] ${label(ms[0].el)}${more}` };
+    return { found, desc, ready: document.readyState, doc: docToken, blind: frames().filter((f) => !f.doc).length };
   }
 
   // ---- scrolling -------------------------------------------------------------------------------
-  function scrollableAncestor(el) {
-    const se = document.scrollingElement || document.documentElement;
-    for (let n = el; n && n.nodeType === 1; n = n.parentElement || n.getRootNode().host) {
-      if (n === se || n === document.body) return null;
-      const cs = getComputedStyle(n);
-      const oy = /(auto|scroll|overlay)/.test(cs.overflowY) && n.scrollHeight > n.clientHeight + 1;
-      const ox = /(auto|scroll|overlay)/.test(cs.overflowX) && n.scrollWidth > n.clientWidth + 1;
-      if (oy || ox) return n;
-    }
-    return null;
+  const SCROLLS_AUTO = /(auto|scroll|overlay)/;
+
+  /** Does element n scroll by itself (not counting a document's own scrolling)? */
+  function scrollsBox(n) {
+    const cs = getComputedStyle(n);
+    return (SCROLLS_AUTO.test(cs.overflowY) && n.scrollHeight > n.clientHeight + 1)
+      || (SCROLLS_AUTO.test(cs.overflowX) && n.scrollWidth > n.clientWidth + 1);
   }
 
+  /**
+   * The areas that scroll around viewport point (x, y), innermost first: elements, and the
+   * documents of frames cctether can reach (as their scrollingElement). The page itself is not
+   * in it (it is reported separately).
+   */
+  function scrollChainAt(x, y) {
+    const out = [];
+    for (let n = deepElementFromPoint(x, y), i = 0; n && i < 5000 && out.length < 12; n = upNode(n), i++) {
+      if (n.nodeType === 9) {
+        if (n === document) break;
+        const se = n.scrollingElement || n.documentElement;
+        if (se.scrollHeight > se.clientHeight + 1 || se.scrollWidth > se.clientWidth + 1) out.push(se);
+        continue;
+      }
+      if (n.nodeType !== 1 || n === n.ownerDocument.scrollingElement || n === n.ownerDocument.body) continue;
+      if (scrollsBox(n)) out.push(n);
+    }
+    return out;
+  }
+
+  /** How a scrolling area is named: a frame's document as the frame. */
+  function scrollDesc(sc) {
+    const d = sc.ownerDocument;
+    if (d !== document && sc === (d.scrollingElement || d.documentElement)) return frameName(hostFrame(d));
+    return shortDesc(sc).split(' ')[0] + inFrame(sc);
+  }
+
+  /**
+   * The page's scroll position, and those of the areas around a point: with x, y, found there
+   * now; with chain (their numbers, from an earlier call), the same areas again (lost: one of
+   * them is gone).
+   */
   function scrollState(o) {
     const se = document.scrollingElement || document.documentElement;
     const out = {
@@ -1382,19 +2071,21 @@ export function cctetherPageLib() {
         maxX: Math.max(0, se.scrollWidth - se.clientWidth), maxY: Math.max(0, se.scrollHeight - se.clientHeight),
         vw: vw(), vh: vh(),
       },
-      inner: null,
+      chain: [],
+      doc: docToken,
     };
-    if (o && o.x != null) {
-      const hit = deepElementFromPoint(o.x, o.y);
-      const sc = hit && scrollableAncestor(hit);
-      if (sc) {
-        out.inner = {
-          desc: shortDesc(sc).split(' ')[0],
-          top: Math.round(sc.scrollTop), left: Math.round(sc.scrollLeft),
-          maxTop: sc.scrollHeight - sc.clientHeight, maxLeft: sc.scrollWidth - sc.clientWidth,
-        };
+    let els = [];
+    if (o && o.chain) {
+      for (const n of o.chain) {
+        const el = o.doc === docToken ? refEl(n) : null;
+        if (!el) return { ...out, lost: true };
+        els.push(el);
       }
-    }
+    } else if (o && o.x != null) els = scrollChainAt(o.x, o.y);
+    out.chain = els.map((sc) => ({
+      ref: ref(sc), desc: scrollDesc(sc), top: Math.round(sc.scrollTop), left: Math.round(sc.scrollLeft),
+      maxTop: sc.scrollHeight - sc.clientHeight, maxLeft: sc.scrollWidth - sc.clientWidth,
+    }));
     return out;
   }
 
@@ -1402,26 +2093,45 @@ export function cctetherPageLib() {
     const el = resolve(o);
     if (el.__error) return el;
     scrollIntoViewCentered(el);
-    const r = el.getBoundingClientRect();
-    return { desc: label(el), x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+    const r = topRect(el);
+    return { desc: labelIn(el), x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
   }
 
-  /** Fallback when a synthetic wheel event did not scroll anything. */
+  /**
+   * Fallback when a synthetic wheel event did not scroll anything: scroll the first of the areas
+   * (o.chain, from scrollState) that can still move that way, else the page. Not done (false) if
+   * one of them is gone: then cctether can't tell what the wheel would have moved.
+   */
   function scrollByJs(o) {
-    const hit = deepElementFromPoint(o.x, o.y);
-    const target = (hit && scrollableAncestor(hit)) || document.scrollingElement || document.documentElement;
+    const els = [];
+    for (const n of o.chain || []) {
+      const el = o.doc === docToken ? refEl(n) : null;
+      if (!el) return false;
+      els.push(el);
+    }
+    const can = (sc) => (o.dy > 0 ? sc.scrollTop < sc.scrollHeight - sc.clientHeight - 1 : o.dy < 0 ? sc.scrollTop > 0
+      : o.dx > 0 ? sc.scrollLeft < sc.scrollWidth - sc.clientWidth - 1 : sc.scrollLeft > 0);
+    const target = els.find(can) || document.scrollingElement || document.documentElement;
     try { target.scrollBy({ left: o.dx, top: o.dy, behavior: 'instant' }); } catch { target.scrollBy(o.dx, o.dy); }
     return true;
   }
 
-  return {
-    readText, interactive, html, find, point, at, elementRect, metrics, scrollPageTo,
-    focus, active, selectAllInFocused, focusedLength, forceClear, selectOption,
+  const api = {
+    readText, interactive, html, find, point, pressCheck, at, elementRect, metrics, shotCheck, scrollPageTo,
+    focus, focusedOn, active, checkFocus, selectAllInFocused, focusedLength, forceClear, valueOf, selectOption,
     ddTarget, ddOptions, ddPick, ddFinal, ddShown, ddSettling, visibleOptions,
     scrollerInfo, scrollerStep, scrollerRestore, mainScroller,
-    waitCheck, locateText,
+    waitCheck,
     scrollState, scrollTo, scrollByJs,
   };
+  // What one call worked out about frames and positions is kept for that call only.
+  for (const k of Object.keys(api)) {
+    const f = api[k];
+    api[k] = (...a) => {
+      try { return f(...a); } finally { cache = {}; }
+    };
+  }
+  return api;
 }
 
 /**
@@ -1444,7 +2154,14 @@ export const LIB_CALL = `function (name, args) {
 export const SERIALIZE_FN = `function (maxNodes) {
   let budget = maxNodes || 20000;
   const seen = new WeakSet();
-  const isNode = (v) => typeof Node === 'function' && v instanceof Node;
+  // Nodes of a frame's document come from another realm, where instanceof Node fails: ask Node's
+  // own nodeType getter, which only works on real nodes (of any realm of this page).
+  const nodeTypeOf = typeof Node === 'function' ? Object.getOwnPropertyDescriptor(Node.prototype, 'nodeType')?.get : null;
+  const isNode = (v) => {
+    if (typeof Node === 'function' && v instanceof Node) return true;
+    if (!nodeTypeOf || v === null || typeof v !== 'object') return false;
+    try { nodeTypeOf.call(v); return true; } catch (e) { return false; }
+  };
   function nodeDesc(n) {
     if (n.nodeType === 9) return '#document';
     if (n.nodeType === 3) return '#text ' + JSON.stringify(String(n.data).slice(0, 80));

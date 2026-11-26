@@ -151,8 +151,8 @@ Claude 能用这 22 个工具：
 | `open_tab` | 在组里新开一个标签页，并设为当前页。 |
 | `close_tab` | 关掉组里的一个标签页。 |
 | `navigate` | 打开网址，或者后退、前进、刷新，等页面加载完再返回；还可以接着等某段文字或某个元素出现。 |
-| `read_page` | 读页面：可见文字、带编号的可交互元素清单，或某个选择器的 HTML。内容长时会分段。 |
-| `find` | 用 CSS 选择器和/或看得见的文字找元素。 |
+| `read_page` | 读页面（包括同源 iframe）：可见文字、带编号的可交互元素清单，或某个选择器的 HTML。内容长时会分段。 |
+| `find` | 用 CSS 选择器和/或看得见的文字找元素，同源 iframe 里的也找。 |
 | `screenshot` | 截可见区域、整页、某个元素，或者某个滚动区域的全部内容。每张截图有编号，图上的点可以直接拿去点。 |
 | `resize_viewport` | 给一个标签页模拟视口宽高（比如手机宽度），不改真实的浏览器窗口。 |
 | `set_color_scheme` | 让一个标签页按深色或浅色显示（用来检查深色模式），不改浏览器自己的设置。 |
@@ -163,7 +163,7 @@ Claude 能用这 22 个工具：
 | `hover` | 鼠标悬停在元素或某个位置上。 |
 | `select_option` | 在 `<select>` 下拉框里选值，也能用在声明了 `role=combobox` / `listbox` 的自定义下拉框上。 |
 | `wait_for` | 等某段文字或某个元素出现（或消失），最多等 10 分钟。 |
-| `evaluate` | 在页面里执行 JavaScript，结果以 JSON 返回（返回的是 Promise 时会等它）。 |
+| `evaluate` | 在页面里执行 JavaScript，结果以 JSON 返回（返回的是 Promise 时会等它）。长脚本可以在 cctether 的脚本目录里存一次，以后只传文件名。 |
 | `console_messages` | 读控制台消息和没被捕获的错误。 |
 | `network_requests` | 列出网络请求，或查看某一条的请求头、响应头和响应体。 |
 | `handle_dialog` | 接受或关闭 alert、confirm、prompt 弹框。 |
@@ -223,13 +223,13 @@ Claude 能用这 22 个工具：
 
 ## 占用大吗？
 
-- **Claude 的上下文：** 22 个工具的说明一共约 4700 个 token，是 20 万上下文的 2% 多一点。新版 Claude Code 在 MCP 工具多的时候会按需加载：Claude 真正用到浏览器之前，上下文里只有工具名（约 150 个 token）和一小段说明（约 120 个 token）。
+- **Claude 的上下文：** 22 个工具的说明一共约 4900 个 token，是 20 万上下文的 2% 多一点。新版 Claude Code 在 MCP 工具多的时候会按需加载：Claude 真正用到浏览器之前，上下文里只有工具名（约 150 个 token）和一小段说明（约 120 个 token）。
 - **跑 Claude Code 那台电脑的内存：** 服务本身约 75 MB；每开一个 Claude Code 窗口，多一个约 55 MB 的转接小进程。
 - **浏览器：** Claude 不用的时候插件什么也不做，只有每 10 秒一次很小的心跳。
 
 ## 已知的限制
 
-- 跨域 iframe 里的元素、控制台消息和网络请求拿不到。
+- 别的网站的 iframe、加了 sandbox 的 iframe 读不到也搜不到，里面的控制台消息和网络请求也拿不到。同源 iframe 和页面本身一样能用，只是还不能把 iframe 里滚动的内容一次截全；用 CSS 旋转、缩放过的 iframe 能读，但不能按位置点。
 - CSS 选择器进不了 shadow DOM。`read_page` 的可交互元素清单和按文字找元素能看到里面的。
 - `reload_extension` 能让代码改动生效，但 `manifest.json` 的改动不行，那种要你自己在 `chrome://extensions` 点重新加载。
 - 很长的整页截图会被缩小（为了不超过图片尺寸上限），所以会很窄。

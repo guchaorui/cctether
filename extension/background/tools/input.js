@@ -63,20 +63,25 @@ async function targetPoint(s, tabId, args) {
 }
 
 /**
- * Move the mouse onto an element found earlier (point p from the page library), then check that
- * the same element is still there, uncovered, at the same place: hover effects can open a menu
- * over it or move it. Returns the rechecked point (press there, without moving again), or
- * { dialog } if the move opened a JS dialog. Throws if something changed.
+ * Move the mouse onto an element found earlier (point p from the page library), then check, at
+ * that very point and without scrolling, that the same element is still there, on top, where it
+ * was: hover effects can open a menu over it or move it. Returns {} (press at p, without moving
+ * again), or { dialog } if the move opened a JS dialog. Throws if something changed.
  */
 async function moveAndRecheck(s, p, what, modifiers = 0) {
   const moved = await s.raceDialog(s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: p.x, y: p.y, modifiers, button: 'none' }));
   if (moved.dialog) return { dialog: moved.dialog };
-  const p2 = await s.lib('point', [{ ref: p.ref, doc: p.doc }]);
-  const why = p2.covered ? `${p2.covered} came on top of it`
-    : p2.desc !== p.desc ? `it changed (now ${p2.desc})`
-      : Math.abs(p2.x - p.x) > 2 || Math.abs(p2.y - p.y) > 2 ? 'it moved' : null;
+  const { why } = await s.lib('pressCheck', [{ ref: p.ref, doc: p.doc, x: p.x, y: p.y, desc: p.desc }]);
   if (why) throw new ToolError('no_element', `Did not click ${what}: ${why} when the mouse went over it. Take a screenshot and check before trying again.`);
-  return p2;
+  return {};
+}
+
+/** Refuse to press when something else is on top of the element at its point. */
+function refuseCovered(p) {
+  if (p.covered) {
+    throw new ToolError('no_element', `Did not click: ${p.covered} is on top of ${p.desc} at that point, so it would get the click. `
+      + 'Close or move what covers it first, or pass the ref if you do mean to click there.');
+  }
 }
 
 /** Record tabs created while an action runs (target=_blank links, window.open). */
@@ -137,27 +142,25 @@ function dialogNote(_tabId, d) {
 
 export async function click({ tab, s }, args) {
   const p = await targetPoint(s, tab.id, args);
-  // Found by its text, the element must also be what gets the click (refuse rather than click
-  // whatever covers it), also after the mouse moved onto it. By ref or selector the click goes
-  // ahead and the result says what got it.
-  let at = p;
+  // Found by its text, or in a frame (where a point is worked out through the frame), the element
+  // must also be what gets the click: refuse rather than click whatever covers it, also after the
+  // mouse moved onto it. Otherwise (ref or selector in the page) the click goes ahead and the
+  // result says what got it.
+  const strict = args.text != null || p.framed === true;
   const modifiers = modifierBits(args.modifiers);
-  if (args.text != null) {
-    if (p.covered) {
-      throw new ToolError('no_element', `Did not click: ${p.covered} is on top of ${p.desc} at that point, so it would get the click. `
-        + 'Close or move what covers it first, or pass the ref if you do mean to click there.');
-    }
-    const r = await moveAndRecheck(s, p, p.desc, modifiers);
-    if (r.dialog) return { content: [text(`Moved the mouse onto ${p.desc}. ${dialogNote(tab.id, r.dialog)}`)] };
-    at = r;
-  }
+  if (strict) refuseCovered(p);
   const button = args.button ?? 'left';
   const clickCount = args.click_count ?? 1;
   const before = (await tabSummary(tab.id)).url;
   const w = s.navWatch();
   const newTabs = watchNewTabs(tab.id);
   try {
-    const r = await s.raceDialog(mouseClick(s, at.x, at.y, { button, clickCount, modifiers, move: at === p }));
+    if (strict) {
+      // The last check comes after the bookkeeping above: nothing between it and the press.
+      const m = await moveAndRecheck(s, p, p.desc, modifiers);
+      if (m.dialog) return { content: [text(`Moved the mouse onto ${p.desc}. ${dialogNote(tab.id, m.dialog)}`)] };
+    }
+    const r = await s.raceDialog(mouseClick(s, p.x, p.y, { button, clickCount, modifiers, move: !strict }));
     const how = [
       clickCount === 2 ? 'Double-clicked' : clickCount === 3 ? 'Triple-clicked' : button === 'right' ? 'Right-clicked' : button === 'middle' ? 'Middle-clicked' : 'Clicked',
     ];
@@ -392,54 +395,78 @@ export async function pressKey({ tab, s }, args) {
 export async function type({ tab, s }, args) {
   if (args.ref != null && args.selector != null) throw bad('Pass `ref` or `selector`, not both.');
   const target = { ref: args.ref, selector: args.selector };
-  let desc;
-  let editable = true;
-  if (args.ref != null || args.selector != null) {
+  const hasTarget = args.ref != null || args.selector != null;
+  // Typing is pinned to one element (SPEC §5.2): the one that got the focus for the target, or
+  // the focused one. Before each step the focus must still be on it.
+  let a;
+  // With a target, the focus must be somewhere cctether can see (SPEC §5.2): typing into a frame
+  // it can't look into is only done blind, without a target, clear or submit.
+  const blindTarget = (desc) => new ToolError('no_element', `The focus went into a frame cctether can't see into (another site's, or sandboxed) when it focused ${desc}, so it can't check where the text would go. Click the field inside it (e.g. at a point of a screenshot), then call type without ref or selector (and without clear or submit).`);
+  if (hasTarget) {
     const f = await s.lib('focus', [target]);
-    desc = f.desc;
-    editable = f.editable;
-    if (!f.focused) {
-      // Not focusable by script (e.g. a wrapper element): click it like a user would.
-      const p = await s.lib('point', [target]);
-      const r = await s.raceDialog(mouseClick(s, p.x, p.y));
-      if (r.dialog) return { content: [text(`Clicked ${desc} to focus it. ${dialogNote(tab.id, r.dialog)}`)] };
-      const a = await s.lib('active');
-      if (a.none) throw new ToolError('no_element', `${desc} could not be focused (clicking it did not focus anything), so there is nowhere to type. Pick an input, textarea or editable element.`);
-      desc = a.desc;
-      editable = a.editable;
+    if (f.focused) {
+      if (f.blind) throw blindTarget(f.desc);
+      a = { desc: f.desc, editable: f.editable, ref: f.ref, doc: f.doc, blind: false };
+    } else {
+      // Not focusable by script (e.g. a wrapper element): click it like a user would, but only
+      // if it is what gets the click, and only accept the focus if it went to it. The element
+      // focus() found, by its number: the selector is not looked up again.
+      const p = await s.lib('point', [{ ref: f.target, doc: f.doc }]);
+      if (p.covered) throw new ToolError('no_element', `Did not click ${p.desc} to focus it: ${p.covered} is on top of it at that point, so it would get the click. Close or move what covers it first.`);
+      const m = await moveAndRecheck(s, p, `${p.desc} (to focus it)`);
+      if (m.dialog) return { content: [text(`Moved the mouse onto ${p.desc} to focus it. ${dialogNote(tab.id, m.dialog)}`)] };
+      const r = await s.raceDialog(mouseClick(s, p.x, p.y, { move: false }));
+      if (r.dialog) return { content: [text(`Clicked ${p.desc} to focus it. ${dialogNote(tab.id, r.dialog)}`)] };
+      const on = await s.lib('focusedOn', [{ ref: p.ref, doc: p.doc }]);
+      if (!on.ok) {
+        throw new ToolError('no_element', `${f.desc} could not be focused: clicking it put the focus on ${on.now}, so cctether typed nothing. Pick an input, textarea or editable element.`);
+      }
+      if (on.none) throw new ToolError('no_element', `${f.desc} could not be focused (clicking it did not focus anything), so there is nowhere to type. Pick an input, textarea or editable element.`);
+      if (on.blind) throw blindTarget(f.desc);
+      a = on;
     }
   } else {
-    const a = await s.lib('active');
+    a = await s.lib('active');
     if (a.none) throw new ToolError('no_element', 'No element is focused. Pass `ref` or `selector` to say where to type.');
-    desc = a.desc;
-    editable = a.editable;
+  }
+  const pin = { ref: a.ref, doc: a.doc };
+  const desc = a.desc;
+  if (a.blind && (args.clear || args.submit)) {
+    throw new ToolError('no_element', `The focus is in ${desc}, a frame cctether can't see into (another site's, or sandboxed), so it can't check what clear or submit would act on. Type without clear and submit (press_key can press Enter).`);
   }
   let cleared = false;
   if (args.clear) {
-    const sel = await s.lib('selectAllInFocused');
+    const sel = await s.lib('selectAllInFocused', [{ pin, when: 'before clearing' }]);
     if (sel.len > 0) {
+      await s.lib('checkFocus', [{ pin, when: 'before clearing' }]);
       const r = await s.raceDialog(pressCombo(s, parseKey('Backspace')));
       if (r.dialog) return { content: [text(`Cleared ${desc}. ${dialogNote(tab.id, r.dialog)}`)] };
-      if ((await s.lib('focusedLength')) > 0) await s.lib('forceClear');
+      if ((await s.lib('focusedLength', [{ pin, when: 'while clearing' }])) > 0) await s.lib('forceClear', [{ pin, when: 'while clearing' }]);
     }
     cleared = true;
   }
   if (args.text.length) {
+    await s.lib('checkFocus', [{ pin, when: cleared ? 'after clearing, before typing' : 'before typing' }]);
     const r = await s.raceDialog(s.send('Input.insertText', { text: args.text }, { timeoutMs: 20000 }));
     if (r.dialog) return { content: [text(`Typed into ${desc}. ${dialogNote(tab.id, r.dialog)}`)] };
   }
   const n = [...args.text].length;
   const lines = [`Typed ${n} character${n === 1 ? '' : 's'} into ${desc}${cleared ? ' (after clearing it)' : ''}.`];
-  if (!editable) lines.push('Note: it is not a text field, so the text may not have gone anywhere; check with read_page.');
+  if (a.blind) lines.push("It is inside a frame cctether can't see into, so it can't check where the text went or what the field shows now; take a screenshot.");
+  else if (!a.editable) lines.push('Note: it is not a text field, so the text may not have gone anywhere; check with read_page.');
   if (!args.submit) {
-    try {
-      const a = await s.lib('active', [], { timeoutMs: 3000 });
-      if (!a.none && a.value != null && !a.password) lines.push(`Its value is now ${q(a.value, 200)}.`);
-    } catch { /* ignore */ }
+    if (!a.blind) {
+      try {
+        const v = await s.lib('valueOf', [{ pin }], { timeoutMs: 3000 });
+        if (v.value != null && !v.password) lines.push(`Its value is now ${q(v.value, 200)}.`);
+      } catch { /* ignore */ }
+    }
   } else {
     const before = (await tabSummary(tab.id)).url;
     const w = s.navWatch();
     try {
+      // Right before the key: nothing between this check and Enter.
+      await s.lib('checkFocus', [{ pin, when: 'before pressing Enter (the text was typed)' }]);
       const r = await s.raceDialog(pressCombo(s, parseKey('Enter')));
       if (r.dialog) {
         lines.push(`Pressed Enter. ${dialogNote(tab.id, r.dialog)}`);
@@ -462,8 +489,9 @@ function scrollSummary(st) {
   return `Page scroll position: x=${p.x}, y=${p.y} (max x=${p.maxX}, max y=${p.maxY}; viewport ${p.vw}×${p.vh}).`;
 }
 
-const sameScroll = (a, b) => a.page.x === b.page.x && a.page.y === b.page.y
-  && (a.inner?.top ?? 0) === (b.inner?.top ?? 0) && (a.inner?.left ?? 0) === (b.inner?.left ?? 0);
+/** The first area of the chain (innermost first) whose position differs, or null. */
+const movedArea = (a, b) => a.chain.find((c, i) => b.chain[i] && (c.top !== b.chain[i].top || c.left !== b.chain[i].left)) ?? null;
+const sameScroll = (a, b) => a.page.x === b.page.x && a.page.y === b.page.y && !movedArea(a, b);
 
 export async function scroll({ tab, s }, args) {
   const hasEl = args.ref != null || args.selector != null || args.text != null;
@@ -488,7 +516,10 @@ export async function scroll({ tab, s }, args) {
     x = Math.floor(m.vw / 2);
     y = Math.floor(m.vh / 2);
   }
+  // The scrolling areas at that point, found once: afterwards the same areas are read again (the
+  // content under the point moves, so asking the point again could name other areas).
   const before = await s.lib('scrollState', [{ x, y }]);
+  const again = { chain: before.chain.map((c) => c.ref), doc: before.doc };
   const vertical = dir === 'up' || dir === 'down';
   const amount = args.amount ?? Math.max(1, Math.round((vertical ? before.page.vh : before.page.vw) * 0.8));
   const dx = vertical ? 0 : dir === 'left' ? -amount : amount;
@@ -500,20 +531,23 @@ export async function scroll({ tab, s }, args) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < 1500) {
     await new Promise((r) => setTimeout(r, 60));
-    const now = await s.lib('scrollState', [{ x, y }]);
+    const now = await s.lib('scrollState', [again]);
+    if (now.lost) { after = now; break; }
     if (!sameScroll(now, after)) { after = now; stableSince = Date.now(); }
     if (Date.now() - stableSince > (sameScroll(after, before) ? 300 : 150)) break;
   }
-  if (sameScroll(after, before)) {
-    await s.lib('scrollByJs', [{ x, y, dx, dy }]);
-    after = await s.lib('scrollState', [{ x, y }]);
+  // Nothing moved: scroll with script instead (not if an area is gone: what to move is unclear).
+  if (!after.lost && sameScroll(after, before)) {
+    if (await s.lib('scrollByJs', [{ ...again, dx, dy }])) after = await s.lib('scrollState', [again]);
   }
   const lines = [];
-  if (sameScroll(after, before)) {
-    lines.push(`Nothing scrolled ${dir}: the page${before.inner ? ' and the scrollable area at that point are' : ' is'} already at the ${{ up: 'top', down: 'bottom', left: 'left edge', right: 'right edge' }[dir]}, or the area at (${r0(x)}, ${r0(y)}) can't scroll.`);
-  } else if (after.inner && before.inner && (after.inner.top !== before.inner.top || after.inner.left !== before.inner.left)) {
-    const i = after.inner;
-    lines.push(`Scrolled ${dir} inside ${i.desc}: its scroll position is now top=${i.top}, left=${i.left} (max top=${i.maxTop}, max left=${i.maxLeft}).`);
+  const inner = after.lost ? null : movedArea(after, before);
+  if (after.lost) {
+    lines.push(`The scrolling area at (${r0(x)}, ${r0(y)}) changed or went away while scrolling; take a screenshot to see where things are now.`);
+  } else if (sameScroll(after, before)) {
+    lines.push(`Nothing scrolled ${dir}: the page${before.chain.length ? ' and the scrollable areas at that point are' : ' is'} already at the ${{ up: 'top', down: 'bottom', left: 'left edge', right: 'right edge' }[dir]}, or the area at (${r0(x)}, ${r0(y)}) can't scroll.`);
+  } else if (inner) {
+    lines.push(`Scrolled ${dir} inside ${inner.desc}: its scroll position is now top=${inner.top}, left=${inner.left} (max top=${inner.maxTop}, max left=${inner.maxLeft}).`);
   } else {
     const moved = vertical ? Math.abs(after.page.y - before.page.y) : Math.abs(after.page.x - before.page.x);
     lines.push(`Scrolled ${dir} ${moved} px.`);
@@ -530,7 +564,8 @@ export async function selectOption({ tab, s }, args) {
   const values = Array.isArray(args.value) ? args.value : [args.value];
   const t = await s.lib('ddTarget', [{ ref: args.ref, selector: args.selector }]);
   if (!t.native) return customSelect(tab, s, t, values);
-  const r = await s.lib('selectOption', [{ ref: args.ref, selector: args.selector, values }]);
+  // The select ddTarget found, by its number: the selector is not looked up a second time.
+  const r = await s.lib('selectOption', [{ ref: t.ref, doc: t.doc, values }]);
   if (!r.matched) {
     const list = r.options.map((o) => `value=${JSON.stringify(o.value)} label=${JSON.stringify(o.label)}${o.disabled ? ' (disabled)' : ''}`).join('\n');
     throw new ToolError('not_found', `No option of ${r.desc} matches ${values.map((v) => q(v)).join(', ')} (by value or label). Options${r.total > r.options.length ? ` (first ${r.options.length} of ${r.total})` : ''}:\n${untrusted(list || '(none)')}`);
@@ -614,10 +649,10 @@ async function pickCustom(tab, s, t, value) {
   }
   // Scroll the option into view (also inside the list), move the mouse onto it, and check again
   // that it is the option that is there (hover effects can move or cover things) before pressing.
-  const p = await s.lib('point', [{ ref: o.ref, doc: t.doc }]);
-  if (p.covered) throw new ToolError('no_element', `Did not click the option ${q(o.label)}: ${p.covered} is on top of it.`);
-  const p2 = await moveAndRecheck(s, p, `the option ${q(o.label)}`);
-  if (p2.dialog) return { content: [text(`Moved the mouse onto the option ${q(o.label)} of ${t.desc}. ${dialogNote(tab.id, p2.dialog)}`)] };
+  const p2 = await s.lib('point', [{ ref: o.ref, doc: t.doc }]);
+  if (p2.covered) throw new ToolError('no_element', `Did not click the option ${q(o.label)}: ${p2.covered} is on top of it.`);
+  const m2 = await moveAndRecheck(s, p2, `the option ${q(o.label)}`);
+  if (m2.dialog) return { content: [text(`Moved the mouse onto the option ${q(o.label)} of ${t.desc}. ${dialogNote(tab.id, m2.dialog)}`)] };
   const before = (await tabSummary(tab.id)).url; // before the last check: nothing may come between it and the press
   // Last check, in one go right before pressing: the value still picks this same option, it is
   // still not selected if selecting again would deselect it, and it is on top at that point.

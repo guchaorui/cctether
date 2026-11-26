@@ -186,7 +186,9 @@ test('tool names and arguments match the server definitions', async () => {
     const ext = await import(join(EXT, 'background', 'tools', 'index.js'));
     assert.deepEqual([...ext.TOOL_NAMES], TOOLS.map((t) => t.name));
     for (const t of TOOLS) {
-      assert.deepEqual([...ext.TOOL_ARGS[t.name]].sort(), Object.keys(t.inputSchema.properties).sort(), `arguments of ${t.name}`);
+      // serverOnly arguments are handled by the service and never reach the extension.
+      const props = Object.keys(t.inputSchema.properties).filter((k) => !(t.serverOnly ?? []).includes(k));
+      assert.deepEqual([...ext.TOOL_ARGS[t.name]].sort(), props.sort(), `arguments of ${t.name}`);
     }
     const util = await import(join(EXT, 'background', 'tools', 'util.js'));
     assert.equal(util.normalizeUrl('example.com'), 'https://example.com/');
@@ -2085,5 +2087,198 @@ test('evaluate awaits a returned Promise; calls at the same time keep their own 
     expression: `new Promise((r) => setTimeout(() => r({ i: ${i}, s: "x".repeat(${i} * 20000) }), ${(5 - i) * 30}))`,
   })));
   all.forEach((r, i) => assert.match(r.text, new RegExp(`\\{"i":${i},"s":"x*`), `call ${i}: ${r.text.slice(0, 200)}`));
+  await ok('close_tab', { tab });
+});
+
+// ---- same-origin frames (SPEC §5.2, 0.6.0) ----------------------------------------------------
+
+const frameEval = (tab, expr) => pageEval(tab, `(() => { const w = document.getElementById("app").contentWindow; return (${expr}); })()`);
+const centreOf = (text) => {
+  const [, x, y, w, h] = text.match(/at \((-?\d+), (-?\d+)\) (\d+)×(\d+)/).map(Number);
+  return { x: x + w / 2, y: y + h / 2 };
+};
+const shotId = (text) => Number(text.match(/This is screenshot (\d+):/)[1]);
+
+test('frames: read_page and find see into same-origin frames; other frames are described', async () => {
+  const tab = await openShared('/pages/frames.html');
+  const t = await ok('read_page', {});
+  assert.match(t.text, /The text of 3 frames \(iframes\) follows the page's own/);
+  assert.match(t.text, /2 frames can't be read \(another site's, or sandboxed\)/);
+  assert.match(t.text, /Cloud console Create[\s\S]*── frame "Workload" → \/pages\/frame-inner\.html \(\d+×\d+\) ──\nCreate instance\n/);
+  // Another site's frame: origin and path only (the query may hold tokens), and how to open it.
+  assert.match(t.text, /── frame "Help widget" → http:\/\/localhost:\d+\/pages\/frame-inner\.html\?… \(250×80\): cctether can't read inside it \(another site's, or sandboxed\)\. Its declared address can be opened on its own with open_tab/);
+  assert.doesNotMatch(t.text, /other-site/);
+  assert.match(t.text, /── frame "Sandboxed" → inline content \(srcdoc\) \(250×80\): cctether can't read inside it \(another site's, or sandboxed\)\. ──/);
+  assert.match(t.text, /── frame "Inline help" → inline content \(srcdoc\) \(250×80\) ──\nHelp center/);
+  // A selector naming a frame reads its document.
+  const inner = await ok('read_page', { selector: '#sd' });
+  assert.match(inner.text, /<untrusted-page-content>\nTitle: Console shell\nURL: [^\n]+\nSelector: #sd\n\nHelp center\n\nOpen help/);
+
+  const i = await ok('read_page', { mode: 'interactive' });
+  assert.match(i.text, /Elements inside frames \(iframes\) are listed where the frame is, after a "── in frame … ──" line/);
+  assert.match(i.text, /2 frames can't be seen into/);
+  assert.match(i.text, /\] button "Create"\n── in frame "Workload" ──\n\[\d+\] textbox "Instance name"/);
+  assert.match(i.text, /\] button "Far inside" ↓\n── back in the page ──\n\[\d+\] iframe "Help widget" → http:\/\/localhost:\d+\/pages\/frame-inner\.html\?… \(cctether can't see inside: another site's, or sandboxed\)/);
+  assert.match(i.text, /── in frame "Inline help" ──\n\[\d+\] button "Open help"/);
+  const help = refOf(i.text, /button "Open help"/);
+  await ok('click', { ref: help });
+  assert.deepEqual(await pageEval(tab, 'document.getElementById("sd").contentWindow.log'), ['help']);
+
+  // find: everything, the page first; positions in the tab's viewport (past the frame's border
+  // and padding: 60 + 3 + 4, 40 + 3 + 4).
+  const f = await ok('find', { selector: '#create' });
+  assert.match(f.text, /^1 element match "#create"\./);
+  assert.match(f.text, /\[\d+\] button#create type="button" "Create" at \(\d+, \d+\) \d+×\d+, visible in frame "Workload"/);
+  const [, fx, fy] = f.text.match(/at \((\d+), (\d+)\)/).map(Number);
+  assert.ok(fx >= 67 + 12 && fy >= 47, `${fx}, ${fy}`);
+  const fr = await ok('find', { selector: 'iframe' });
+  assert.match(fr.text, /^5 elements match "iframe"/);
+  assert.match(fr.text, /iframe#app [^\n]*same-origin \(searched too\)/);
+  assert.match(fr.text, /iframe#xo\.side [^\n]*src="http:\/\/localhost:\d+\/pages\/frame-inner\.html\?…"[^\n]*cross-origin or sandboxed/);
+  const far = await ok('find', { text: 'Far inside' });
+  assert.match(far.text, /button#far type="button" "Far inside" at \(\d+, \d+\) \d+×\d+, offscreen ↓ in frame "Workload"/);
+  const html = await ok('read_page', { mode: 'html' });
+  assert.match(html.text, /The documents of 3 frames \(iframes\) inside it are not included: pass a selector for the iframe/);
+  await ok('close_tab', { tab });
+});
+
+test('frames: acting on elements inside frames; selectors and text that are ambiguous across frames', async () => {
+  const tab = await openShared('/pages/frames.html?act');
+  // The same exact text in the page and in a frame: not guessed (by case or kind of element).
+  const amb = await fails('click', { text: 'Create' }, 'ambiguous');
+  assert.match(amb.message, /Elements in the page and 1 of its frames \(iframes\) have the text "Create"/);
+  // Nothing in the page matches, something in two frames does: not guessed either.
+  const both = await fails('click', { selector: '.both' }, 'ambiguous');
+  assert.match(both.message, /Nothing in the page itself matches the selector "\.both", but elements in 2 of its frames/);
+  // Only in one frame: found there, scrolled into the frame's view, clicked with real events.
+  const c = await ok('click', { text: 'Far inside' });
+  assert.match(c.text, /^Clicked button "Far inside" in frame "Workload" at \(\d+, \d+\)\.$/);
+  const s1 = await ok('click', { selector: '#create' });
+  assert.match(s1.text, /^Clicked button "Create" in frame "Workload"/);
+  assert.deepEqual(await frameEval(tab, 'w.log'), ['far', 'create:trusted']);
+  // Scrolling the frame did not move the shell around it (a page its user can't scroll).
+  assert.equal(await pageEval(tab, 'scrollY'), 0);
+  // The page's own element is still found first by a selector that matches there.
+  await ok('click', { selector: 'button' });
+  assert.deepEqual(await frameEval(tab, 'w.log'), ['far', 'create:trusted']);
+  // A mirrored frame: readable, but no coordinates.
+  const m = await fails('click', { text: 'Mirror' }, 'no_element');
+  assert.match(m.message, /button "Mirror" in frame "Mirrored" is in a frame that is rotated, scaled or zoomed/);
+  // The other site's frame is not searched, and says so.
+  const none = await fails('click', { text: 'Nowhere at all' }, 'no_element');
+  assert.match(none.message, /2 frames on the page can't be searched/);
+
+  // type and select_option.
+  const t = await ok('type', { selector: '#name', text: 'web-1' });
+  assert.match(t.text, /^Typed 5 characters into textbox "Instance name" in frame "Workload"\. Its value is now "web-1"\./);
+  const t2 = await ok('type', { selector: '#name', text: 'web-2', clear: true });
+  assert.match(t2.text, /\(after clearing it\)\. Its value is now "web-2"\./);
+  const so = await ok('select_option', { selector: '#shape', value: 'VM.Standard.E4' });
+  assert.match(so.text, /^Selected "VM\.Standard\.E4" in select "Shape" in frame "Workload"\./);
+  assert.equal((await frameEval(tab, 'w.log')).at(-1), 'shape:e4');
+  // The page moves the focus when Backspace is pressed: clearing stops there, and the field the
+  // focus went to is not cleared instead.
+  const j = await fails('type', { selector: '#jumpy', text: 'x', clear: true }, 'no_element');
+  assert.match(j.message, /^Stopped while clearing: the focus moved from textbox "Jumpy" in frame "Workload" to textbox "Other" in frame "Workload"/);
+  const other = await frameEval(tab, 'w.document.getElementById("other").value');
+  assert.ok(other.length >= 3, `the other field was not cleared: ${JSON.stringify(other)}`);
+  assert.equal(await frameEval(tab, 'w.document.getElementById("jumpy").value.includes("x")'), false, 'nothing typed');
+  // Focus in a frame cctether can't see into: only typing without a target, clear or submit.
+  await fails('type', { selector: '#xo', text: 'hi' }, 'no_element');
+  await ok('click', { selector: '#xo' });
+  // Not through an element around it either (the focus ends up in that frame).
+  const wrap = await fails('type', { selector: '#xo-wrap', text: 'hi', clear: true, submit: true }, 'no_element');
+  assert.match(wrap.message, /The focus went into a frame cctether can't see into/);
+  const bl = await fails('type', { text: 'hi', clear: true }, 'no_element');
+  assert.match(bl.message, /a frame cctether can't see into .*Type without clear and submit/);
+  const ty = await ok('type', { text: 'hi' });
+  assert.match(ty.text, /inside a frame cctether can't see into, so it can't check where the text went/);
+  // evaluate can return nodes of a frame's document (another realm).
+  const ev = await ok('evaluate', { expression: 'document.getElementById("app").contentDocument.getElementById("create")' });
+  assert.match(ev.text, /"<button#create>"/);
+  const rec = await ok('evaluate', { expression: '({ nodeType: 1, nodeName: "RECORD", value: 42 })' });
+  assert.match(rec.text, /\{"nodeType":1,"nodeName":"RECORD","value":42\}/, 'a plain object that looks like a node stays an object');
+  await ok('close_tab', { tab });
+});
+
+test('frames: screenshot points inside frames; refused once the frame or an area in it scrolled, or a frame went', async () => {
+  const tab = await openShared('/pages/frames.html?shot');
+  const at = centreOf((await ok('find', { selector: '#create' })).text);
+  const sh = await ok('screenshot', { format: 'png' });
+  assert.match(sh.text, /1 px = 1 CSS px/);
+  const id = shotId(sh.text);
+  const c = await ok('click', { x: at.x, y: at.y, screenshot: id });
+  assert.match(c.text, /on button "Create" in frame "Workload"/);
+  assert.deepEqual(await frameEval(tab, 'w.log'), ['create:trusted']);
+  // The frame's document scrolls: the same point shows something else now.
+  await frameEval(tab, '(w.scrollTo(0, 40), 1)');
+  const e1 = await fails('click', { x: at.x, y: at.y, screenshot: id }, 'stale_screenshot');
+  assert.match(e1.message, /the frame at that point has navigated, scrolled, moved or changed/);
+  await frameEval(tab, '(w.scrollTo(0, 0), 1)');
+  // An area inside the frame scrolls (the frame's own position stays at 0).
+  const list = centreOf((await ok('find', { selector: '#list' })).text);
+  const id2 = shotId((await ok('screenshot', {})).text);
+  await ok('hover', { x: list.x, y: list.y, screenshot: id2 });
+  await frameEval(tab, '(w.document.getElementById("list").scrollTop = 30, 1)');
+  const e2 = await fails('hover', { x: list.x, y: list.y, screenshot: id2 }, 'stale_screenshot');
+  assert.match(e2.message, /an area that scrolls at that point was scrolled/);
+  // A frame that was at the point is gone (what is there now is the page behind it).
+  const sd = centreOf((await ok('find', { selector: '#sd' })).text);
+  const id3 = shotId((await ok('screenshot', {})).text);
+  await pageEval(tab, '(document.getElementById("sd").remove(), 1)');
+  const e3 = await fails('click', { x: sd.x, y: sd.y, screenshot: id3 }, 'stale_screenshot');
+  assert.match(e3.message, /the frame that was at that point is gone/);
+  // A frame mirrored after the screenshot (same place, same document, same scroll).
+  const flip = centreOf((await ok('find', { selector: '#flip' })).text);
+  await pageEval(tab, '(document.getElementById("flip").style.transform = "none", 1)');
+  const id4 = shotId((await ok('screenshot', {})).text);
+  await pageEval(tab, '(document.getElementById("flip").style.transform = "scaleX(-1)", 1)');
+  // On a mirrored frame, points of a screenshot are not used at all (a new one won't help).
+  const e4 = await fails('click', { x: flip.x, y: flip.y, screenshot: id4 }, 'bad_args');
+  assert.match(e4.message, /on a frame that is rotated, scaled or zoomed \(CSS\)\. cctether can't check what is there.*a new screenshot won't change that\. Use ref or text/);
+  await ok('click', { x: 5, y: 5, screenshot: id4 }, 'elsewhere on that screenshot is fine');
+  // Something of the page that lay over the middle of the frame when the screenshot was taken:
+  // the frame scrolling underneath doesn't matter, the point still shows that thing.
+  const app = centreOf((await ok('find', { selector: '#app' })).text);
+  await pageEval(tab, `(() => { const b = document.createElement('button'); b.id = 'over'; b.textContent = 'Over the frame';
+    b.style.cssText = 'position:absolute; left:${Math.round(app.x) - 100}px; top:${Math.round(app.y) - 60}px; width:200px; height:120px; z-index:5';
+    b.onclick = () => { window.overClicked = true; }; document.body.appendChild(b); return 1; })()`);
+  const id5 = shotId((await ok('screenshot', {})).text);
+  await frameEval(tab, '(w.scrollTo(0, 30), 1)');
+  const ov = await ok('click', { x: app.x, y: app.y, screenshot: id5 });
+  assert.match(ov.text, /on button "Over the frame"/);
+  assert.equal(await pageEval(tab, 'window.overClicked'), true);
+  await ok('close_tab', { tab });
+});
+
+test('frames: scroll and wait_for inside frames; refs go stale when the frame navigates; screenshots', async () => {
+  const tab = await openShared('/pages/frames.html?more');
+  const p = centreOf((await ok('find', { selector: '#name' })).text);
+  const sc = await ok('scroll', { x: p.x, y: p.y, direction: 'down', amount: 200 });
+  assert.match(sc.text, /^Scrolled down inside frame "Workload": its scroll position is now top=\d+/);
+  assert.ok((await frameEval(tab, 'w.scrollY')) > 0);
+  await frameEval(tab, '(w.scrollTo(0, 0), 1)');
+  // Text that appears in a frame; the result says where it was found.
+  const n = await ok('navigate', { url: `${base}/pages/frames.html?wait`, wait_for: { text: 'Work request accepted' } });
+  assert.match(n.text, /(Found the text "Work request accepted" after [\d.]+ s\.|The text "Work request accepted" was already there)[\s\S]*\[\d+\] div "Work request accepted" in frame "Workload"/);
+  const w = await fails('wait_for', { text: 'Never shown', timeout_ms: 300 }, 'timeout');
+  assert.match(w.message, /did not appear\. \(2 frames on the page can't be searched/);
+  await ok('wait_for', { selector: '#far' });
+  // Numbers of a frame's elements go stale when the frame navigates.
+  const i = await ok('read_page', { mode: 'interactive' });
+  const far = refOf(i.text, /button "Far inside"/);
+  await pageEval(tab, '(document.getElementById("app").src = "/pages/frame-inner.html?quiet", 1)');
+  await until(() => frameEval(tab, 'w.location.search === "?quiet" && w.document.readyState === "complete"'), 'the frame to navigate');
+  await fails('click', { ref: far }, 'stale_ref');
+  // Screenshots: an element in a frame; one taller than the frame is cut to what can be seen.
+  const el = await ok('screenshot', { selector: '#create' });
+  assert.match(el.text, /element button "Create" in frame "Workload"/);
+  const tall = await ok('screenshot', { selector: '.tall' });
+  assert.match(tall.text, /Only the part that can be seen through its frame \(iframe\) is in the image\./);
+  // The page doesn't scroll, the frame does: the full-page hint says how to see the rest.
+  const fp = await ok('screenshot', { full_page: true });
+  assert.match(fp.text, /its content scrolls inside \[(\d+)\] frame "Workload" \(\d+ CSS px tall\), which is a frame or in one\. Capturing all of a frame's content in one image isn't supported yet: scroll it with scroll \(ref: \1, direction "down"\)/);
+  const nf = await fails('screenshot', { selector: '#app', full_page: true }, 'bad_args');
+  assert.match(nf.message, /isn't supported yet/);
   await ok('close_tab', { tab });
 });

@@ -4,13 +4,17 @@
 
 const tab = { type: 'integer', description: 'Tab id from list_tabs. Default: the current tab.' };
 const ref = { type: 'integer', minimum: 1, description: 'Element number from read_page (interactive mode) or find. Invalid after navigation.' };
-const selector = { type: 'string', minLength: 1, maxLength: 2000, description: 'CSS selector (the first visible match, else the first match).' };
+const selector = { type: 'string', minLength: 1, maxLength: 2000, description: 'CSS selector (the first visible match, else the first match; in same-origin iframes if the page itself has no match).' };
 const selectorFirst = { type: 'string', minLength: 1, maxLength: 2000, description: 'CSS selector (the first match, visible or not).' };
 const x = { type: 'number', description: 'Viewport x in CSS pixels, or with screenshot: x on that image.' };
 const y = { type: 'number', description: 'Viewport y in CSS pixels, or with screenshot: y on that image.' };
 const text = { type: 'string', minLength: 1, maxLength: 1000, description: 'Visible text or aria-label of the element (within selector, if given). Acts only on one exact match, else lists candidates.' };
 const shot = { type: 'integer', minimum: 1, description: 'A screenshot number: x, y are then a point on that image.' };
 const timeout = (def, max) => ({ type: 'integer', minimum: 100, maximum: max, description: `Milliseconds, default ${def}.` });
+
+/** evaluate's `file`; mcpToolList puts the scripts directory's path where SCRIPTS_DIR is. */
+export const SCRIPTS_DIR = '<scripts directory>';
+const FILE_DESC = `Instead of expression: the name of a .js file in cctether's scripts directory, ${SCRIPTS_DIR}. Write a long script there once, then pass its name (edit it there and pass the name again); it runs like expression (a browser script: no import/export). Globals it defines stay in the page until it reloads.`;
 
 const READ = { readOnlyHint: true, destructiveHint: false, openWorldHint: true };
 const ACT = { readOnlyHint: false, destructiveHint: false, openWorldHint: true };
@@ -73,7 +77,7 @@ export const TOOLS = [
   {
     name: 'read_page',
     title: 'Read page',
-    description: 'Read the page. mode "text" (default): visible text. "interactive": numbered list of links, buttons, inputs etc. — pass a number as `ref` to click/type/hover/select_option/scroll/screenshot. "html": HTML of `selector` (default body). Long output is split: pass the returned offset to continue.',
+    description: 'Read the page, including same-origin iframes. mode "text" (default): visible text. "interactive": numbered list of links, buttons, inputs etc. — pass a number as `ref` to click/type/hover/select_option/scroll/screenshot. "html": HTML of `selector` (default body). Long output is split: pass the returned offset to continue.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -90,7 +94,7 @@ export const TOOLS = [
   {
     name: 'find',
     title: 'Find elements',
-    description: 'Find elements by CSS selector and/or visible text. Returns count, and for each: ref number, tag, text, key attributes, position, visibility.',
+    description: 'Find elements by CSS selector and/or visible text, also inside same-origin iframes. Returns count, and for each: ref number, tag, text, key attributes, position, visibility.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -262,18 +266,20 @@ export const TOOLS = [
   {
     name: 'evaluate',
     title: 'Run JavaScript',
-    description: 'Run JavaScript in the page and return the result as JSON. Works like the DevTools console: the value of the last expression is returned (a Promise is awaited), top-level await is allowed. world "page" (default) shares globals with the page; "isolated" sees only the DOM.',
+    description: 'Run JavaScript in the page and return the result as JSON. Works like the DevTools console: the value of the last expression is returned (a Promise is awaited), top-level await is allowed. world "page" (default) shares globals with the page; "isolated" sees only the DOM. Pass `expression` or `file`.',
     inputSchema: {
       type: 'object',
       properties: {
         expression: { type: 'string', minLength: 1, maxLength: 200000 },
+        file: { type: 'string', minLength: 1, maxLength: 1000, description: FILE_DESC },
         world: { type: 'string', enum: ['page', 'isolated'] },
         timeout_ms: timeout(10000, 120000),
         tab,
       },
-      required: ['expression'],
       additionalProperties: false,
     },
+    // Read by the service (mcp.js), which sends `expression` to the extension instead.
+    serverOnly: ['file'],
     annotations: DANGER,
     timeoutMs: (a) => (a.timeout_ms ?? 10000) + 5000,
   },
@@ -358,9 +364,17 @@ export function toolTimeoutMs(name, args) {
   return t?.timeoutMs ? t.timeoutMs(args) : DEFAULT_TIMEOUT_MS;
 }
 
-/** Tool list as sent in MCP tools/list. */
-export function mcpToolList() {
-  return TOOLS.map(({ name, title, description, inputSchema, annotations }) => ({
-    name, title, description, inputSchema, annotations: { title, ...annotations },
-  }));
+/** Tool list as sent in MCP tools/list; `scriptsDir`: the path to put in evaluate's `file`. */
+export function mcpToolList(scriptsDir = null) {
+  return TOOLS.map(({ name, title, description, inputSchema, annotations }) => {
+    let schema = inputSchema;
+    if (inputSchema.properties.file) {
+      const { file, ...props } = inputSchema.properties;
+      // Without a scripts directory (the shim's fallback answers), there is no `file`.
+      schema = scriptsDir
+        ? { ...inputSchema, properties: { ...inputSchema.properties, file: { ...file, description: file.description.replace(SCRIPTS_DIR, scriptsDir) } } }
+        : { ...inputSchema, properties: props };
+    }
+    return { name, title, description, inputSchema: schema, annotations: { title, ...annotations } };
+  });
 }
