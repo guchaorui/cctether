@@ -4,11 +4,11 @@
 
 ## 零、现在到哪了（先看这里）
 
-**2026-11-26：0.6.0 做完并已发布**（npm、GitHub Release、主人的服务器；商店的新包等主人上传）。起因是又一个项目的 Claude 在 Oracle 云控制台里用 cctether，主人转来反馈：控制台把整个表单放在同源 iframe 里，`read_page` 只读回页眉页脚，按文字找「创建」说没有；400 多行的脚本每次都要整段贴。做的过程中它又补了两条：往 iframe 里的输入框打字报「不是文本框」（同一个原因）；14 KB 的脚本又整段贴了两遍。规则全在 SPEC §5.2「同源 iframe，和 `evaluate` 读脚本文件」，经过在 §13 v0.17。
+**2026-11-26：0.6.0 做完并已发布，随后补发 0.6.1**（npm、GitHub Release、主人的服务器；商店的新包等主人上传，直接传 0.6.1 的）。起因是又一个项目的 Claude 在 Oracle 云控制台里用 cctether，主人转来反馈：控制台把整个表单放在同源 iframe 里，`read_page` 只读回页眉页脚，按文字找「创建」说没有；400 多行的脚本每次都要整段贴。做的过程中它又补了两条：往 iframe 里的输入框打字报「不是文本框」（同一个原因）；14 KB 的脚本又整段贴了两遍。规则全在 SPEC §5.2「同源 iframe，和 `evaluate` 读脚本文件」，经过在 §13 v0.17。
 - **同源 iframe 和页面本身一样能用**：读页面、按选择器和文字找、点击、输入、选下拉框、滚动、等待、截图都进得去；别的网站的、加了 sandbox 的写出它声明的地址（去掉参数）。跨页面不明确（好几个 iframe 都匹配、文字在不止一个页面里完全相同）就列出候选，不替 Claude 选。
 - **`evaluate` 的 `file`**：只读 cctether 自己的脚本目录（`~/.config/cctether/scripts/`，权限 700，不能是链接），由服务读出来当 `expression` 发出去，旧插件也能用。主人服务器上已经在真链路上试过（读到了 example.com 的标题，`../config.json` 被拦下）。
 - **顺手修的**：发给插件的消息太大时，原来会把加密计数弄乱、连接断掉（以前就有的问题）；在 iframe 里把元素滚进来时，外层页面会被带着挪几个像素；截图坐标原来查不出页面里的 div 滚动过。
-- **GPT 把关**：方案挑了两轮刺，做完复审一轮（4 条要紧的、3 条次要的，都改了），核验两轮（第一轮又指出 4 处，都改了；第二轮的结果见下面一行）。没采纳的和理由在 SPEC §13 v0.17。
+- **GPT 把关**：方案挑了两轮刺，做完复审一轮（4 条要紧的、3 条次要的，都改了），核验两轮（第一轮又指出 4 处，都改了；0.6.0 发布后第二轮确认都修好了，又指出两处小的，改成 0.6.1，见 SPEC §13 v0.18，这两处没再送核验）。没采纳的和理由在 SPEC §13 v0.17。
 - **还不支持**：把 iframe 里滚动的内容一次截全（提示 Claude 边滚边截）；在旋转、缩放过的 iframe 里按位置点击。
 
 **顺带记一个这次自己用 cctether 时的不顺手**（全局 CLAUDE.md 要求汇报）：服务端升级以后，已经开着的 Claude Code 会话手里还是旧的工具清单，用不了新参数，只好自己写脚本走 `cctether mcp`（这次验证 `file` 又是这样）。列在第二节。
@@ -30,11 +30,11 @@
 
 | 在哪 | 版本 | 说明 |
 |---|---|---|
-| 仓库 `main` | 0.6.0 | 已公开（`guchaorui/cctether`），GitHub 上的测试全过 |
-| npm（`cctether`） | 0.6.0 | 2026-11-09 起由 GitHub Actions 可信发布，带来源证明。0.6.0 的包和 Release 里的逐字节一致 |
-| GitHub Release | v0.6.0 | 附插件 zip、npm 包和校验和；两个插件 zip 和本地打的一致 |
-| Chrome 应用商店 | 0.5.1 | **0.6.0 的包等主人上传**（`dist/cctether-extension-0.6.0-store.zip`，也在 GitHub Release 里）。0.5.1 2026-11-26 过审，和 v0.5.1 逐文件核对过（只有 manifest 按预期不同，多了 `_metadata/`） |商店里的包和 `v0.4.0` 标签逐个文件核对过，只有 manifest 按预期不同（核对办法见「坑」→「发布」）。0.3.3 的插件代码没变，所以当时没提交。[商店页面](https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib)，插件 ID `mbkadoolgknacadjkfjjajldmllbkdib` |
-| 主人的服务器 | 0.6.0 | 2026-11-26 从 npm 装的，`cctether check` 全过（细节在 `CLAUDE.local.md`） |
+| 仓库 `main` | 0.6.1 | 已公开（`guchaorui/cctether`），GitHub 上的测试全过 |
+| npm（`cctether`） | 0.6.1 | 2026-11-09 起由 GitHub Actions 可信发布，带来源证明。0.6.1 的包和 Release 里的逐字节一致 |
+| GitHub Release | v0.6.1 | 附插件 zip、npm 包和校验和；两个插件 zip 和本地打的一致 |
+| Chrome 应用商店 | 0.5.1 | **0.6.1 的包等主人上传**（`dist/cctether-extension-0.6.1-store.zip`，也在 GitHub Release 里；0.6.0 的不用传）。0.5.1 2026-11-26 过审，和 v0.5.1 逐文件核对过（只有 manifest 按预期不同，多了 `_metadata/`） |商店里的包和 `v0.4.0` 标签逐个文件核对过，只有 manifest 按预期不同（核对办法见「坑」→「发布」）。0.3.3 的插件代码没变，所以当时没提交。[商店页面](https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib)，插件 ID `mbkadoolgknacadjkfjjajldmllbkdib` |
+| 主人的服务器 | 0.6.1 | 2026-11-26 从 npm 装的，`cctether check` 全过（细节在 `CLAUDE.local.md`） |
 | 主人的 Mac | 商店版 0.5.1 | Chrome 158，2026-11-26 自动更新，连接正常 |
 | 官网主页 | 已有卡片 | site-ops 做的。要改卡片交给 site-ops |
 
@@ -52,7 +52,7 @@
 
 **还等主人定的：**
 
-- **上传商店的 0.6.0 包**：照 `store/README.zh-CN.md` 末尾上传 `dist/cctether-extension-0.6.0-store.zip`（GitHub Release 里也有）。iframe 的支持在插件里，过审以后才到主人的 Mac 上。
+- **上传商店的 0.6.1 包**：照 `store/README.zh-CN.md` 末尾上传 `dist/cctether-extension-0.6.1-store.zip`（GitHub Release 里也有）。iframe 的支持在插件里，过审以后才到主人的 Mac 上。
 - **请 Oracle 那个项目的 Claude 再用一次**（商店版更新以后）：看 iframe 和 `file` 在真的控制台里好不好用。它要重开 Claude Code 才拿得到 `file` 参数。
 
 - **请谷歌云那个项目的 Claude 再用一次**（不急，主人方便时）：看那六条反馈在真的控制台里是不是解决了。有新反馈就照这次的流程改。
@@ -124,7 +124,7 @@
 
 - 真实断网时，扩展后台收不收得到 offline/online 事件（收不到也没关系，每秒会读一次联网状态）。
 - 界面在 Mac 上的样子：开发机没有苹方字体，截图里中文标题是常规粗细。
-- 0.5.x 的新功能没在真的谷歌云控制台上试过、0.6.0 的 iframe 没在真的 Oracle 控制台上试过（那是主人登录的账号，Claude 不自己去点）。0.6.0 的插件部分要等商店过审才到主人的 Mac 上，在那之前只在开发机的测试 Chrome 里测过。在主人的真 Mac 上用公开演示网站（MUI、Angular Material）试过的见 SPEC §11 第 13 条。
+- 0.5.x 的新功能没在真的谷歌云控制台上试过、0.6.0 的 iframe 没在真的 Oracle 控制台上试过（那是主人登录的账号，Claude 不自己去点）。0.6.x 的插件部分要等商店过审才到主人的 Mac 上，在那之前只在开发机的测试 Chrome 里测过。在主人的真 Mac 上用公开演示网站（MUI、Angular Material）试过的见 SPEC §11 第 13 条。
 - 第二节第 1、2、3 条：干净机器上真实的 systemd 流程（生成的服务文件用 `systemd-analyze --user verify` 验过）、Mac 和 WSL 当服务端。
 - `resize_viewport` 和 `set_color_scheme` 在主人的真 Mac 上还没试成的：
   - 主人的 Mac 是深色时强制浅色（试的时候系统是浅色）。自动测试里用 `--force-dark-mode` 测过。
@@ -162,7 +162,7 @@
 - 配置目录路径太长时 Unix socket 建不起来，会改用 `$XDG_RUNTIME_DIR`（SPEC §4.5）。临时测试目录尽量用短路径。
 - systemd 用户服务的 PATH 里没有 `~/.local/bin`，服务单元里要写 node 的完整路径（setup 生成的就是完整路径）。
 - 改了服务端代码，要打包安装再重启服务，主人在用的才会变（见 `CLAUDE.local.md`）。
-- 别用 `pkill -f` 配同一条命令里出现过的文字：会把跑这条命令的 shell 也杀掉。
+- 别用 `pkill -f` / `pgrep -f` 配同一条命令里出现过的文字：会把跑这条命令的 shell 也杀掉，或者一直找到它自己（2026-11-26 用 `while pgrep -f …` 等 GPT 跑完，就因此一直等下去）。等 Codex 跑完，就用后台方式直接跑 `codex exec`，完成时会有通知。
 - `xvfb-run` 在开发机上用不了（没有 xauth），要有界面的 Chrome 就直接起 `Xvfb :97`。
 
 **测试：**
