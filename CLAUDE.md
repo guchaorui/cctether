@@ -21,7 +21,7 @@
 ```
 extension/          浏览器插件：MV3，零依赖，不打包，用户能直接「加载已解压的扩展程序」
   background/       service worker：main.js → app.js（总调度）、connection.js + crypto.js（连接和加密）、
-                    tabs.js（标签组范围）、debugger.js（调试器）、page-scripts.js（在页面里跑的库，含同源 iframe）、tools/（22 个工具）、badge.js（图标）
+                    tabs.js（标签组范围）、debugger.js（调试器）、page-scripts.js（在页面里跑的库，含同源 iframe）、tools/（23 个工具）、badge.js（图标）
   popup/ options/   弹窗、设置页；文字全在 shared/strings.js（中英）
   shared/           contract.js（后台和界面之间的约定）、pairing.js（连接码）、i18n、ui.css
   icons/            图标；源文件和生成脚本是 scripts/icons.mjs

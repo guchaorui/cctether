@@ -10,6 +10,15 @@ const x = { type: 'number', description: 'Viewport x in CSS pixels, or with scre
 const y = { type: 'number', description: 'Viewport y in CSS pixels, or with screenshot: y on that image.' };
 const text = { type: 'string', minLength: 1, maxLength: 1000, description: 'Visible text or aria-label of the element (within selector, if given). Acts only on one exact match, else lists candidates.' };
 const shot = { type: 'integer', minimum: 1, description: 'A screenshot number: x, y are then a point on that image.' };
+/** One end of drag: an element or a point (and `extra`). The fields are as for click, so no descriptions. */
+const dragEnd = (extra = {}) => ({
+  type: 'object',
+  properties: {
+    ref: { type: 'integer', minimum: 1 }, selector: { type: 'string', minLength: 1, maxLength: 2000 },
+    text: { type: 'string', minLength: 1, maxLength: 1000 }, x: { type: 'number' }, y: { type: 'number' }, ...extra,
+  },
+  additionalProperties: false,
+});
 const timeout = (def, max) => ({ type: 'integer', minimum: 100, maximum: max, description: `Milliseconds, default ${def}.` });
 
 /** evaluate's `file`; mcpToolList puts the scripts directory's path where SCRIPTS_DIR is. */
@@ -228,6 +237,30 @@ export const TOOLS = [
     description: 'Move the mouse over an element (ref, selector and/or text) or a point (x, y).',
     inputSchema: { type: 'object', properties: { ref, selector, text, x, y, screenshot: shot, tab }, additionalProperties: false },
     annotations: ACT,
+  },
+  {
+    name: 'drag',
+    title: 'Drag',
+    description: 'Drag with the mouse: press on `from`, move to `to` in steps, release. For sortable lists, sliders, splitters, maps and HTML drag and drop. Both ends must be in view at once (scroll first, or resize_viewport). Check the result with a screenshot.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        from: { ...dragEnd(), description: 'Where to press: an element (ref, selector and/or text, as for click) or a point (x, y: viewport CSS pixels, or on screenshot).' },
+        to: {
+          ...dragEnd({ dx: { type: 'number' }, dy: { type: 'number' } }),
+          description: 'Where to release: an element, a point, or dx, dy: an offset in CSS pixels from the from point (e.g. for a slider). Measured once, before pressing.',
+        },
+        screenshot: { ...shot, description: 'A viewport screenshot number: x, y in from/to are then points on that image.' },
+        steps: { type: 'integer', minimum: 1, maximum: 100, description: 'Mouse moves on the way. Default 10.' },
+        hold_ms: { type: 'integer', minimum: 0, maximum: 5000, description: 'Hold the button this long before moving, for press-and-hold drags.' },
+        modifiers: { type: 'array', items: { type: 'string', enum: ['Alt', 'Control', 'Meta', 'Shift'] }, maxItems: 4 },
+        tab,
+      },
+      required: ['from', 'to'],
+      additionalProperties: false,
+    },
+    annotations: ACT,
+    timeoutMs: (a) => DEFAULT_TIMEOUT_MS + (a.hold_ms ?? 0),
   },
   {
     name: 'select_option',

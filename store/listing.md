@@ -21,7 +21,7 @@ When your Claude Code asks, cctether can:
 - list, open and close tabs, and navigate
 - read a page as text, and find elements
 - take screenshots
-- click, type, press keys, scroll, hover and choose menu options
+- click, type, press keys, scroll, hover, drag and choose menu options
 - show console messages and network requests
 - run JavaScript in the page (the same as DevTools' console)
 - list installed extensions and reload one (for extension developers)

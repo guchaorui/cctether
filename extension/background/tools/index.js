@@ -4,19 +4,19 @@
 // Expected failures throw ToolError(code, message) with these codes:
 //   no_tab, not_shared, restricted_url, dialog_open, debugger_busy, no_element, stale_ref,
 //   ambiguous, stale_screenshot, timeout, js_error, navigated, bad_args, not_found,
-//   emulation_changed, internal
+//   emulation_changed, busy, internal
 // ("paused" and "not connected" are handled by the caller.) When the failing call had resolved
 // a tab, the error carries it as `error.tab` ({ id, title, url }).
 
 import { ToolError } from './errors.js';
-import { A, int, bool, str, oneOf, strOrStrings, listOf, pattern, obj, checkArgs } from './args.js';
+import { A, int, num, bool, str, oneOf, strOrStrings, listOf, pattern, obj, checkArgs } from './args.js';
 import { resolveTab, setCurrentTab, isRestrictedUrl, restrictedMessage } from '../tabs.js';
 import { session, dialogError, takeLostEmulation } from '../debugger.js';
 import { listTabs, openTab, closeTab, listExtensions, reloadExtension, tabSummary } from './browser.js';
 import {
   navigate, readPage, find, screenshot, resizeViewport, setColorScheme, evaluate, waitFor,
 } from './page.js';
-import { click, hover, type, pressKey, scroll, selectOption } from './input.js';
+import { click, hover, drag, type, pressKey, scroll, selectOption } from './input.js';
 import { consoleMessages, networkRequests, handleDialog } from './logs.js';
 
 export { ToolError };
@@ -33,6 +33,22 @@ function checkPointer(a) {
   if (pt && (a.x == null || a.y == null)) bad(a.screenshot != null ? 'Pass `x` and `y` (a point on the screenshot) with `screenshot`.' : 'Pass both `x` and `y`.');
 }
 
+const dragEnd = { ref: A.ref, selector: A.selector, text: A.text, x: A.x, y: A.y };
+
+/** drag's two ends: each an element or a point; `to` may also be an offset (dx, dy) from `from`. */
+function checkDrag(a) {
+  const bad = (m) => { throw new ToolError('bad_args', m); };
+  for (const [k, o] of [['from', a.from], ['to', a.to]]) {
+    if (o.ref != null && (o.selector != null || o.text != null)) bad(`In \`${k}\`, pass \`ref\` alone, or \`selector\` and/or \`text\`, not both kinds.`);
+    const kinds = [o.ref != null || o.selector != null || o.text != null, o.x != null || o.y != null, o.dx != null || o.dy != null].filter(Boolean).length;
+    if (kinds > 1) bad(`In \`${k}\`, pass one of: an element (\`ref\`, \`selector\`, \`text\`), a point (\`x\` and \`y\`)${k === 'to' ? ', or an offset (`dx` and `dy`)' : ''}.`);
+    if (!kinds) bad(`\`${k}\` is empty: pass an element (\`ref\`, \`selector\`, \`text\`) or a point (\`x\` and \`y\`)${k === 'to' ? ', or an offset (`dx` and `dy`)' : ''}.`);
+    if ((o.x != null) !== (o.y != null)) bad(`In \`${k}\`, pass both \`x\` and \`y\`.`);
+    if ((o.dx != null) !== (o.dy != null)) bad('In `to`, pass both `dx` and `dy` (0 is fine).');
+  }
+  if (a.screenshot != null && a.from.x == null && a.to.x == null) bad('`screenshot` is for points (`x`, `y`) in `from` or `to`; neither has one.');
+}
+
 /**
  * kind: 'browser' = run(args); 'page' = resolve tab, attach debugger, run({ tab, s }, args).
  * restrictedOk: the tool works even if the tab shows a restricted page (s is null then).
@@ -40,6 +56,7 @@ function checkPointer(a) {
  * ownsEmulation: the tool manages an emulation itself (resize_viewport, set_color_scheme), so it
  *   neither shows nor consumes the "emulation ended" note (see runPageTool).
  * check(args): argument combinations to refuse before any tab is touched.
+ * gesture: the tool holds the mouse button (drag): it runs alone on its tab.
  */
 const TOOLS = {
   list_tabs: { kind: 'browser', args: {}, run: listTabs },
@@ -108,6 +125,17 @@ const TOOLS = {
     run: scroll,
   },
   hover: { kind: 'page', args: pointer, check: checkPointer, run: hover },
+  drag: {
+    kind: 'page',
+    args: {
+      from: obj(dragEnd), to: obj({ ...dragEnd, dx: num(), dy: num() }), screenshot: A.screenshot,
+      steps: int(1, 100), hold_ms: int(0, 5000), modifiers: listOf(4, oneOf('Alt', 'Control', 'Meta', 'Shift')), tab: A.tab,
+    },
+    required: ['from', 'to'],
+    check: checkDrag,
+    gesture: true,
+    run: drag,
+  },
   select_option: {
     kind: 'page',
     args: { ref: A.ref, selector: A.selector, value: strOrStrings(100), tab: A.tab },
@@ -191,7 +219,7 @@ function withNote(e, note) {
   return new Error(`${String(e)}\n${note}`);
 }
 
-async function runPageTool(def, args) {
+async function runPageTool(def, args, startedAt) {
   const tab = await resolveTab(args.tab);
   setCurrentTab(tab.id);
   let summary = null;
@@ -214,17 +242,28 @@ async function runPageTool(def, args) {
       // Coordinates were most likely measured on a screenshot taken under the emulation (a dark
       // theme can hide or move things too): refuse once rather than click somewhere else. The
       // record is used up, so a retry runs.
-      if (e && (args.x != null || args.y != null)) throw emulationChanged(e);
+      if (e && (args.x != null || args.y != null || args.from?.x != null || args.to?.x != null)) throw emulationChanged(e);
       lost = e;
     }
-    if (s) s.busy++;
+    if (s) {
+      // A drag holds the mouse button down: it runs alone on its tab (a dialog it opened can be
+      // handled). Checked right before the call starts, with nothing awaited in between.
+      if (s.gesture && !def.dialogOk) throw new ToolError('busy', `A drag is in progress on tab ${tab.id}. Try again in a moment.`);
+      if (def.gesture && s.busy > 0) throw new ToolError('busy', `Another call is still running on tab ${tab.id}; drag waits for it to finish. Try again in a moment.`);
+      s.busy++;
+      if (def.gesture) s.gesture = true;
+    }
     try {
-      const result = await def.run({ tab, s }, args);
+      const result = await def.run({ tab, s, startedAt }, args);
       result.tab ??= await tabSummary(tab.id);
       if (lost) result.content.push({ type: 'text', text: lostNote(lost) });
       return result;
     } finally {
-      if (s) { s.busy--; s.touch(); }
+      if (s) {
+        s.busy--;
+        if (def.gesture) s.gesture = false;
+        s.touch();
+      }
     }
   } catch (e) {
     summary = await tabSummary(tab.id);
@@ -239,12 +278,13 @@ async function runPageTool(def, args) {
  * `evaluate` sends its expression to the page through CDP.
  */
 export async function runTool(name, args) {
+  const startedAt = Date.now(); // drag keeps within the time the service waits, counted from here
   const def = typeof name === 'string' && Object.hasOwn(TOOLS, name) ? TOOLS[name] : null;
   if (!def) throw new ToolError('bad_args', `Unknown tool ${JSON.stringify(String(name)).slice(0, 80)}. Tools: ${TOOL_NAMES.join(', ')}.`);
   try {
     const clean = checkArgs(name, args, def.args, def.required);
     def.check?.(clean);
-    return def.kind === 'page' ? await runPageTool(def, clean) : await def.run(clean);
+    return def.kind === 'page' ? await runPageTool(def, clean, startedAt) : await def.run(clean);
   } catch (e) {
     if (e instanceof ToolError) throw e;
     const err = new ToolError('internal', `${name} failed unexpectedly: ${e?.message ?? e}`);

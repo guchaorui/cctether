@@ -1232,6 +1232,51 @@ export function cctetherPageLib() {
     return { why: null };
   }
 
+  /** Like point(), without scrolling: where the element is now (drag measures its end with it). */
+  function pointNow(o) {
+    const el = resolve(o);
+    if (el.__error) return el;
+    if (!plainDoc(el.ownerDocument)) return transformedError(el);
+    return pointOf(el);
+  }
+
+  // ---- drag ------------------------------------------------------------------------------------
+  // drag (tools/input.js) moves the real mouse; when the page turns that into HTML drag and drop,
+  // these note what happened, for the result. Only trusted events count.
+  let dragSeen = null;
+  const nodeEl = (t) => (t && t.nodeType === 1 ? t : t?.parentElement ?? null);
+
+  function dragWatch() {
+    dragUnwatch();
+    const st = { start: null, drop: null, ended: false, effect: null, offs: [] };
+    for (const d of allDocs()) {
+      const w = d.defaultView;
+      if (!w) continue;
+      const on = (type, fn) => {
+        const h = (e) => { if (e.isTrusted) fn(e); };
+        w.addEventListener(type, h, true);
+        st.offs.push(() => w.removeEventListener(type, h, true));
+      };
+      on('dragstart', (e) => { const el = nodeEl(e.target); if (el && !st.start) st.start = labelIn(el); });
+      on('drop', (e) => { const el = nodeEl(e.target); if (el) st.drop = labelIn(el); });
+      on('dragend', (e) => { st.ended = true; st.effect = e.dataTransfer?.dropEffect ?? null; });
+    }
+    dragSeen = st;
+    return true;
+  }
+
+  function dragUnwatch() {
+    for (const off of dragSeen?.offs ?? []) { try { off(); } catch { /* frame gone */ } }
+    dragSeen = null;
+  }
+
+  /** What the page did with the drag (null if not watching), and stop watching. */
+  function dragResult() {
+    const st = dragSeen;
+    dragUnwatch();
+    return st && { start: st.start, drop: st.drop, ended: st.ended, effect: st.effect };
+  }
+
   /** What is at a viewport point. */
   function at(o) {
     const W = vw();
@@ -2117,7 +2162,8 @@ export function cctetherPageLib() {
   }
 
   const api = {
-    readText, interactive, html, find, point, pressCheck, at, elementRect, metrics, shotCheck, scrollPageTo,
+    readText, interactive, html, find, point, pointNow, pressCheck, at, elementRect, metrics, shotCheck, scrollPageTo,
+    dragWatch, dragResult,
     focus, focusedOn, active, checkFocus, selectAllInFocused, focusedLength, forceClear, valueOf, selectOption,
     ddTarget, ddOptions, ddPick, ddFinal, ddShown, ddSettling, visibleOptions,
     scrollerInfo, scrollerStep, scrollerRestore, mainScroller,

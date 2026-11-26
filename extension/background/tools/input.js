@@ -1,4 +1,4 @@
-// Mouse and keyboard tools: click, hover, type, press_key, scroll, select_option.
+// Mouse and keyboard tools: click, hover, drag, type, press_key, scroll, select_option.
 // Input goes through CDP Input.* so the page sees real (trusted) events.
 
 import { ToolError } from './errors.js';
@@ -68,11 +68,11 @@ async function targetPoint(s, tabId, args) {
  * was: hover effects can open a menu over it or move it. Returns {} (press at p, without moving
  * again), or { dialog } if the move opened a JS dialog. Throws if something changed.
  */
-async function moveAndRecheck(s, p, what, modifiers = 0) {
+async function moveAndRecheck(s, p, what, modifiers = 0, verb = 'click') {
   const moved = await s.raceDialog(s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: p.x, y: p.y, modifiers, button: 'none' }));
   if (moved.dialog) return { dialog: moved.dialog };
   const { why } = await s.lib('pressCheck', [{ ref: p.ref, doc: p.doc, x: p.x, y: p.y, desc: p.desc }]);
-  if (why) throw new ToolError('no_element', `Did not click ${what}: ${why} when the mouse went over it. Take a screenshot and check before trying again.`);
+  if (why) throw new ToolError('no_element', `Did not ${verb} ${what}: ${why} when the mouse went over it. Take a screenshot and check before trying again.`);
   return {};
 }
 
@@ -191,6 +191,208 @@ export async function hover({ tab, s }, args) {
   if (p.covered) lines.push(`Note: ${p.covered} is on top of it at that point.`);
   if (r.dialog) lines.push(dialogNote(s.tabId, r.dialog));
   return { content: [text(lines.join(' '))] };
+}
+
+// ---- drag ---------------------------------------------------------------------------------------
+//
+// Real mouse events: press on `from`, move in steps, release on `to`. Chrome turns them into HTML
+// drag and drop by itself when the page starts one (SPEC §11 第 16 条), so there is one way to
+// drag; the page library only notes what the page did, for the result.
+
+const DRAG_STEP_MS = 16;
+const DRAG_BUDGET_MS = 20000; // the service waits 30 s (plus hold_ms) for the result
+const DRAG_CLEANUP_MS = 6000; // after DRAG_BUDGET_MS: for the commands still out, and letting go
+const isEl = (o) => o.ref != null || o.selector != null || o.text != null;
+const elTarget = (o) => ({ ref: o.ref, selector: o.selector, text: o.text });
+
+/** A point end of drag: x, y in the viewport, or on `screenshot`. */
+async function dragPoint(s, tabId, o, screenshot) {
+  const p = await pointArg(s, tabId, { x: o.x, y: o.y, screenshot });
+  const r = await s.lib('at', [{ x: p.x, y: p.y }]);
+  return { x: p.x, y: p.y, desc: r.desc, from: p.from };
+}
+
+export async function drag({ tab, s, startedAt = Date.now() }, args) {
+  const { from, to } = args;
+  const steps = args.steps ?? 10;
+  const modifiers = modifierBits(args.modifiers);
+  if (args.screenshot != null && s.shots.get(args.screenshot)?.kind === 'page') {
+    throw bad(`Screenshot ${args.screenshot} is a full-page one: drag needs both ends in the viewport. Take a viewport screenshot (no full_page) and use its number.`);
+  }
+  // The extension's own deadlines come before the service gives up waiting (server/src/tools.js):
+  // no new input after `deadline`; every command, letting go of the button too, ends by `hard`.
+  const deadline = startedAt + DRAG_BUDGET_MS + (args.hold_ms ?? 0);
+  const hard = deadline + DRAG_CLEANUP_MS;
+  const left = () => Math.max(1, Math.min(10000, hard - Date.now()));
+  const before = (await tabSummary(tab.id)).url;
+  const w = s.navWatch();
+  const newTabs = watchNewTabs(tab.id);
+  // A dialog seen during the drag stays seen, even if handle_dialog closes it meanwhile.
+  let dialog = s.dialog;
+  const offDialog = s.on((m) => { if (m === 'Page.javascriptDialogOpening') dialog ??= s.dialog; });
+  /** Wait until no check of the tab's sharing is pending (a new one may start while waiting). */
+  const scopeSettled = async () => { while (s.scopeCheck) await s.scopeCheck; };
+  /** Why no more input may be sent now (null: it may). Call right after scopeSettled(). */
+  const blockedNow = () => {
+    if (s.closed) return 'cctether no longer has the tab (it left the cctether group, or was paused or closed)';
+    if (dialog) return `${describeDialog(dialog)} opened`;
+    if (w.st.committed) return 'the page navigated';
+    return null;
+  };
+  const blocked = async () => { await scopeSettled(); return blockedNow(); };
+  const late = () => (Date.now() > deadline ? `it took longer than ${Math.round((DRAG_BUDGET_MS + (args.hold_ms ?? 0)) / 1000)} s` : null);
+  const halt = async () => (await blocked()) ?? late();
+  const input = async (params) => {
+    const r = await s.raceDialog(s.send('Input.dispatchMouseEvent', { modifiers, ...params }, { timeoutMs: left() }));
+    if (r.dialog) dialog ??= r.dialog;
+    return r;
+  };
+  const pause = (ms) => Promise.race([sleep(ms), s.dialogSignal]); // a dialog cuts it short
+  // What to do about the dialog: handle it, if it is still open.
+  const dialogNext = () => (s.dialog ? dialogHint(s.dialog) : 'It has been closed since.');
+  let pressed = false;
+  let released = 'no'; // 'sent' once the release went out, 'yes' once it was answered
+  let at = null; // where the mouse is, once pressed
+  let done = 0; // steps made
+  let stop = null; // why the drag stopped early
+  try {
+    // Elements first, as they may scroll into view; then points, which refuse if the page scrolled
+    // since their screenshot. `to` is measured again, without scrolling, once `from` is in place.
+    const toEl = isEl(to) ? await s.lib('point', [elTarget(to)]) : null;
+    const a = isEl(from) ? await s.lib('point', [elTarget(from)]) : await dragPoint(s, tab.id, from, args.screenshot);
+    // Pressing starts something on whatever is there: never on something covering the element.
+    if (a.covered) {
+      throw new ToolError('no_element', `Did not drag: ${a.covered} is on top of ${a.desc} at that point, so it would get the press. Close or move what covers it first.`);
+    }
+    const measureTo = async () => {
+      if (toEl) {
+        return s.lib('pointNow', [{ ref: toEl.ref, doc: toEl.doc }]).catch((e) => {
+          if (e.code === 'no_element') throw new ToolError('no_element', `${e.message} drag needs both ends in view at once: scroll so that both are visible (or make the viewport bigger with resize_viewport), then try again.`);
+          throw e;
+        });
+      }
+      if (to.dx != null) {
+        const x = a.x + to.dx;
+        const y = a.y + to.dy;
+        const r = await s.lib('at', [{ x, y }]);
+        return { x, y, desc: r.desc, from: '' };
+      }
+      return dragPoint(s, tab.id, to, args.screenshot);
+    };
+    let b = await measureTo();
+    if (Math.hypot(b.x - a.x, b.y - a.y) < 2) throw bad('`from` and `to` are the same point: nothing to drag.');
+
+    return await whilePainting(s, tab.id, async () => {
+      await s.lib('dragWatch');
+      let why = await halt();
+      if (!why) {
+        await input({ type: 'mouseMoved', x: a.x, y: a.y, button: 'none' });
+        why = await halt();
+      }
+      // Hovering may have changed the page: `to` as it is now, then `from` must still be the one on
+      // top, unchanged and where it was (a screenshot point: the page didn't scroll). Done after any
+      // pending check of the tab's sharing, and again if another one started meanwhile.
+      while (!why) {
+        await scopeSettled();
+        const gen = s.scopeGen;
+        b = await measureTo();
+        if (a.ref != null) {
+          const r = await s.lib('pressCheck', [{ ref: a.ref, doc: a.doc, x: a.x, y: a.y, desc: a.desc }]);
+          if (r.why) throw new ToolError('no_element', `Did not drag ${a.desc}: ${r.why} when the mouse went over it. Take a screenshot and check before trying again.`);
+        } else if (args.screenshot != null && from.x != null) {
+          await pointArg(s, tab.id, { x: from.x, y: from.y, screenshot: args.screenshot }); // refuses if the page scrolled
+        }
+        if (s.scopeCheck || s.scopeGen !== gen) continue; // a check ran meanwhile: again
+        why = blockedNow() ?? late();
+        break;
+      }
+      if (why) {
+        const lines = [`Did not drag ${a.desc}: ${why} before the button was pressed.`];
+        if (dialog) lines.push(dialogNext());
+        return { content: [text(lines.join(' '))] };
+      }
+      pressed = true;
+      at = a;
+      await input({ type: 'mousePressed', x: a.x, y: a.y, button: 'left', buttons: 1, clickCount: 1 });
+      if (args.hold_ms) await pause(args.hold_ms);
+      for (let i = 1; i <= steps; i++) {
+        stop = await halt();
+        if (stop) break;
+        const p = { x: a.x + (b.x - a.x) * (i / steps), y: a.y + (b.y - a.y) * (i / steps) };
+        await input({ type: 'mouseMoved', x: p.x, y: p.y, button: 'left', buttons: 1 });
+        at = p;
+        done = i;
+        await pause(DRAG_STEP_MS);
+      }
+      stop ??= await halt();
+      if (!stop) {
+        released = 'sent';
+        const r = await input({ type: 'mouseReleased', x: b.x, y: b.y, button: 'left', buttons: 0, clickCount: 1 });
+        if (r.dialog) stop = `${describeDialog(dialog)} opened as it was released`;
+        else released = 'yes';
+      }
+      await pause(50); // drop and mouseup handlers
+      // What follows only adds to the result: skipped when the time is nearly up.
+      const room = () => hard - Date.now();
+      const live = !s.closed && !w.st.committed && !s.dialog && room() > 1500;
+      const seen = live ? await s.lib('dragResult', [], { timeoutMs: Math.min(2000, room() - 1000) }).catch(() => null) : null;
+      const mods = args.modifiers?.length ? ` with ${args.modifiers.join('+')} held` : '';
+      const where = (p) => `(${r0(p.x)}, ${r0(p.y)})`;
+      const lines = [];
+      if (released === 'no') {
+        lines.push(`Started dragging ${a.desc} from ${where(a)}${a.from ?? ''} towards ${where(b)}${mods}, but stopped after ${done} of ${steps} steps, at ${where(at)}: ${stop}.`);
+        lines.push(`The mouse button was not released (no more input was sent to the page).${dialog ? ` ${dialogNext()}` : ''} Check the page with a screenshot.`);
+      } else {
+        lines.push(`Dragged ${a.desc} from ${where(a)}${a.from ?? ''} to ${where(b)}${b.from ?? ''}${mods}, in ${steps} step${steps === 1 ? '' : 's'}. Before the drag, ${b.desc} was at the end point.`);
+        if (released === 'sent') lines.push(`The button release was sent, but ${stop}. ${dialogNext()} Then check the page.`);
+      }
+      // Only a drag that ended says anything for sure (a cancelled dragstart doesn't start one).
+      if (seen?.start && seen.ended) {
+        const effect = seen.effect === 'none' ? 'drop effect "none": nothing accepted the drop' : `drop effect ${JSON.stringify(seen.effect)}`;
+        lines.push(`The page handled it as HTML drag and drop: dragstart on ${seen.start}, ${seen.drop ? `drop on ${seen.drop}` : 'no drop event seen'}, ${effect}.`);
+      }
+      if (!s.closed && room() > 1500) {
+        // Raced with the time left: the drag's own outcome is what must come back in time.
+        const left = room() - 1000;
+        const note = await Promise.race([
+          settle(s, w, tab.id, before, { newTabs, startMs: Math.min(400, left), loadMs: Math.min(10000, left) }).catch(() => ''),
+          sleep(left).then(() => ''),
+        ]);
+        if (note) lines.push(note);
+      }
+      if (released === 'yes') lines.push('Check the result with a screenshot or read_page.');
+      return { content: [text(lines.join(' '))] };
+    });
+  } catch (e) {
+    // Something failed in the middle: if nothing stands in the way and there is time, end the
+    // page's drag (an HTML one is cancelled, so the release doesn't drop it) and let go of the
+    // button where the mouse is. Say exactly how far that got.
+    if (pressed && e instanceof Error) {
+      let note;
+      const tooLate = () => hard - Date.now() < 1000;
+      if (released === 'sent') {
+        note = 'the button release was sent, but its answer did not come, so it may or may not have taken effect';
+      } else if (released === 'yes') {
+        note = 'the mouse button was released';
+      } else if (await blocked() || tooLate()) {
+        note = 'the mouse button was not released (no more input was sent to the page)';
+      } else if (!(await s.send('Input.cancelDragging', {}, { timeoutMs: left() }).then(() => true, () => false)) || await blocked() || tooLate()) {
+        note = 'the mouse button was not released (the drag could not be cancelled first)';
+      } else {
+        const ok = await s.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: at.x, y: at.y, modifiers, button: 'left', buttons: 0, clickCount: 1 }, { timeoutMs: left() })
+          .then(() => true, () => false);
+        note = ok ? `any HTML drag was cancelled and the mouse button released at (${r0(at.x)}, ${r0(at.y)})` : 'releasing the mouse button failed or was not answered: it may still be held';
+      }
+      e.message = `${e.message} (The drag stopped after ${done} of ${steps} steps; ${note}. Check the page.)`;
+    }
+    throw e;
+  } finally {
+    offDialog();
+    w.stop();
+    newTabs.stop();
+    // Stop watching (already done unless something failed), if there is time.
+    if (!w.st.committed && !s.dialog && !s.closed && hard - Date.now() > 1500) await s.lib('dragResult', [], { timeoutMs: 1000 }).catch(() => {});
+  }
 }
 
 // ---- keyboard ----------------------------------------------------------------------------------

@@ -2282,3 +2282,105 @@ test('frames: scroll and wait_for inside frames; refs go stale when the frame na
   assert.match(nf.message, /isn't supported yet/);
   await ok('close_tab', { tab });
 });
+
+// ---- drag -------------------------------------------------------------------------------------
+
+test('drag: HTML drag and drop, mouse and pointer drags, a frame, and the refusals', async () => {
+  const tab = await openShared('/pages/drag.html');
+  const events = () => pageEval(tab, 'window.events.splice(0)');
+  // HTML drag and drop onto the zone: the page gets the dragged data.
+  let r = await ok('drag', { tab, from: { selector: '#ia' }, to: { selector: '#zone' } });
+  assert.match(r.text, /^Dragged li "Alpha" from \(\d+, \d+\) to \(\d+, \d+\), in 10 steps\. Before the drag, div "Drop zone" was at the end point\./);
+  assert.match(r.text, /The page handled it as HTML drag and drop: dragstart on li "Alpha", drop on div "Drop zone", drop effect "(copy|move)"\. Check the result with a screenshot or read_page\.$/);
+  assert.deepEqual((await events()).filter((e) => !e.startsWith('dragend')), ['dragstart ia', 'drop-zone ia']);
+  // A list that reorders on dragover: Alpha, found by its text, ends up last.
+  r = await ok('drag', { tab, from: { text: 'Alpha' }, to: { selector: '#ic' } });
+  assert.equal(await pageEval(tab, 'order()'), 'ib,ic,ia');
+  await events();
+  // Mouse events, moving the box only in animation frames (this tab is in the background).
+  r = await ok('drag', { tab, from: { selector: '#box' }, to: { dx: 100, dy: 40 }, steps: 5 });
+  assert.match(r.text, /in 5 steps/);
+  assert.doesNotMatch(r.text, /HTML drag and drop/);
+  assert.deepEqual(await events(), ['box-down', 'box-up 100,40']);
+  // A slider on pointer events with pointer capture.
+  await ok('drag', { tab, from: { selector: '#thumb' }, to: { dx: 140, dy: 0 } });
+  assert.deepEqual(await events(), ['slider 50']);
+  // draggable, but the page cancels dragstart and drags it with mouse events.
+  r = await ok('drag', { tab, from: { selector: '#pv' }, to: { dx: 60, dy: 0 } });
+  assert.doesNotMatch(r.text, /HTML drag and drop/);
+  assert.deepEqual(await events(), ['pv-dragstart-cancelled', 'pv-moved 60']);
+  // Inside a same-origin frame.
+  r = await ok('drag', { tab, from: { selector: '#k' }, to: { dx: 60, dy: 0 } });
+  assert.match(r.text, /^Dragged div#k in frame "Framed slider"/);
+  assert.equal(await pageEval(tab, 'document.getElementById("frame").contentWindow.done'), '60px');
+  // Points, and a point on a screenshot.
+  const shot = await ok('screenshot', { tab });
+  const id = shotId(shot.text);
+  await ok('drag', { tab, screenshot: id, from: { x: 465, y: 75 }, to: { dx: -30, dy: 0 } }); // the box, now at (440, 50) in the page
+  assert.deepEqual(await events(), ['box-down', 'box-up 70,40']);
+
+  // Refusals.
+  let e = await fails('drag', { tab, from: { selector: '#box' }, to: { dx: 1, dy: 0 } }, 'bad_args');
+  assert.match(e.message, /the same point/);
+  e = await fails('drag', { tab, from: { selector: '#ia' }, to: { selector: '#far' } }, 'no_element');
+  assert.match(e.message, /drag needs both ends in view at once/);
+  e = await fails('drag', { tab, from: { selector: '#box', x: 1, y: 1 }, to: { dx: 1, dy: 0 } }, 'bad_args');
+  assert.match(e.message, /In `from`, pass one of/);
+  e = await fails('drag', { tab, from: { selector: '#box' }, to: { dx: 5 } }, 'bad_args');
+  assert.match(e.message, /pass both `dx` and `dy`/);
+  e = await fails('drag', { tab, from: { selector: '#box' }, to: {} }, 'bad_args');
+  assert.match(e.message, /`to` is empty/);
+  e = await fails('drag', { tab, screenshot: id, from: { selector: '#box' }, to: { dx: 5, dy: 0 } }, 'bad_args');
+  assert.match(e.message, /`screenshot` is for points/);
+  const full = await ok('screenshot', { tab, full_page: true });
+  const fid = shotId(full.text);
+  e = await fails('drag', { tab, screenshot: fid, from: { x: 10, y: 10 }, to: { dx: 5, dy: 0 } }, 'bad_args');
+  assert.match(e.message, /full-page one/);
+  // A drag runs alone on its tab.
+  const held = call('drag', { tab, from: { selector: '#box' }, to: { dx: 10, dy: 0 }, hold_ms: 1500 });
+  await new Promise((res) => setTimeout(res, 300));
+  e = await fails('click', { tab, selector: '#zone' }, 'busy');
+  assert.match(e.message, /A drag is in progress on tab \d+/);
+  assert.ok((await held).ok);
+  await ok('close_tab', { tab });
+});
+
+test('drag stops sending input when a dialog opens, the page navigates, or the tab leaves the group', async () => {
+  const tab = await openShared('/pages/drag.html');
+  const box = { selector: '#box' };
+  // A dialog while the button is held: no more input, and the result says so (even though the
+  // dialog is already handled by the time it comes back).
+  await pageEval(tab, 'setTimeout(() => alert("Stop"), 300), true');
+  const held = call('drag', { tab, from: box, to: { dx: 50, dy: 0 }, hold_ms: 1500 });
+  await until(async () => (await call('handle_dialog', { tab, accept: true })).ok, 'the alert to be handled');
+  let r = await held;
+  assert.ok(r.ok, JSON.stringify(r));
+  let t = r.r.content[0].text;
+  assert.match(t, /^Started dragging div "Box" from \(\d+, \d+\) towards \(\d+, \d+\), but stopped after 0 of 10 steps, at \(\d+, \d+\): a JavaScript alert dialog saying "Stop" opened\./);
+  assert.match(t, /The mouse button was not released \(no more input was sent to the page\)\. (It has been closed since\.|The page is frozen)/);
+  assert.deepEqual(await pageEval(tab, 'window.events.splice(0)'), ['box-down']);
+  // Let go of the button the page still thinks is held.
+  await ok('click', { tab, x: 5, y: 300 });
+  await pageEval(tab, 'window.events.splice(0)');
+
+  // The page navigates while the button is held.
+  await pageEval(tab, 'setTimeout(() => { location.href = "/pages/nav-a.html"; }, 300), true');
+  r = await call('drag', { tab, from: box, to: { dx: 50, dy: 0 }, hold_ms: 1500 });
+  assert.ok(r.ok, JSON.stringify(r));
+  t = r.r.content[0].text;
+  assert.match(t, /but stopped after 0 of 10 steps, at \(\d+, \d+\): the page navigated\./);
+  assert.match(t, /The page navigated to .*nav-a\.html/);
+
+  // The tab leaves the cctether group while the button is held.
+  await ok('navigate', { tab, url: `${base}/pages/drag.html` });
+  const leaving = call('drag', { tab, from: box, to: { dx: 50, dy: 0 }, hold_ms: 1500 });
+  await new Promise((res) => setTimeout(res, 400));
+  await swEval(`chrome.tabs.ungroup(${tab})`);
+  r = await leaving;
+  const msg = r.ok ? r.r.content[0].text : r.message;
+  assert.match(msg, /cctether no longer has the tab|not shared|no longer shared|detached/i);
+  assert.doesNotMatch(msg, /^Dragged/);
+  await rejoin(tab);
+  assert.deepEqual(await pageEval(tab, 'window.events.splice(0)'), ['box-down'], 'nothing after the press reached the page');
+  await ok('close_tab', { tab });
+});

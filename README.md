@@ -143,7 +143,7 @@ Settings live in `$CCTETHER_HOME`, else `$XDG_CONFIG_HOME/cctether`, else `~/.co
 
 ## Tools
 
-Claude gets these 22 tools:
+Claude gets these 23 tools:
 
 | Tool | What it does |
 |---|---|
@@ -161,6 +161,7 @@ Claude gets these 22 tools:
 | `press_key` | Presses a key or combination, such as `Enter` or `Control+A` (`Meta+A` when the browser is on a Mac). |
 | `scroll` | Scrolls the page, or scrolls an element into view. |
 | `hover` | Moves the mouse over an element or a point. |
+| `drag` | Drags with the mouse from an element or point to another: sortable lists, sliders, splitters, HTML drag and drop. |
 | `select_option` | Chooses options in a `<select>`, or in a custom dropdown that declares itself (`role=combobox` / `listbox`). |
 | `wait_for` | Waits until text or an element appears (or disappears), for up to 10 minutes. |
 | `evaluate` | Runs JavaScript in the page and returns the result as JSON (a returned Promise is awaited). A long script can be saved once in cctether's scripts directory and then run by its file name. |
@@ -225,7 +226,7 @@ Your pairing is kept either way.
 
 ## Does it cost much?
 
-- **Claude's context:** the 22 tool descriptions take about 4,900 tokens, a little over 2% of a 200k context. Recent Claude Code versions load MCP tools on demand when there are many of them, so until Claude actually uses the browser, only the tool names (about 150 tokens) and a short note (about 120 tokens) sit in the context.
+- **Claude's context:** the 23 tool descriptions take about 5,400 tokens, under 3% of a 200k context. Recent Claude Code versions load MCP tools on demand when there are many of them, so until Claude actually uses the browser, only the tool names (about 150 tokens) and a short note (about 120 tokens) sit in the context.
 - **Memory on the Claude Code computer:** the service uses about 75 MB, and each open Claude Code window adds a small relay process of about 55 MB.
 - **The browser:** the extension does nothing while Claude isn't using it, apart from a tiny heartbeat every 10 seconds.
 

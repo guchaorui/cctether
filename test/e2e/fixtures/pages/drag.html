@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Drag test</title>
+<style>
+  body { margin: 0; font: 13px sans-serif; height: 1700px; }
+  .abs { position: absolute; box-sizing: border-box; }
+  #nlist { left: 10px; top: 10px; width: 130px; margin: 0; padding: 0; list-style: none; }
+  #nlist li { height: 30px; margin-bottom: 5px; background: #cde; border: 1px solid #89a; cursor: grab; }
+  #zone { left: 170px; top: 10px; width: 150px; height: 100px; background: #eee; border: 2px dashed #999; }
+  #board { left: 340px; top: 10px; width: 300px; height: 120px; background: #f6f6f0; }
+  #box { left: 0; top: 0; width: 50px; height: 50px; background: #e96; }
+  #track { left: 10px; top: 150px; width: 300px; height: 20px; background: #ddd; }
+  #thumb { top: 0; left: 0; width: 20px; height: 20px; background: #36c; border-radius: 10px; touch-action: none; }
+  #pv { left: 340px; top: 150px; width: 90px; height: 36px; background: #9c6; }
+  #frame { left: 460px; top: 145px; width: 200px; height: 70px; border: 1px solid #999; }
+  #far { left: 10px; top: 1600px; width: 120px; height: 30px; background: #fcc; }
+</style>
+</head>
+<body>
+<!-- Drag targets for the drag tool: HTML drag and drop (a list that reorders on dragover, a drop
+     zone that reads the dragged data), a box moved by mouse events in requestAnimationFrame, a
+     slider on pointer events with pointer capture, a draggable element whose dragstart is
+     cancelled (so it is dragged with mouse events), a slider in a same-origin frame, and a target
+     far down the page. -->
+<ul id="nlist" class="abs">
+  <li draggable="true" id="ia">Alpha</li>
+  <li draggable="true" id="ib">Beta</li>
+  <li draggable="true" id="ic">Gamma</li>
+</ul>
+<div id="zone" class="abs">Drop zone</div>
+<div id="board" class="abs"><div id="box" class="abs">Box</div></div>
+<div id="track" class="abs" role="slider" aria-label="Volume" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="thumb" class="abs"></div></div>
+<div id="pv" class="abs" draggable="true">Not native</div>
+<iframe id="frame" class="abs" title="Framed slider" srcdoc="<style>body{margin:0}#t{position:absolute;left:10px;top:20px;width:150px;height:20px;background:#ddd}#k{position:absolute;left:0;top:0;width:20px;height:20px;background:#c63}</style><div id='t'><div id='k'></div></div><script>let on=false;k.addEventListener('mousedown',()=>{on=true});addEventListener('mousemove',(e)=>{if(on)k.style.left=Math.max(0,Math.min(130,e.clientX-20))+'px'});addEventListener('mouseup',()=>{on=false;window.done=k.style.left})</script>"></iframe>
+<div id="far" class="abs">Far away</div>
+<script>
+  window.events = [];
+  const log = (m) => window.events.push(m);
+  // HTML drag and drop: the list reorders as an item is dragged over others; the zone reads the data.
+  let dragged = null;
+  for (const li of document.querySelectorAll('#nlist li')) {
+    li.addEventListener('dragstart', (e) => { dragged = li; e.dataTransfer.setData('text/plain', li.id); log(`dragstart ${li.id}`); });
+    li.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if (!dragged || dragged === li) return;
+      const r = li.getBoundingClientRect();
+      li.parentNode.insertBefore(dragged, e.clientY < r.top + r.height / 2 ? li : li.nextSibling);
+    });
+    li.addEventListener('drop', (e) => { e.preventDefault(); log(`drop-list ${e.dataTransfer.getData('text/plain')}`); });
+    li.addEventListener('dragend', (e) => { log(`dragend ${li.id} ${e.dataTransfer.dropEffect}`); dragged = null; });
+  }
+  zone.addEventListener('dragover', (e) => e.preventDefault());
+  zone.addEventListener('drop', (e) => { e.preventDefault(); log(`drop-zone ${e.dataTransfer.getData('text/plain')}`); });
+  window.order = () => [...document.querySelectorAll('#nlist li')].map((li) => li.id).join(',');
+
+  // A box dragged with mouse events; it only moves in animation frames.
+  let grab = null;
+  let want = null;
+  box.addEventListener('mousedown', (e) => { grab = { dx: e.clientX - box.offsetLeft, dy: e.clientY - box.offsetTop }; log('box-down'); });
+  document.addEventListener('mousemove', (e) => {
+    if (!grab) return;
+    want = { x: e.clientX - grab.dx, y: e.clientY - grab.dy };
+    requestAnimationFrame(() => { if (want) { box.style.left = `${want.x}px`; box.style.top = `${want.y}px`; } });
+  });
+  document.addEventListener('mouseup', () => { if (grab) log(`box-up ${box.offsetLeft},${box.offsetTop}`); grab = null; });
+
+  // A slider on pointer events with pointer capture.
+  let sliding = false;
+  thumb.addEventListener('pointerdown', (e) => { sliding = true; thumb.setPointerCapture(e.pointerId); });
+  thumb.addEventListener('pointermove', (e) => {
+    if (!sliding) return;
+    const r = track.getBoundingClientRect();
+    const v = Math.round(Math.max(0, Math.min(1, (e.clientX - r.left - 10) / (r.width - 20))) * 100);
+    thumb.style.left = `${(r.width - 20) * v / 100}px`;
+    track.setAttribute('aria-valuenow', String(v));
+  });
+  thumb.addEventListener('pointerup', () => { sliding = false; log(`slider ${track.getAttribute('aria-valuenow')}`); });
+
+  // draggable, but its dragstart is cancelled: the page drags it with mouse events itself.
+  let pvFrom = null;
+  pv.addEventListener('dragstart', (e) => { e.preventDefault(); log('pv-dragstart-cancelled'); });
+  pv.addEventListener('mousedown', (e) => { pvFrom = e.clientX; });
+  document.addEventListener('mouseup', (e) => { if (pvFrom != null) log(`pv-moved ${Math.round(e.clientX - pvFrom)}`); pvFrom = null; });
+</script>
+</body>
+</html>

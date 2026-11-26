@@ -23,7 +23,7 @@ test('initialize and tools/list', async () => {
   await send({ jsonrpc: '2.0', method: 'notifications/initialized' });
   assert.equal(out.length, 2, 'no reply to notifications');
   await send({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
-  assert.equal(out[2].result.tools.length, 22);
+  assert.equal(out[2].result.tools.length, 23);
   await send({ jsonrpc: '2.0', id: 3, method: 'ping' });
   assert.deepEqual(out[3], { jsonrpc: '2.0', id: 3, result: {} });
   await send({ jsonrpc: '2.0', id: 4, method: 'resources/list' });

@@ -155,6 +155,10 @@ class TabSession {
     this.closed = false;
     this.mainFrameId = null;
     this.busy = 0;
+    /** Pending while the tab's sharing is being checked again after a group change (recheckScope). */
+    this.scopeCheck = null;
+    /** Counts those checks, so a check that started and ended meanwhile is noticed too. */
+    this.scopeGen = 0;
     this.idleTimer = null;
     this.attachedAt = Date.now();
     /** @type {Array<{t:number, level:string, source:string, text:string, where:string}>} */
@@ -812,14 +816,25 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 emulationsReady();
 
-// A tab that leaves the cctether group (or whose group is renamed) is no longer Claude's.
-async function recheckScope(tabIds) {
+// A tab that leaves the cctether group (or whose group is renamed) is no longer Claude's. Until
+// the check is done, `s.scopeCheck` is pending: a drag waits for it before sending more input.
+function recheckScope(tabIds) {
+  const run = (async () => {
+    for (const id of tabIds) {
+      if (!sessions.has(id)) continue;
+      let tab;
+      try { tab = await chrome.tabs.get(id); } catch { dropSession(id); continue; }
+      if (!(await isShared(tab))) await detach(id);
+    }
+  })();
   for (const id of tabIds) {
-    if (!sessions.has(id)) continue;
-    let tab;
-    try { tab = await chrome.tabs.get(id); } catch { dropSession(id); continue; }
-    if (!(await isShared(tab))) await detach(id);
+    const s = sessions.get(id);
+    if (!s) continue;
+    const p = Promise.all([s.scopeCheck, run]).catch(() => {}).finally(() => { if (s.scopeCheck === p) s.scopeCheck = null; });
+    s.scopeCheck = p;
+    s.scopeGen++;
   }
+  return run;
 }
 chrome.tabs.onUpdated.addListener((tabId, info) => {
   if ('groupId' in info && sessions.has(tabId)) recheckScope([tabId]);
