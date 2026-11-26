@@ -178,6 +178,10 @@ class TabSession {
     this.capturing = 0;
     /** False until attach() has checked the tab is still shared and enabled the CDP domains. */
     this.ready = false;
+    /** Calls keeping this (background) tab painting with a screencast (tools/page.js whilePainting). */
+    this.painting = 0;
+    /** Whether cctether has a screencast running on this tab (tools/page.js). */
+    this.screencast = false;
     /** Recent screenshots by number, to turn image points into viewport points (tools/page.js). */
     this.shots = new Map();
     this.newDialogSignal();

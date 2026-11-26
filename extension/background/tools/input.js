@@ -6,7 +6,7 @@ import { q, untrusted, sleep } from './util.js';
 import { isShared } from '../tabs.js';
 import { dialogError, describeDialog, dialogHint } from '../debugger.js';
 import { tabSummary, isMac } from './browser.js';
-import { shotPoint } from './page.js';
+import { shotPoint, whilePainting } from './page.js';
 
 const text = (t) => ({ type: 'text', text: t });
 const bad = (m) => new ToolError('bad_args', m);
@@ -542,6 +542,7 @@ export async function selectOption({ tab, s }, args) {
 }
 
 const OPEN_WAIT_MS = 2000;
+const SETTLE_MAX_MS = 1000;
 const norm = (v) => String(v ?? '').replace(/\s+/g, ' ').trim();
 
 const optionLine = (o) => `[${o.ref}] option ${JSON.stringify(o.label)}${o.value != null && o.value !== o.label ? ` value=${JSON.stringify(o.value)}` : ''}${o.selected ? ' selected' : ''}${o.disabled ? ' disabled' : ''}`;
@@ -559,7 +560,12 @@ function optionList(options, max = 30) {
  */
 async function customSelect(tab, s, t, values) {
   if (values.length !== 1) throw bad(`${t.desc} is a custom dropdown: pass one value per call.`);
-  const value = values[0];
+  // A background tab draws no frames, so opening and closing animations would not move on (and
+  // input is slow): keep it painting for the whole call.
+  return whilePainting(s, tab.id, () => pickCustom(tab, s, t, values[0]));
+}
+
+async function pickCustom(tab, s, t, value) {
   let opened = false;
   if (!t.list && !t.expanded) {
     const p = await s.lib('point', [{ ref: t.ref, doc: t.doc }]);
@@ -599,6 +605,13 @@ async function customSelect(tab, s, t, values) {
   if (o.selected && m.multi) {
     return { content: [text(`${q(o.label)} is already selected in ${t.desc} (clicking it again would deselect it), so nothing was clicked.`)] };
   }
+  // A list that is still opening (a menu growing or fading in) often ignores clicks: wait until
+  // it has settled (seen on a real MUI Select: 0.17 s and 0.25 s transitions).
+  for (const until = Date.now() + SETTLE_MAX_MS; ;) {
+    const { left } = await s.lib('ddSettling', [{ ref: o.ref, doc: t.doc }]);
+    if (!left || Date.now() >= until) break;
+    await sleep(Math.min(left + 20, until - Date.now()));
+  }
   // Scroll the option into view (also inside the list), move the mouse onto it, and check again
   // that it is the option that is there (hover effects can move or cover things) before pressing.
   const p = await s.lib('point', [{ ref: o.ref, doc: t.doc }]);
@@ -623,18 +636,20 @@ async function customSelect(tab, s, t, values) {
     if (r.dialog) return { content: [text(`${head} ${dialogNote(tab.id, r.dialog)}`)] };
     const note = await settle(s, w, tab.id, before, { startMs: 150 });
     if (note) return { content: [text(`${head} ${note}`)] };
-    // Read back what the dropdown shows, so a retry doesn't click again blindly.
+    // Read back what the dropdown shows, so a retry doesn't click again blindly; and wait for its
+    // list to finish closing (a closing menu or backdrop would cover it for the next call).
     let now = null;
     const until = Date.now() + 1000;
     for (;;) {
       try { now = await s.lib('ddShown', [{ ref: t.ref, doc: t.doc }], { timeoutMs: 2000 }); } catch { now = null; }
-      if (!now || now.gone || norm(now.shown).toLowerCase().includes(o.label.toLowerCase()) || Date.now() >= until) break;
-      await sleep(100);
+      const done = !now || now.gone || (norm(now.shown).toLowerCase().includes(o.label.toLowerCase()) && (m.multi || (!now.expanded && !now.covered)));
+      if (done || Date.now() >= until) break;
+      await sleep(80);
     }
     let after;
     if (!now) after = 'Could not read what the dropdown shows now; check with a screenshot before trying again.';
     else if (now.gone) after = 'The dropdown is no longer on the page; check with a screenshot before trying again.';
-    else after = `It now shows ${q(now.shown, 200)}${now.expanded ? ' and is still open' : ''}.`;
+    else after = `It now shows ${now.shown ? q(now.shown, 200) : 'nothing'}${now.expanded ? ' and is still open' : ''}.`;
     return { content: [text(`${head} ${after}`)] };
   } finally {
     w.stop();

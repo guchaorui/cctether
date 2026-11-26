@@ -1882,6 +1882,8 @@ test('select_option on custom dropdowns: only the list the dropdown names, real 
   const a = await ok('select_option', { selector: '#region', value: 'asia-southeast1' });
   assert.equal(a.text, 'Opened combobox "Region" and clicked its option "asia-southeast1 (Singapore)". It now shows "asia-southeast1 (Singapore)".');
   assert.equal(await outOf(tab), 'region:asia-southeast1:trusted');
+  // The list fades in and ignores clicks meanwhile: cctether waited for it.
+  assert.deepEqual(await pageEval(tab, 'window.log.filter((x) => x.startsWith("ignored:"))'), []);
   // The only label containing the value.
   await ok('select_option', { selector: '#region', value: 'tokyo' });
   assert.equal(await outOf(tab), 'region:asia-northeast1:trusted');
@@ -2054,6 +2056,17 @@ test('screenshot of an element\'s whole scrollable content: stitched, sticky bar
   const small = await ok('screenshot', { selector: '#small', full_page: true, format: 'png' });
   const sm = pngSize(small.images[0].data);
   assert.equal(sm.height, 300);
+  // A banner floating over the pane from outside (like a cookie notice): it is not stitched into
+  // every part; the rows it still hides at the very end are reported, and it is named.
+  await ok('navigate', { url: `${base}/pages/scroller.html?banner` });
+  const bn = await ok('screenshot', { selector: '#pane', full_page: true, format: 'png' });
+  assert.match(bn.text, /Rows not captured \(left white\): \d+–1850 CSS px from the top\. Something outside it lay over part of it \(e\.g\. a banner or popup; listed below\)/);
+  assert.match(bn.text, /<untrusted-page-content>\nOver it: (?:.*, )?div#banner(?:,|\n)/);
+  const bsize = pngSize(bn.images[0].data);
+  const bk = bsize.width / cw;
+  const blue = (p) => p[2] > 200 && p[0] < 60 && p[1] < 60;
+  const bands = await pixels(bn.images[0], ys.slice(0, 11).map((y) => [Math.round(60 * bk), Math.round(y * bk)]));
+  bands.forEach((p, i) => assert.ok(!blue(p), `band ${i} is not covered by the banner: ${p}`));
   await ok('close_tab', { tab });
 });
 

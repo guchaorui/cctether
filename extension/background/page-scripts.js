@@ -175,7 +175,7 @@ export function cctetherPageLib() {
   /** "div#pane.main" (no text): for big elements, whose text says nothing in particular. */
   function tagDesc(el) {
     let s = el.localName || '#node';
-    if (el.id) s += `#${clip(el.id, 30)}`;
+    if (el.id) s += `#${clip(norm(el.id), 30)}`;
     const cls = [...(el.classList || [])].slice(0, 2).map((c) => clip(c, 30));
     if (cls.length) s += `.${cls.join('.')}`;
     const name = norm(el.getAttribute('aria-label') || '');
@@ -185,7 +185,7 @@ export function cctetherPageLib() {
   function shortDesc(el) {
     if (!el) return 'nothing';
     let s = el.localName || '#node';
-    if (el.id) s += `#${clip(el.id, 30)}`;
+    if (el.id) s += `#${clip(norm(el.id), 30)}`;
     const cls = [...(el.classList || [])].slice(0, 2).map((c) => clip(c, 30));
     if (cls.length) s += `.${cls.join('.')}`;
     const t = clip(norm(el.innerText || el.textContent || ''), 40);
@@ -1024,11 +1024,43 @@ export function cctetherPageLib() {
   const optionLabel = (el) => norm(el.innerText || '') || norm(el.getAttribute('aria-label') || '');
   const isOn = (el) => el.getAttribute('aria-selected') === 'true' || el.getAttribute('aria-checked') === 'true';
 
-  /** What a dropdown displays as its choice now. */
+  /**
+   * What a dropdown displays as its choice now. Some widgets keep their open list inside the
+   * dropdown element (e.g. Angular Material in a popover): its options are not part of it.
+   */
   function shownValue(el) {
+    // Zero-width characters (MUI's placeholder for "nothing chosen") count as nothing here.
+    const norm = (t) => String(t ?? '').replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\s+/g, ' ').trim();
     if (roleOf(el) === 'listbox') return optionsIn(el, []).filter(isOn).map(optionLabel).join(', ');
-    if (el.localName === 'input' || el.localName === 'textarea') return el.value;
-    return norm(el.innerText || '');
+    if (el.localName === 'input' || el.localName === 'textarea') return norm(el.value);
+    const isList = (n) => n.nodeType === 1 && (OPTION_ROLES.has(roleOf(n)) || ['listbox', 'menu', 'tree', 'dialog'].includes(roleOf(n)));
+    if (!el.querySelector('[role]') || ![...el.querySelectorAll('[role]')].some(isList)) return norm(el.innerText || '');
+    const text = (n) => {
+      if (n.nodeType === 3) return n.data;
+      if (n.nodeType !== 1 || isList(n) || !rendered(n)) return '';
+      if (![...n.querySelectorAll('[role]')].some(isList)) return ` ${n.innerText || ''} `;
+      return [...n.childNodes].map(text).join(' ');
+    };
+    return norm([...el.childNodes].map(text).join(' '));
+  }
+
+  /**
+   * Milliseconds until the animations and transitions that move or fade the option (on it or
+   * on a box around it, e.g. a menu growing open) are done; 0 if none. Endless ones don't count.
+   * Widgets often ignore a click while their list is still opening.
+   */
+  function ddSettling(o) {
+    const el = resolve({ ref: o.ref, doc: o.doc });
+    if (el.__error) return el;
+    let left = 0;
+    for (const a of document.getAnimations()) {
+      const t = a.effect && a.effect.target;
+      if (!t || !(a.playState === 'running' || a.pending) || !composedContains(t, el)) continue;
+      const timing = a.effect.getComputedTiming();
+      if (!Number.isFinite(timing.endTime) || a.currentTime == null) continue;
+      left = Math.max(left, timing.endTime - a.currentTime);
+    }
+    return { left: Math.max(0, Math.ceil(left)) };
   }
 
   function ddTarget(o) {
@@ -1117,11 +1149,22 @@ export function cctetherPageLib() {
     return { same, now: opt || null, selected: !!opt?.selected, multi: !!r.multi, onTop, hit: hit ? shortDesc(hit) : 'nothing' };
   }
 
-  /** What the dropdown shows now; null if it is gone. */
+  /**
+   * What the dropdown shows now, whether it is still open, and whether something (its closing
+   * list, a backdrop) still lies over its middle. { gone: true } if it is no longer there.
+   */
   function ddShown(o) {
     const d = o.doc === docToken ? refs.get(o.ref)?.deref() : null;
     if (!d || !d.isConnected) return { gone: true };
-    return { shown: shownValue(d), expanded: d.getAttribute('aria-expanded') === 'true' };
+    const r = d.getBoundingClientRect();
+    const x = r.left + r.width / 2;
+    const y = r.top + r.height / 2;
+    let covered = false;
+    if (x >= 0 && y >= 0 && x < vw() && y < vh()) {
+      const hit = deepElementFromPoint(x, y);
+      covered = !!hit && !composedContains(d, hit) && !composedContains(hit, d);
+    }
+    return { shown: shownValue(d), expanded: d.getAttribute('aria-expanded') === 'true', covered };
   }
 
   /** Option-like elements visible anywhere now (for "click the right one yourself"). */
@@ -1131,12 +1174,30 @@ export function cctetherPageLib() {
   }
 
   // ---- full capture of a scrolling element ------------------------------------------------------
-  /** Sticky or fixed things inside the box at its top and bottom edges: { top, bottom } in px. */
+  /** Does the element paint a background of its own (a colour that isn't transparent, or an image)? */
+  function paints(el) {
+    const cs = getComputedStyle(el);
+    if (cs.backgroundImage && cs.backgroundImage !== 'none') return true;
+    const m = cs.backgroundColor.match(/rgba?\(([^)]+)\)/);
+    if (!m) return cs.backgroundColor !== 'transparent';
+    const parts = m[1].split(/[\s,/]+/).filter(Boolean);
+    return parts.length < 4 || parseFloat(parts[3]) > 0;
+  }
+
+  /**
+   * What hides part of the box at a scroll step, in px from its top and bottom edges:
+   * - top / bottom: sticky or fixed bars inside the element, stuck to its edge (part of the
+   *   content: shown once, at the top / bottom of the stitched image);
+   * - topOut / bottomOut: things outside it floating over it, e.g. a cookie banner (not part of
+   *   it: the rows under them are taken from another step, or reported as not captured);
+   * - over: descriptions of those outside things.
+   */
   function edgeBars(el, box) {
-    let top = 0;
-    let bottom = 0;
+    const res = { top: 0, bottom: 0, topOut: 0, bottomOut: 0, over: [] };
     const xs = [0.1, 0.5, 0.9].map((f) => box.left + box.width * f);
-    for (const [y, atTop] of box.cut ? [[box.top + 1, true]] : [[box.top + 1, true], [box.top + box.height - 2, false]]) {
+    const bottomEdge = box.top + box.height;
+    // Inside: stuck to an edge.
+    for (const [y, atTop] of box.cut ? [[box.top + 1, true]] : [[box.top + 1, true], [bottomEdge - 2, false]]) {
       for (const x of xs) {
         for (const h of document.elementsFromPoint(x, y)) {
           if (h === el || !composedContains(el, h)) continue;
@@ -1144,15 +1205,52 @@ export function cctetherPageLib() {
             const pos = getComputedStyle(p).position;
             if (pos !== 'sticky' && pos !== 'fixed') continue;
             const r = p.getBoundingClientRect();
-            if (atTop && r.top <= box.top + 1) top = Math.max(top, r.bottom - box.top);
-            if (!atTop && r.bottom >= box.top + box.height - 1) bottom = Math.max(bottom, box.top + box.height - r.top);
+            if (atTop && r.top <= box.top + 1) res.top = Math.max(res.top, r.bottom - box.top);
+            if (!atTop && r.bottom >= bottomEdge - 1) res.bottom = Math.max(res.bottom, bottomEdge - r.top);
           }
         }
       }
     }
+    // Outside: whatever is on top anywhere in the top and bottom 40% of the box. Columns closer
+    // than a third of the width apart, so that anything across a third of it is seen.
+    const band = box.height * 0.4;
+    const over = new Map();
+    const cols = [0.05, 0.2, 0.35, 0.5, 0.65, 0.8, 0.95].map((f) => box.left + box.width * f);
+    for (let dy = 1; dy <= band; dy += 8) {
+      for (const [y, atTop] of [[box.top + dy, true], [bottomEdge - 1 - dy, false]]) {
+        if (!atTop && box.cut) continue;
+        for (const x of cols) {
+          const hit = deepElementFromPoint(x, y);
+          if (!hit || composedContains(el, hit) || composedContains(hit, el)) continue;
+          // Something as big as the page (a backdrop, a transparent layer) can't be avoided by
+          // scrolling: name it only.
+          if (hit.getBoundingClientRect().height > band) { over.set(hit, tagDesc(hit)); continue; }
+          // The floating thing that covers this point: the hit element, or an ancestor around it
+          // that is still band-sized and visibly paints (a transparent wrapper hides nothing).
+          let bar = hit;
+          for (let p = parentOf(hit); p && !composedContains(p, el); p = parentOf(p)) {
+            const pr = p.getBoundingClientRect();
+            if (pr.height > band || pr.width > box.width * 1.5 + 40) break;
+            if (paints(p)) bar = p;
+          }
+          over.set(bar, tagDesc(bar));
+          // Only something across a good part of its width costs whole rows; a small widget in a
+          // corner is just mentioned (it may show up in more than one part of the image).
+          const r = bar.getBoundingClientRect();
+          const wide = Math.min(r.right, box.left + box.width) - Math.max(r.left, box.left) >= box.width / 3;
+          if (!wide) continue;
+          if (atTop) res.topOut = Math.max(res.topOut, r.bottom - box.top);
+          else res.bottomOut = Math.max(res.bottomOut, bottomEdge - r.top);
+        }
+      }
+    }
+    res.over = [...over.values()].slice(0, 3);
+    // Floating things usually cast a shadow beyond their box.
+    if (res.topOut) res.topOut += 8;
+    if (res.bottomOut) res.bottomOut += 8;
     // A bar taller than 40% of the box is not a bar.
-    const cap = box.height * 0.4;
-    return { top: Math.min(Math.max(0, Math.ceil(top)), cap), bottom: Math.min(Math.max(0, Math.ceil(bottom)), cap) };
+    for (const k of ['top', 'bottom', 'topOut', 'bottomOut']) res[k] = Math.min(Math.max(0, Math.ceil(res[k])), Math.floor(band));
+    return res;
   }
 
   /**
@@ -1319,7 +1417,7 @@ export function cctetherPageLib() {
   return {
     readText, interactive, html, find, point, at, elementRect, metrics, scrollPageTo,
     focus, active, selectAllInFocused, focusedLength, forceClear, selectOption,
-    ddTarget, ddOptions, ddPick, ddFinal, ddShown, visibleOptions,
+    ddTarget, ddOptions, ddPick, ddFinal, ddShown, ddSettling, visibleOptions,
     scrollerInfo, scrollerStep, scrollerRestore, mainScroller,
     waitCheck, locateText,
     scrollState, scrollTo, scrollByJs,

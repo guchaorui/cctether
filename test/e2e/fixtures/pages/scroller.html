@@ -32,6 +32,8 @@
   </div>
 </div>
 <div id="small"><div></div></div>
+<!-- With ?banner: a cookie-style banner floating over the lower part of the pane. -->
+<div id="banner" style="display:none; position:fixed; left:140px; bottom:12px; width:300px; height:70px; background:#00f; color:#fff; z-index:5">We use cookies</div>
 <script>
   const bands = document.getElementById('bands');
   for (let i = 0; i < 12; i++) {
@@ -42,6 +44,7 @@
     bands.appendChild(d);
   }
   window.scrolls = 0;
+  if (location.search.includes('banner')) document.getElementById('banner').style.display = 'block';
   document.getElementById('pane').addEventListener('scroll', () => { window.scrolls++; });
 </script>
 </body>

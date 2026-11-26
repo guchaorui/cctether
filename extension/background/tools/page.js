@@ -312,7 +312,7 @@ async function capture(s, tabId, params, hidden) {
   s.capturing++; // tells a resize_viewport reset not to stop the screencast under us
   if (hidden) {
     const frame = s.waitFor((m) => m === 'Page.screencastFrame', 1000);
-    await s.send('Page.startScreencast', SCREENCAST, { timeoutMs: 3000 }).catch(() => {});
+    await startScreencast(s);
     await frame;
   }
   try {
@@ -325,11 +325,24 @@ async function capture(s, tabId, params, hidden) {
     return s.guardDialog(s.send('Page.captureScreenshot', params, { timeoutMs: 15000 }));
   } finally {
     s.capturing--;
-    if (hidden) s.send('Page.stopScreencast', {}, { timeoutMs: 3000 }).catch(() => {});
+    stopScreencastIfUnused(s);
   }
 }
 
 const SCREENCAST = { format: 'jpeg', quality: 1, maxWidth: 16, maxHeight: 16, everyNthFrame: 1 };
+
+// A tab has one screencast, shared by everything that needs a background tab to keep painting
+// (captures, whilePainting, the stitched capture). The last user to finish stops it.
+function startScreencast(s) {
+  s.screencast = true;
+  return s.send('Page.startScreencast', SCREENCAST, { timeoutMs: 3000 }).catch(() => {});
+}
+
+function stopScreencastIfUnused(s) {
+  if (!s.screencast || s.capturing || s.painting) return;
+  s.screencast = false;
+  s.send('Page.stopScreencast', {}, { timeoutMs: 3000 }).catch(() => {});
+}
 
 /** Three decimals: at 2000 → 1568 px, 1.28 instead of 1.2755 would be 7 px off at the far edge. */
 const round3 = (n) => Math.round(n * 1000) / 1000;
@@ -456,7 +469,7 @@ async function scrollerShot({ tab, s }, args) {
   });
   const painted = () => s.waitFor((method) => method === 'Page.screencastFrame', 500);
   let first = painted();
-  await s.send('Page.startScreencast', SCREENCAST, { timeoutMs: 3000 }).catch(() => {});
+  await startScreencast(s);
   let st = null;
   try {
     const step = async (top) => {
@@ -481,20 +494,27 @@ async function scrollerShot({ tab, s }, args) {
     let steps = 0;
     let retried = false;
     const gaps = [];
+    const over = new Set();
     for (;;) {
       const t = st.top;
       const box = st.box;
+      const bars = st.bars;
+      bars.over.forEach((d) => over.add(d));
       const atEnd = t + box.height >= st.height - 1;
-      const bandTop = steps === 0 ? t : t + st.bars.top;
-      const bandBottom = atEnd ? t + box.height : t + box.height - st.bars.bottom;
+      // Sticky bars inside it are shown once (at the top in the first part, at the bottom in the
+      // last); things floating over it from outside are never part of it.
+      const topCut = steps === 0 ? bars.topOut : Math.max(bars.top, bars.topOut);
+      const bottomCut = atEnd ? bars.bottomOut : Math.max(bars.bottom, bars.bottomOut);
+      const bandTop = t + topCut;
+      const bandBottom = t + box.height - bottomCut;
       if (steps > 0 && bandTop > covered + 1 && !retried) {
-        // A bar at the top that the last step didn't have (a header that sticks only after some
-        // scrolling): step back so the rows under it are shown once more.
+        // Something at the top that the last step didn't have (a header that sticks only after
+        // some scrolling): step back so the rows under it are shown once more.
         retried = true;
-        st = await step(Math.max(0, covered - st.bars.top));
+        st = await step(Math.max(0, covered - topCut));
         continue;
       }
-      if (bandTop > covered + 1) gaps.push([Math.round(covered), Math.round(bandTop)]);
+      if (bandTop > covered + 1) gaps.push([Math.round(covered), Math.round(Math.min(bandTop, total))]);
       const from = Math.max(bandTop, covered);
       const to = Math.min(bandBottom, total);
       if (to > from) {
@@ -510,13 +530,11 @@ async function scrollerShot({ tab, s }, args) {
       steps++;
       retried = false;
       if (atEnd || covered >= total) break;
-      const next = covered - st.bars.top;
-      if (steps >= STITCH_MAX_STEPS || next <= t + 0.5) {
-        gaps.push([Math.round(covered), Math.round(total)]);
-        break;
-      }
+      const next = covered - topCut;
+      if (steps >= STITCH_MAX_STEPS || next <= t + 0.5) break;
       st = await step(next);
     }
+    if (covered < total - 1) gaps.push([Math.round(covered), Math.round(total)]);
     const mime = format === 'png' ? 'image/png' : 'image/jpeg';
     const data = await blobToB64(await canvas.convertToBlob(format === 'png' ? { type: mime } : { type: mime, quality: quality / 100 }));
     const id = remember(s, tab.id, { kind: 'stitched' });
@@ -526,13 +544,17 @@ async function scrollerShot({ tab, s }, args) {
     desc += Math.abs(ratio - 1) >= 0.01 ? `; scaled down to fit Claude's image size limits: 1 image px = ${ratio} CSS px.` : '; 1 px = 1 CSS px.';
     if (st.height > FULL_PAGE_MAX_HEIGHT) desc += ` The image stops at ${FULL_PAGE_MAX_HEIGHT} CSS px.`;
     if (gaps.length) desc += ` Rows not captured (left white): ${gaps.map(([a, b]) => `${a}–${b}`).join(', ')} CSS px from the top.`;
+    if (over.size) {
+      desc += ' Something outside it lay over part of it (e.g. a banner or popup; listed below): rows it hid across much of the width were taken from other scroll positions where possible. Close it to capture everything.';
+    }
     desc += ' Scrolling it may have loaded or changed content (lazy loading, virtual lists show only some rows).'
       + ` This is screenshot ${id}; its points can't be used with click. Use ref or text, or a viewport screenshot.`;
+    if (over.size) desc += `\n${untrusted(`Over it: ${[...over].join(', ')}`)}`;
     return { content: [{ type: 'image', data, mimeType: mime }, text(desc)] };
   } finally {
     off();
     s.capturing--;
-    s.send('Page.stopScreencast', {}, { timeoutMs: 3000 }).catch(() => {});
+    stopScreencastIfUnused(s);
     // Back to where it was, unless the page or someone else moved it meanwhile.
     if (st && !s.closed) await s.lib('scrollerRestore', [{ ref: info.ref, top: info.top, expect: st.top, doc: info.doc }]).catch(() => false);
   }
@@ -714,18 +736,20 @@ async function realViewport(tabId) {
 }
 
 /** Run fn while a background tab is made to paint (the same tiny screencast as capture() uses). */
-async function whilePainting(s, tabId, fn) {
+export async function whilePainting(s, tabId, fn) {
   const hidden = await isHiddenTab(tabId);
   if (hidden) {
-    await s.send('Page.startScreencast', SCREENCAST, { timeoutMs: 3000 }).catch(() => {});
+    s.painting++;
+    await startScreencast(s);
   }
   try {
     return await fn();
   } finally {
-    // A tab has one screencast. Stopping it while a screenshot is capturing on this tab would
-    // stall that capture (up to 8 s, then it brings the tab to the front); capture() stops the
-    // screencast itself when it is done.
-    if (hidden && !s.capturing) s.send('Page.stopScreencast', {}, { timeoutMs: 3000 }).catch(() => {});
+    // Stopping the screencast while a screenshot is capturing, or another call still keeps the
+    // tab painting, would stall that one (a capture: up to 8 s, then it brings the tab to the
+    // front): the last one to finish stops it.
+    if (hidden) s.painting--;
+    stopScreencastIfUnused(s);
   }
 }
 

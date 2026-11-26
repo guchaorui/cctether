@@ -12,6 +12,8 @@
   .row { margin: 8px 0; }
   [role=combobox], .dd { display: inline-block; min-width: 180px; border: 1px solid #888; padding: 4px 8px; cursor: default; }
   .panel { position: absolute; background: #fff; border: 1px solid #444; max-height: 90px; overflow: auto; min-width: 220px; z-index: 10; }
+  #region-panel { transition: opacity 300ms, transform 200ms; transform-origin: top left; }
+  #region-panel.entering { opacity: 0; transform: scale(0.9); }
   .panel [role=option], .panel [role=menuitem], .menu li { padding: 4px 8px; height: 22px; }
   [aria-selected=true] { background: #cde; }
   .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
@@ -150,6 +152,8 @@
       s.textContent = name;
       o.appendChild(s);
       o.addEventListener('click', (e) => {
+        // Like some widget libraries: clicks while the list is still opening are ignored.
+        if (panel.getAnimations().some((a) => a.playState === 'running')) { window.log.push('ignored:' + name); return; }
         region.querySelector('.value').textContent = name;
         out('region:' + o.dataset.value + (e.isTrusted ? ':trusted' : ':untrusted'));
         closeRegion();
@@ -158,7 +162,10 @@
     }
     // Rendered a little later, as frameworks do.
     setTimeout(() => {
+      panel.classList.add('entering');
       document.getElementById('overlays').appendChild(panel);
+      panel.getBoundingClientRect(); // start the transition from the entering state
+      panel.classList.remove('entering');
       region.setAttribute('aria-controls', 'region-panel');
       region.setAttribute('aria-expanded', 'true');
     }, 120);
