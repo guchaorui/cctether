@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Console shell</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; font: 14px sans-serif; }
+  header { height: 40px; background: #333; color: #fff; }
+  #app { position: absolute; top: 40px; left: 60px; width: calc(100% - 70px); height: calc(100% - 50px); border: 3px solid #888; padding: 4px; }
+  footer { position: absolute; bottom: 0; left: 0; height: 10px; }
+</style>
+</head>
+<body>
+<header>Cloud console <button type="button" id="top-create">Create</button></header>
+<iframe id="app" src="/pages/frame-inner.html" title="Workload"></iframe>
+<iframe id="ext" title="Help widget" style="position:absolute; left:0; top:40px; width:50px; height:50px; border:0"></iframe>
+<footer>footer</footer>
+</body>
+</html>

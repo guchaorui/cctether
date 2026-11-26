@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Inner form</title>
+<style>
+  body { margin: 0; padding: 12px; font: 14px sans-serif; }
+  .tall { height: 1400px; }
+  #sticky { position: sticky; top: 0; background: #000; color: #fff; height: 24px; }
+</style>
+</head>
+<body>
+<div id="sticky">Create instance</div>
+<h2>Instance details</h2>
+<label for="name">Instance name</label>
+<input id="name" type="text">
+<select id="shape" aria-label="Shape"><option value="a1">VM.Standard.A1</option><option value="e4">VM.Standard.E4</option></select>
+<button type="button" id="create">Create</button>
+<p id="out"></p>
+<div class="tall">Lots of settings</div>
+<button type="button" id="far">Far inside</button>
+<script>
+  window.log = [];
+  const out = (t) => { window.log.push(t); document.getElementById('out').textContent = t; };
+  document.getElementById('create').addEventListener('click', (e) => out('create' + (e.isTrusted ? ':trusted' : '')));
+  document.getElementById('far').addEventListener('click', () => out('far'));
+  document.getElementById('shape').addEventListener('change', (e) => out('shape:' + e.target.value));
+  setTimeout(() => {
+    const d = document.createElement('div');
+    d.id = 'late';
+    d.textContent = 'Work request accepted';
+    document.body.appendChild(d);
+  }, 600);
+</script>
+</body>
+</html>

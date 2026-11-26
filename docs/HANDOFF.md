@@ -4,6 +4,22 @@
 
 ## 零、现在到哪了（先看这里）
 
+> **正在做（2026-11-26 开头，还没写代码）：0.6.0 = 同源 iframe 支持 + `evaluate` 读服务器上的文件。** 新窗口从这一段接着做。
+>
+> **起因**：又一个项目的 Claude 在 Oracle 云控制台里用 cctether，主人转来两条反馈（原话大意）：
+> 1. 看不到 iframe 里的内容：控制台把整个表单放在同源 iframe 里，`read_page` 只读回页眉页脚 97 个字，`find` 按文字找「创建」说没有。只能每次用 `evaluate` 写 `iframe.contentDocument` 去读、去点。建议这些工具自动进同源 iframe；退一步，至少提示「内容在一个 1710×860 的 iframe 里」。
+> 2. 注入长脚本只能整段贴：400 多行的脚本每次都要当参数整段输出。建议 `evaluate` 能收一个服务器上的文件路径，由服务读文件再注入。
+> 它夸了：`network_requests` 没记录时会说明从哪一刻开始记、想看更早的怎么办。
+>
+> **已经实验确认的**（Chrome for Testing 156，测试页 `test/e2e/fixtures/pages/frames.html`、`frame-inner.html`，已提交）：从主框架的隔离环境能读写同源 iframe：`contentDocument` 的文字、位置（相对 iframe 视口）、两种 `getComputedStyle`、`checkVisibility`、iframe 里的 `elementFromPoint` 都行；顶层 `elementFromPoint` 返回 `<iframe>` 本身。跨页面的 `instanceof` 不成立（iframe 是另一个 realm）。让 iframe 里的输入框 `focus()` 以后，顶层 `activeElement` 是 iframe，CDP `Input.insertText` 能打进去（现在的 `type` 会误报「不是输入框」，因为 `deepActive` 没往 iframe 里看）。在 iframe 里 `scrollIntoView` 会把外层页面也带着滚几个像素。
+>
+> **方案**（已发 GPT 挑刺，回答在 `/tmp/cct-gpt/plan2-answer.md`，方案原文 `/tmp/cct-gpt/plan2-prompt.md`，GPT 会话 id `01a21764-8189-73c2-bfb4-761a3ae88edd`，续会话照 gpt skill。这两个文件在 /tmp，机器重启会丢；回答是空的或不见了，就用方案原文重新发一次）。先读 GPT 的意见、改方案、写进 SPEC §5.2 和 §13（v0.17），再写代码：
+> - **A. 同源 iframe**（`extension/background/page-scripts.js`，大约 40 个函数要改，74 处默认只有一个文档）：加跨框架的辅助函数（列出同源框架的文档、`parentOf`/`composedContains`/`kidsOf` 跨框架、按元素自己的窗口取样式、把位置换算成顶层视口坐标、命中测试和焦点往框架里钻、可见性也看外层框架）。`resolve`/`find`/`wait_for`/`select_option` 的选择器、按文字找、`read_page` 的元素清单都进同源框架；`read_page` 文字模式在主文档后面按框架分段列出；`type` 用元素自己文档的 selection；`scroll` 把框架的滚动当成内层滚动；元素截图和滚动区域截全支持框架（iframe 本身可当滚动区域，整页截图的提示也能指向它）。跨源框架进不去：在结果里列出它的地址和大小，建议用 `open_tab` 直接打开那个地址。
+> - **B. `evaluate` 的 `file` 参数**：由服务端（`server/src/mcp.js`）读文件，换成 `expression` 再发给插件，插件不用改，旧插件也能用。只收 `.js`/`.mjs`/`.cjs`、普通文件、路径里没有以点开头的目录（挡住 `~/.ssh`、`~/.config` 包括 cctether 自己的密钥）、不超过 200 KB / 20 万字符；报错不带文件内容。`expression` 和 `file` 二选一。工具定义里标成「只在服务端」，让端到端测试的参数名核对跳过它。
+> - 测试、版本 0.6.0、做完照规矩直接发布（主人已授权），商店包请主人上传。
+>
+> **顺带记一个这次自己用 cctether 时的不顺手**（全局 CLAUDE.md 要求汇报）：服务端升级以后，已经开着的 Claude Code 会话手里还是旧的工具清单，用不了新参数，只好自己写脚本走 `cctether mcp`。可以考虑：服务端声明 `listChanged`，常驻服务换了版本时，`cctether mcp` 给客户端发 `notifications/tools/list_changed`。没做，列在第二节。
+
 **两个阶段都做完了，项目已经公开发布，主人自己每天在用。** 主人 2026-11-09 说先做到这里。2026-11-17 加了 `resize_viewport`、`set_color_scheme`（0.4.0），已发布，商店版 11-18 过审。
 
 **2026-11-25：按另一个 Claude 的使用反馈做了 0.5.0。2026-11-26 主人同意后已发布**（npm、GitHub Release、主人的服务器）；商店的新包等主人上传、过审。 另一个项目的 Claude 在谷歌云控制台里用了八九十次 cctether，按能省多少排了六条反馈，主人转过来说「你看看能怎么优化吧」。做了的（规则在 SPEC §5.2「按另一个 Claude 的使用反馈改的六处」，GPT 意见在 §13 v0.15）：
@@ -68,6 +84,8 @@
 6. **每个 Claude 窗口各用一个标签组。** 现在所有窗口共用一个「cctether」组，同时开几个窗口时看得到彼此的标签页，可能互相干扰。这会改标签页范围，属于安全相关，必须配测试。
 7. **长页面分段截图。** 现在截整页时，很长的页面会被缩得很窄。
 8. **真正的手机模拟。** 要有触摸、UA、手机的视口规则；现在的 `resize_viewport` 只是「窄的桌面视口」。别的媒体模拟（减少动画、打印样式）也还没做。
+
+**工具清单跟着升级更新：** 服务端升级后，已经开着的会话还拿着旧的工具清单（2026-11-26 自己用时撞上）。可以让 `cctether mcp` 在常驻服务换版本后发 `notifications/tools/list_changed`（服务端要声明 `tools.listChanged: true`）。要先查 Claude Code 收到这个通知会不会重新拉清单。
 
 **这次反馈里没做、或者做了一半的：**
 
