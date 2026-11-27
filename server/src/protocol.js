@@ -21,19 +21,21 @@ export const NONCE_BYTES = 32;
 export const MAX_FROM_EXTENSION = 32 * 1024 * 1024;
 export const MAX_TO_EXTENSION = 1024 * 1024;
 /**
- * A message to the extension that is too big for one frame may be sent as fragments, for
- * upload_file only (SPEC §4.4, §5.2): { t: 'frag', i, n, s } with i = 0 … n-1 and s a slice of the
- * message's JSON text. At most MAX_FRAGMENTS of them, at most MAX_FRAGMENTED_TO_EXTENSION bytes
- * of sealed frames in all. Only pongs may come between them. The extension says it takes them
- * with `frag: true` in its (encrypted) info message.
+ * upload_file's call (it carries the files) goes as fragments if it is bigger than one (SPEC §4.4, §5.2):
+ * { t: 'frag', i, n, s } with i = 0 … n-1 and s a slice of the message's JSON text, each sealed
+ * one at most FRAGMENT_BYTES. At most MAX_FRAGMENTS of them, at most MAX_FRAGMENTED_TO_EXTENSION
+ * bytes of sealed frames in all. Only pongs may come between them. If the client cancels once
+ * the call is out, { t: 'cancel', id } follows. The extension says it takes both with
+ * `frag: true` in its (encrypted) info message.
  */
 export const MAX_FRAGMENTED_TO_EXTENSION = 32 * 1024 * 1024;
 /**
  * Fragments are smaller than a frame may be: the extension counts each one arriving as a sign of
- * life, so on a slow link (down to about 30 KB/s) one never takes as long as a missed pong.
+ * life. A link too slow to bring one within the heartbeat's 10 s (under about 6.5 KB/s) is too
+ * slow for the service's own deadline anyway, which then gives up cleanly first.
  */
-export const FRAGMENT_BYTES = 256 * 1024;
-export const MAX_FRAGMENTS = 160;
+export const FRAGMENT_BYTES = 64 * 1024;
+export const MAX_FRAGMENTS = 544;
 export const HANDSHAKE_TIMEOUT_MS = 5000;
 export const IDLE_TIMEOUT_MS = 60000;
 

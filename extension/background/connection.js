@@ -29,11 +29,13 @@ const MAX_MESSAGE_BYTES = 30 * 1024 * 1024;
 // most MAX_FRAGMENTS of them and MAX_FRAGMENTED bytes of frames, within FRAG_TIME_MS.
 const MAX_FRAME = 1024 * 1024;
 const MAX_HANDSHAKE_TEXT = 4096;
-const MAX_FRAGMENTS = 160;
+const MAX_FRAGMENTS = 544;
 const MAX_FRAGMENTED = 32 * 1024 * 1024;
 const FRAG_TIME_MS = 5 * 60_000;
 /** Frames waiting to be decrypted, in bytes: more than one fragmented message's worth is wrong. */
 const MAX_QUEUED = MAX_FRAGMENTED + 2 * MAX_FRAME;
+/** For tests: must equal the service's (server/src/protocol.js). */
+export const FRAGMENT_LIMITS = Object.freeze({ MAX_FRAGMENTS, MAX_FRAGMENTED, MAX_FRAME });
 const utf8Length = (text) => (text.length * 3 <= MAX_MESSAGE_BYTES ? text.length : new TextEncoder().encode(text).length);
 
 const CLOSE_CODE_ERRORS = { 4401: 'auth_rejected', 4403: 'origin_rejected', 4409: 'replaced', 4408: 'timeout' };
@@ -41,8 +43,9 @@ const CLOSE_CODE_ERRORS = { 4401: 'auth_rejected', 4403: 'origin_rejected', 4409
 /**
  * @typedef {object} ConnectionOptions
  * @property {(patch: object) => void} onStatus   receives partial Status updates (see shared/contract.js)
- * @property {(tool: string, args: object, ctx: { live: () => boolean }) => Promise<{ok: true, data: any}|{ok: false, error: {code: string, message: string}}>} onCall
- *   ctx.live(): whether the connection the call came on is still up (else its result can't be sent)
+ * @property {(tool: string, args: object, ctx: { live: () => boolean, cancelled: () => boolean }) => Promise<{ok: true, data: any}|{ok: false, error: {code: string, message: string}}>} onCall
+ *   ctx.live(): whether the connection the call came on is still up (else its result can't be sent);
+ *   ctx.cancelled(): whether the server said the client cancelled it
  * @property {() => object} getInfo               { extension, browser, platform } sent after connecting
  * @property {(connected: boolean) => void} [onConnectedChange]
  * @property {(url: string) => any} [createSocket]
@@ -75,6 +78,9 @@ export class Connection {
   #queued = 0;
   /** A fragmented message arriving: { n, parts: string[], bytes, timer }. */
   #frag = null;
+  /** Ids of calls running now, and those of them the server has said are cancelled. */
+  #running = new Set();
+  #cancelled = new Set();
 
   /** @param {ConnectionOptions} opts */
   constructor(opts) {
@@ -199,6 +205,8 @@ export class Connection {
     this.#cipher = null;
     this.#queued = 0;
     this.#dropFragments();
+    this.#running.clear();
+    this.#cancelled.clear();
     const ws = this.#ws;
     this.#ws = null;
     if (ws) {
@@ -346,6 +354,10 @@ export class Connection {
         // Calls run concurrently; don't block the receive chain.
         this.#handleCall(gen, m);
         break;
+      case 'cancel':
+        // The client gave up on this call (only upload_file acts on it, before giving the files).
+        if (this.#running.has(m.id)) this.#cancelled.add(m.id);
+        break;
       case 'bye':
         this.#o.log(`server said bye: ${m.reason}`);
         if (m.reason === 'replaced') return this.#down(gen, 'replaced');
@@ -399,9 +411,18 @@ export class Connection {
       result = { ok: false, error: { code: 'bad_args', message: 'Malformed call.' } };
     } else {
       try {
-        result = await this.#o.onCall(m.tool, m.args, { live: () => gen === this.#gen && this.#phase === 'connected' });
+        this.#running.add(m.id);
+        result = await this.#o.onCall(m.tool, m.args, {
+          live: () => gen === this.#gen && this.#phase === 'connected',
+          cancelled: () => gen === this.#gen && this.#cancelled.has(m.id),
+        });
       } catch (e) {
         result = { ok: false, error: { code: 'internal', message: `Unexpected extension error: ${e?.message ?? e}` } };
+      } finally {
+        if (gen === this.#gen) {
+          this.#running.delete(m.id);
+          this.#cancelled.delete(m.id);
+        }
       }
     }
     if (gen !== this.#gen) return;

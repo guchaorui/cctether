@@ -11,7 +11,7 @@
 import { constants } from 'node:fs';
 import { open, lstat, realpath } from 'node:fs/promises';
 import { dirname, extname, join } from 'node:path';
-import { ensurePrivateDir, privateDir } from './evalfile.js';
+import { ensurePrivateDir } from './evalfile.js';
 
 export const UPLOAD_MAX_BYTES = 20 * 1024 * 1024; // all files of one call together
 export const UPLOAD_MAX_FILES = 10;
@@ -65,25 +65,37 @@ const uid = () => (process.getuid ? process.getuid() : null);
 const MISSING = 'The uploads directory does not exist (cctether makes it when it starts, mode 700). Create it, copy the files into it, then try again.';
 const NOT_PRIVATE = 'The uploads directory is not a private directory of this user (it is a link, or others can use it), so upload_file is off. Make it a plain directory with mode 700.';
 
+/** lstat of a directory of this user that nobody else can use (not a link); fails otherwise. */
+async function privateStat(dir) {
+  let st;
+  try {
+    st = await lstat(dir);
+  } catch {
+    fail(MISSING);
+  }
+  const me = uid();
+  if (!st.isDirectory() || (me !== null && st.uid !== me) || (st.mode & 0o077) !== 0) fail(NOT_PRIVATE);
+  return st;
+}
+
 /**
- * The real path of the uploads directory, after checking that it, as named and as resolved, is
- * a private directory of this user, and that no directory above the resolved one can be changed
+ * The real path of the uploads directory, after checking that it is a private directory of this
+ * user, that the path resolves to that very directory (same device and inode: a directory above
+ * may have been swapped meanwhile), and that no directory above the resolved one can be changed
  * by another user (root's and this user's own are fine, and so are sticky ones like /tmp, where
  * others can't rename what isn't theirs). Then nobody else can swap anything on the path the
  * files are opened by.
  */
 async function checkedDir(dir) {
-  const ok = await privateDir(dir);
-  if (ok === null) fail(MISSING);
-  if (!ok) fail(NOT_PRIVATE);
+  const first = await privateStat(dir);
   let real;
   try {
     real = await realpath(dir);
   } catch {
     fail(MISSING);
   }
-  // What the path resolves to now (a directory above may have been swapped since the check).
-  if ((await privateDir(real)) !== true) fail(NOT_PRIVATE);
+  const resolved = await privateStat(real);
+  if (resolved.dev !== first.dev || resolved.ino !== first.ino) fail('The uploads directory changed while it was being checked. Try again.');
   const me = uid();
   for (let d = dirname(real); ; d = dirname(d)) {
     let st;
@@ -95,7 +107,7 @@ async function checkedDir(dir) {
     const owner = me === null || st.uid === 0 || st.uid === me;
     const othersWrite = (st.mode & 0o022) !== 0 && (st.mode & 0o1000) === 0;
     if (!st.isDirectory() || !owner || othersWrite) {
-      fail(`A directory above the uploads directory (${d}) can be changed by another user, so upload_file is off: files there could be swapped while being read.`);
+      fail('A directory above the uploads directory can be changed by another user (or is not a directory of this user or root), so upload_file is off: files there could be swapped while being read. Check the permissions of the directories above it.');
     }
     if (d === dirname(d)) break;
   }

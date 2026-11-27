@@ -71,7 +71,7 @@ function notAccepted(accept, f) {
 
 let uploading = false;
 
-export async function uploadFile({ tab, s, startedAt = Date.now(), paused = () => false, live = () => true }, args) {
+export async function uploadFile({ tab, s, startedAt = Date.now(), paused = () => false, live = () => true, cancelled = () => false }, args) {
   const want = wantedOrigin(args.origin);
   const files = args.files;
   const n = files.length;
@@ -92,6 +92,7 @@ export async function uploadFile({ tab, s, startedAt = Date.now(), paused = () =
 
   /** Why the files may not be given now, as [code, why], or null. Synchronous. */
   const blockedNow = () => {
+    if (cancelled()) return ['cancelled', 'it was cancelled'];
     if (s.closed) return ['not_shared', 'cctether no longer has the tab (it left the cctether group, or was paused or closed)'];
     if (paused()) return ['paused', 'cctether was paused'];
     if (!live()) return ['disconnected', 'the connection to the cctether service dropped'];
@@ -103,9 +104,14 @@ export async function uploadFile({ tab, s, startedAt = Date.now(), paused = () =
   const stop = ([code, why]) => {
     const lines = [`Not done: ${why}, so nothing was given to the page.`];
     if (code === 'dialog_open' && s.dialog) lines.push(dialogHint(s.dialog));
-    return new ToolError(code, lines.join(' '));
+    const e = new ToolError(code, lines.join(' '));
+    e.notGiven = true; // said by these checks, before anything went out
+    return e;
   };
-  /** A page library call that must stay in this document: never tried again in a new one. */
+  /**
+   * A page library call before the files reach the page, which must stay in this document (never
+   * tried again in a new one). Failures are said in fixed words: nothing page-made gets in.
+   */
   const lib = async (fn, a) => {
     try {
       return await s.lib(fn, a, { retry: false, timeoutMs: left() });
@@ -114,7 +120,8 @@ export async function uploadFile({ tab, s, startedAt = Date.now(), paused = () =
       const b = blockedNow(); // e.g. the tab left the group while a piece was on its way
       if (b) throw stop(b);
       if (isContextGone(e)) throw stop(['navigated', 'the page navigated or reloaded during the upload']);
-      throw e;
+      if (e instanceof ToolError && (e.code === 'timeout' || e.code === 'dialog_open')) throw stop([e.code, e.code === 'timeout' ? 'the page did not answer in time' : 'a dialog is open on the page']);
+      throw stop(['internal', `cctether's page code failed (${e?.code ?? e?.name ?? 'error'})`]);
     }
   };
   /**
@@ -135,8 +142,13 @@ export async function uploadFile({ tab, s, startedAt = Date.now(), paused = () =
         ?? (!shared ? ['not_shared', 'the tab left the cctether group']
           : originOf(now.url) !== want ? ['navigated', `the tab now shows ${originOf(now.url) ?? 'a page with no web origin'}`] : null);
       if (b) throw stop(b);
-      return;
+      return gen;
     }
+  };
+  /** The same, synchronously, right before the command that gives the files goes out. */
+  const goNow = (gen) => () => {
+    const b = blockedNow() ?? (s.scopeCheck || s.scopeGen !== gen ? ['not_shared', 'the tab\'s group changed just then; try again'] : null);
+    if (b) throw stop(b);
   };
   /** The files' command went out without a clear answer: they may be on the page. */
   const unclear = (e, what) => new ToolError(e?.code === 'timeout' ? 'timeout' : 'internal', `No clear answer came while ${what} (${e?.code ?? 'error'}). `
@@ -170,11 +182,12 @@ export async function uploadFile({ tab, s, startedAt = Date.now(), paused = () =
     const assignArgs = [{ id, doc: t.doc, ref: t.ref, origin: want, drop, files: meta }];
     let a;
     if (!drop) {
-      await lastCheck();
+      const check = goNow(await lastCheck());
+      check(); // and again inside lib(), once the page's world is at hand
       try {
-        a = await s.lib('uploadAssign', assignArgs, { retry: false, timeoutMs: left() });
+        a = await s.lib('uploadAssign', assignArgs, { retry: false, timeoutMs: left(), check });
       } catch (e) {
-        if (e?.fromPage) throw e; // the library answered: it says what happened
+        if (e?.fromPage || e?.notGiven) throw e; // the library answered, or it never went out
         throw unclear(e, 'the files were being set on the input');
       }
     } else {
@@ -186,30 +199,41 @@ export async function uploadFile({ tab, s, startedAt = Date.now(), paused = () =
         + `(${a.got.map((g) => `${q(g.name, 60)} ${g.size} B ${g.type || 'no type'}`).join(', ') || 'none'}), so no events were fired. Check the page.`);
     }
     if (!drop) given = true;
-    else await lastCheck();
+    const check = drop ? goNow(await lastCheck()) : null;
+    check?.();
 
     const list = files.map((f, i) => `${q(f.name, 120)} (${fmtBytes(sizes[i])}, ${f.type || 'no type'})`).join(', ');
     const them = n === 1 ? 'it' : 'them';
     const lines = [];
-    const r = await s.raceDialog(s.lib('uploadDispatch', [{ id, doc: t.doc, ref: t.ref, origin: want, drop }], { retry: false, timeoutMs: left() })
+    // For a drop, the files reach the page here: the last checks run right before it goes out.
+    const r = await s.raceDialog(s.lib('uploadDispatch', [{ id, doc: t.doc, ref: t.ref, origin: want, drop }], { retry: false, timeoutMs: left(), check })
       .then((v) => ({ ok: v }), (e) => ({ err: e })));
     const err = r.value?.err;
+    const named = `${n === 1 ? 'the file' : `${n} files`} ${list}`;
     if (drop) {
-      // A refusal from the page library: the drop didn't happen. Anything unclear: it may have.
+      // A refusal (the page library's, or the last checks'): the drop didn't happen. Anything
+      // unclear: it may have.
       if (err?.fromPage) throw new ToolError(err.code, `Not done: ${err.message}, so nothing was given to the page.`);
+      if (err?.notGiven) throw err;
       given = true;
       if (err) throw unclear(err, `the files were being dropped on ${t.desc}`);
-      lines.push(`Dropped ${n === 1 ? 'the file' : `${n} files`} ${list} on ${t.desc} on ${want}: fired dragenter, dragover and drop with ${them} (synthetic events).`);
+      if (r.dialog) {
+        lines.push(`Started dropping ${named} on ${t.desc} on ${want} (synthetic dragenter, dragover and drop), and while handling them the page opened ${describeDialog(r.dialog)}: the rest of the events, up to the drop, run once it is closed. ${dialogHint(r.dialog)}`);
+      } else {
+        lines.push(`Dropped ${named} on ${t.desc} on ${want}: fired dragenter, dragover and drop with ${them} (synthetic events).`);
+      }
     } else {
-      lines.push(`Gave ${n === 1 ? 'the file' : `${n} files`} ${list} to ${t.desc} on ${want}`
-        + `${a.before ? `, replacing the ${a.before === 1 ? 'file' : `${a.before} files`} chosen there before` : ''}`
-        + (err ? '.' : ', and fired input and change on it (synthetic events: a page that only accepts a real user\'s choice ignores them).'));
+      const replacing = a.before ? `, replacing the ${a.before === 1 ? 'file' : `${a.before} files`} chosen there before` : '';
+      if (r.dialog) {
+        lines.push(`Gave ${named} to ${t.desc} on ${want}${replacing}, and while the page handled the input and change events (synthetic) it opened ${describeDialog(r.dialog)}: the rest of its handling runs once it is closed. ${dialogHint(r.dialog)}`);
+      } else {
+        lines.push(`Gave ${named} to ${t.desc} on ${want}${replacing}`
+          + (err ? '.' : ', and fired input and change on it (synthetic events: a page that only accepts a real user\'s choice ignores them).'));
+      }
       if (err?.fromPage) lines.push(`But the input and change events were not fired: ${err.message}. The page may not have noticed the files.`);
       else if (err) lines.push(`But no clear answer came while the input and change events were fired (${err.code ?? 'error'}): the page may not have noticed the files.`);
     }
-    if (r.dialog) {
-      lines.push(`While handling the events, the page opened ${describeDialog(r.dialog)}. ${dialogHint(r.dialog)}`);
-    } else if (!err) {
+    if (!r.dialog && !err) {
       const d = r.value.ok;
       if (drop) {
         lines.push(d.handled ? 'The page handled the drop (it called preventDefault on it).' : 'The page did not call preventDefault on the drop, so it may not have taken the files.');

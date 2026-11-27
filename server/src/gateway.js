@@ -25,7 +25,7 @@ const FRAG_HIGH_WATER = 256 * 1024;
 const FRAG_POLL_MS = 10;
 /** Messages that may wait for the fragments to be out; more are refused as busy. */
 const MAX_HELD = 64;
-/** Most bytes of a fragment's envelope around its JSON-quoted slice: {"t":"frag","i":159,"n":160,"s":…}. */
+/** Most bytes of a fragment's envelope around its JSON-quoted slice: {"t":"frag","i":543,"n":544,"s":…}. */
 const FRAG_ENVELOPE = 33;
 
 const isHighSurrogate = (c) => c >= 0xd800 && c <= 0xdbff;
@@ -66,6 +66,8 @@ export class GatewayError extends Error {
     this.code = code;
   }
 }
+
+const cancelledError = () => new GatewayError('cancelled', 'It was cancelled before it reached the browser. Nothing was run.');
 
 export class Gateway extends EventEmitter {
   #key;
@@ -142,7 +144,7 @@ export class Gateway extends EventEmitter {
    * Run a tool in the browser.
    * @returns {Promise<{ ok: true, data: any } | { ok: false, error: { code: string, message: string } }>}
    */
-  call(tool, args, timeoutMs, { connection, fragments = false } = {}) {
+  call(tool, args, timeoutMs, { connection, fragments = false, signal } = {}) {
     if (!this.#browser) {
       return Promise.reject(new GatewayError('no_browser', 'No browser is connected.'));
     }
@@ -150,7 +152,7 @@ export class Gateway extends EventEmitter {
     if (connection !== undefined && connection !== this.#browser) {
       return Promise.reject(new GatewayError('disconnected', 'The browser connection changed while cctether was preparing the call, so nothing was run.'));
     }
-    return this.#browser.call(tool, args, timeoutMs, { fragments });
+    return this.#browser.call(tool, args, timeoutMs, { fragments, signal });
   }
 
   async close() {
@@ -330,19 +332,24 @@ export class BrowserConnection extends EventEmitter {
   }
 
   /**
-   * Run a tool in the browser. `fragments`: the call may be too big for one frame, and is then
-   * sent in fragments (upload_file only; the caller checked that the extension takes them).
+   * Run a tool in the browser. `fragments`: the call is sent in fragments if it is bigger than one
+   * (upload_file only; the caller checked that the extension takes them). `signal` (an
+   * AbortSignal, upload_file only): the client cancelled. Before the whole call is out, it is
+   * not sent (or, part sent, the connection is dropped); after, the extension is told, and the
+   * answer says whether it stopped in time.
    */
-  call(tool, args, timeoutMs, { fragments = false } = {}) {
+  call(tool, args, timeoutMs, { fragments = false, signal } = {}) {
     const id = this.#nextId++;
     return new Promise((resolve, reject) => {
       if (this.#closed) return reject(new GatewayError('disconnected', 'The browser disconnected.'));
+      if (signal?.aborted) return reject(cancelledError());
       const text = JSON.stringify({ t: 'call', id, tool, args });
       let plain = null;
       let slices = null;
       try {
         plain = Buffer.from(text, 'utf8');
-        if (plain.length + 16 > MAX_TO_EXTENSION) {
+        // Fragments are small, so that on a slow link each one arrives well within the heartbeat.
+        if (fragments ? plain.length + 16 > FRAGMENT_BYTES : plain.length + 16 > MAX_TO_EXTENSION) {
           if (!fragments) throw new TooLargeError(plain.length + 16);
           plain = null;
           if (this.#fragmenting) return reject(new GatewayError('busy', 'Another large message is being sent to the browser. Try again when it is done.'));
@@ -369,6 +376,22 @@ export class BrowserConnection extends EventEmitter {
         reject(new GatewayError('timeout', `The browser did not answer within ${Math.round(timeoutMs / 1000)} s.`));
       }, timeoutMs);
       this.#pending.set(id, { resolve, reject, timer, sending });
+      signal?.addEventListener('abort', () => {
+        const p = this.#pending.get(id);
+        if (!p) return; // answered or timed out already
+        const held = this.#held.some((h) => h.id === id);
+        if (held || sending.on) {
+          this.#pending.delete(id);
+          clearTimeout(timer);
+          this.#held = this.#held.filter((h) => h.id !== id);
+          // Part of it is with the extension: only a new connection starts afresh.
+          if (sending.on) this.#abort('upload cancelled while being sent');
+          reject(cancelledError());
+          return;
+        }
+        // All of it is out: the extension stops if it hasn't given the files yet, and says so.
+        try { this.#send({ t: 'cancel', id }); } catch { /* closed */ }
+      }, { once: true });
       if (slices) this.#sendFragments(slices, sending);
       else this.#queue(plain, false, id);
     });

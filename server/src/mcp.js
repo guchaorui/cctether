@@ -63,11 +63,15 @@ export function createMcpSession({
       + 'Ask the user to update the extension; until then, use the arguments the error says it accepts.)';
   }
 
+  /** Uploads in progress in this session, by JSON-RPC request id: the client may cancel them. */
+  const uploadsInFlight = new Map();
+
   /**
    * upload_file (SPEC §5.2): the service reads the files and sends their contents, in fragments,
-   * to the connection it checked; one upload at a time for the whole service.
+   * to the connection it checked; one upload at a time for the whole service. A cancellation
+   * from the client stops it if the files haven't reached the page yet.
    */
-  async function uploadFile(tool, args) {
+  async function uploadFile(tool, args, requestId) {
     const conn = browser?.browser ?? null;
     if (!conn) return { result: errorResult(NOT_CONNECTED) };
     // Checked before any file is read.
@@ -79,6 +83,9 @@ export function createMcpSession({
     if (!uploadsDir) return { result: errorResult('upload_file is not available here (no uploads directory).') };
     if (uploads.busy) return { result: errorResult('Another upload is in progress (one at a time). Try again when it is done.') };
     uploads.busy = true;
+    const cancel = new AbortController();
+    const key = requestId === undefined ? null : JSON.stringify(requestId);
+    if (key) uploadsInFlight.set(key, cancel);
     try {
       let files;
       try {
@@ -87,12 +94,14 @@ export function createMcpSession({
         if (e instanceof UploadError) return { result: errorResult(`Nothing was uploaded: ${e.message}`) };
         throw e;
       }
+      if (cancel.signal.aborted) return { result: errorResult('Cancelled. Nothing was uploaded.') };
       const sent = { ...args, files: files.map((f) => ({ name: f.name, type: f.type, data: f.bytes.toString('base64') })) };
       files = null;
       let r;
       try {
-        r = await browser.call('upload_file', sent, toolTimeoutMs('upload_file', sent), { connection: conn, fragments: true });
+        r = await browser.call('upload_file', sent, toolTimeoutMs('upload_file', sent), { connection: conn, fragments: true, signal: cancel.signal });
       } catch (e) {
+        if (e.code === 'cancelled') return { result: errorResult(`Cancelled. Nothing was uploaded: ${e.message}`) };
         if (e.code === 'no_browser') return { result: errorResult(NOT_CONNECTED) };
         const nothing = /Nothing was run|nothing was run/.test(e.message);
         if (e.code === 'timeout' || (e.code === 'disconnected' && !nothing)) {
@@ -108,10 +117,11 @@ export function createMcpSession({
       return { result: { content: sanitizeContent(r.data?.content) } };
     } finally {
       uploads.busy = false;
+      if (key) uploadsInFlight.delete(key);
     }
   }
 
-  async function callTool(params) {
+  async function callTool(params, requestId) {
     const name = params?.name;
     const tool = TOOLS.find((t) => t.name === name);
     if (!tool) return { error: { code: -32602, message: `Unknown tool: ${String(name).slice(0, 100)}` } };
@@ -119,7 +129,7 @@ export function createMcpSession({
     const invalid = validate(tool.inputSchema, args);
     if (invalid) return { result: errorResult(`Invalid arguments: ${invalid}.`) };
     if (unavailable) return { result: errorResult(unavailable) };
-    if (name === 'upload_file') return uploadFile(tool, args);
+    if (name === 'upload_file') return uploadFile(tool, args, requestId);
     let pinned; // for `file`: the browser connection when the call came, the only one it may go to
     if (name === 'evaluate') {
       // The service reads `file` and sends the script as `expression` (SPEC §5.2).
@@ -176,11 +186,17 @@ export function createMcpSession({
       case 'tools/list':
         return reply(id, { tools: mcpToolList(scriptsDir, uploadsDir) });
       case 'tools/call': {
-        const r = await callTool(params);
+        const r = await callTool(params, isRequest ? id : undefined);
         return r.error ? replyError(id, r.error.code, r.error.message) : reply(id, r.result);
       }
+      case 'notifications/cancelled': {
+        // Only uploads act on it (the other tools run to the end, SPEC §5.2).
+        const rid = params?.requestId;
+        if (typeof rid === 'string' || typeof rid === 'number') uploadsInFlight.get(JSON.stringify(rid))?.abort();
+        return;
+      }
       default:
-        if (method.startsWith('notifications/')) return; // initialized, cancelled, ...
+        if (method.startsWith('notifications/')) return; // initialized, ...
         if (isRequest) return replyError(id, -32601, `Method not found: ${method.slice(0, 100)}`);
     }
   }

@@ -2521,6 +2521,17 @@ test('upload_file stops before giving the files: pause, leaving the group, navig
   assert.match(r.message, /^Not done: cctether was paused, so nothing was given to the page\./);
   await nothing();
 
+  // Cancelled by the client in the middle.
+  await swEval('self.__cancel = false');
+  p = swEval(big(', { cancelled: () => self.__cancel }'));
+  await new Promise((res) => setTimeout(res, Math.min(150, took / 4)));
+  await swEval('self.__cancel = true');
+  r = await p;
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'cancelled');
+  assert.match(r.message, /^Not done: it was cancelled, so nothing was given to the page\./);
+  await nothing();
+
   // The tab leaves the group in the middle.
   p = swEval(big());
   await new Promise((res) => setTimeout(res, Math.min(150, took / 4)));

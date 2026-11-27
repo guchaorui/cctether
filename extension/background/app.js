@@ -120,7 +120,7 @@ function onConnectedChange(connected) {
 
 // --- tool calls from the server ----------------------------------------------------------
 
-async function onCall(tool, args, { live = () => true } = {}) {
+async function onCall(tool, args, { live = () => true, cancelled = () => false } = {}) {
   await ready;
   if (!TOOL_NAMES.includes(tool)) {
     return { ok: false, error: { code: 'bad_args', message: `Unknown tool "${String(tool).slice(0, 50)}". Update the cctether extension?` } };
@@ -130,7 +130,7 @@ async function onCall(tool, args, { live = () => true } = {}) {
     return { ok: false, error: { code: 'paused', message: PAUSED_MESSAGES[settings.pausedReason] ?? PAUSED_MESSAGES.user } };
   }
   try {
-    const r = await runTool(tool, args, { paused: () => settings.paused, live });
+    const r = await runTool(tool, args, { paused: () => settings.paused, live, cancelled });
     recordActivity(tool, r?.tab ?? null, true);
     return { ok: true, data: { content: r.content } };
   } catch (e) {

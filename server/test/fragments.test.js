@@ -7,7 +7,8 @@ import { createServer, connect } from 'node:net';
 import { once } from 'node:events';
 import { WebSocketServer } from 'ws';
 import { startGateway, makeExtension, sleep } from './helpers.js';
-import { fragmentSlices } from '../src/gateway.js';
+import { fragmentSlices, MAX_FRAME } from '../src/gateway.js';
+import { FRAGMENT_LIMITS } from '../../extension/background/connection.js';
 import {
   PROTO, LABEL_SERVER, b64u, fromB64u, proof, deriveSessionKeys, SessionCipher, FRAGMENT_BYTES,
   MAX_FRAGMENTED_TO_EXTENSION, MAX_FRAGMENTS,
@@ -15,6 +16,10 @@ import {
 
 const MiB = 1024 * 1024;
 const frameBytes = (s, i, n) => Buffer.byteLength(JSON.stringify({ t: 'frag', i, n, s })) + 16;
+
+test('both sides have the same fragment limits', () => {
+  assert.deepEqual(FRAGMENT_LIMITS, { MAX_FRAGMENTS, MAX_FRAGMENTED: MAX_FRAGMENTED_TO_EXTENSION, MAX_FRAME });
+});
 
 test('fragment slices: each sealed fragment fits its size, counting UTF-8 bytes after quoting', () => {
   // Characters JSON makes 6 bytes of, 3-byte characters, and surrogate pairs at every offset.
@@ -116,6 +121,20 @@ test('a slow transfer: the heartbeat keeps the connection, other calls wait for 
   ext.stop();
 });
 
+test('a very slow link: each fragment arrives within the heartbeat, so the connection holds', async (t) => {
+  // 128 KiB/s with a 1 s pong timeout stands for about 13 KB/s with the real 10 s.
+  const g = await startGateway();
+  const proxy = await slowProxy(g.port, 128 * 1024);
+  const ext = makeExtension({ url: `ws://127.0.0.1:${proxy.port}/cctether`, key: g.key, options: { heartbeatMs: 200, pongTimeoutMs: 1000 } });
+  t.after(() => { ext.stop(); proxy.close(); g.gw.close(); });
+  ext.start();
+  await ext.waitFor((s) => s.conn === 'connected');
+  const before = ext.statuses.length;
+  // Under one frame (so once sent whole), but over a fragment: it goes in fragments.
+  assert.equal((await g.gw.call('upload_file', { data: 'A'.repeat(600 * 1024) }, 30000, { fragments: true })).ok, true);
+  assert.ok(ext.statuses.slice(before).every((s) => s.conn === 'connected'), 'the connection dropped');
+});
+
 test('a call that times out while waiting behind fragments is never sent; the wait is bounded', async (t) => {
   const g = await startGateway();
   const proxy = await slowProxy(g.port, 5 * MiB);
@@ -144,6 +163,62 @@ test('a call that times out while waiting behind fragments is never sent; the wa
   assert.ok(!order.includes('click'), `the timed-out click was run: ${order.join(', ')}`);
   assert.deepEqual(order.slice(0, 2), ['upload_file', 'list_tabs']);
 });
+
+test('cancelling an upload: not sent while waiting, connection reset while being sent, the extension told after', async (t) => {
+  const g = await startGateway();
+  const proxy = await slowProxy(g.port, 5 * MiB);
+  const runs = [];
+  let release;
+  const ext = makeExtension({
+    url: `ws://127.0.0.1:${proxy.port}/cctether`, key: g.key,
+    onCall: async (tool, args, ctx) => {
+      runs.push(tool);
+      if (args.wait) await new Promise((r) => { release = r; });
+      return ctx.cancelled() ? { ok: false, error: { code: 'cancelled', message: 'Not done: it was cancelled.' } } : { ok: true, data: { content: [] } };
+    },
+  });
+  t.after(() => { ext.stop(); proxy.close(); g.gw.close(); });
+  ext.start();
+  await ext.waitFor((s) => s.conn === 'connected');
+
+  // Cancelled while its fragments are going out: the connection is dropped (the extension holds
+  // part of it), and it never runs.
+  let ac = new AbortController();
+  const big = g.gw.call('upload_file', { data: 'A'.repeat(28 * MiB) }, 30000, { fragments: true, signal: ac.signal });
+  // Cancelled while waiting behind those fragments: never sent.
+  const ac2 = new AbortController();
+  const waiting = g.gw.call('upload_file', { data: 'B' }, 30000, { signal: ac2.signal });
+  await sleep(300);
+  ac2.abort();
+  await assert.rejects(waiting, (e) => e.code === 'cancelled' && /Nothing was run/.test(e.message));
+  ac.abort();
+  await assert.rejects(big, (e) => e.code === 'cancelled');
+  assert.equal(g.gw.status().connected, false);
+  await ext.waitFor((s) => s.conn !== 'connected', 15000);
+  await ext.waitFor((s) => s.conn === 'connected', 15000);
+  assert.deepEqual(runs, [], 'neither ran');
+
+  // Cancelled after it all arrived: the extension is told, and its answer says what happened.
+  ac = new AbortController();
+  const late = g.gw.call('upload_file', { data: 'C'.repeat(200_000), wait: true }, 30000, { fragments: true, signal: ac.signal });
+  await until(() => runs.length === 1);
+  ac.abort();
+  await sleep(200);
+  release();
+  assert.deepEqual(await late, { ok: false, error: { code: 'cancelled', message: 'Not done: it was cancelled.' } });
+  // Already answered: cancelling does nothing.
+  ac = new AbortController();
+  assert.equal((await g.gw.call('upload_file', { data: 'D' }, 5000, { signal: ac.signal })).ok, true);
+  ac.abort();
+});
+
+async function until(fn, ms = 10000) {
+  const end = Date.now() + ms;
+  while (!fn()) {
+    if (Date.now() > end) throw new Error('timed out waiting');
+    await sleep(20);
+  }
+}
 
 test('the server gives up on a transfer that takes too long, and disconnects', async (t) => {
   const g = await startGateway();
@@ -245,7 +320,7 @@ test('the extension takes only well-formed fragment sequences', async (t) => {
     c.send({ t: 'call', id: 2, tool: 'list_tabs', args: {} });
     c.send({ t: 'frag', i: 1, n: 2, s: b });
   }));
-  await t.test('too many fragments', () => expectBroken(t, (c) => c.send({ t: 'frag', i: 0, n: 161, s: a })));
+  await t.test('too many fragments', () => expectBroken(t, (c) => c.send({ t: 'frag', i: 0, n: MAX_FRAGMENTS + 1, s: a })));
   await t.test('a single fragment', () => expectBroken(t, (c) => c.send({ t: 'frag', i: 0, n: 1, s: text })));
   await t.test('bad fields', () => expectBroken(t, (c) => c.send({ t: 'frag', i: '0', n: 2, s: a })));
   await t.test('a fragmented message that is not an upload_file call', () => expectBroken(t, (c) => {

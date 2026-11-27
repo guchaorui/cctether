@@ -306,6 +306,24 @@ test('upload_file: the service reads the files and sends their contents, in frag
     assert.match((await one.call(args)).content[0].text, re);
     assert.equal(uploads.busy, false);
   }
+  // The client cancels: the call gets an aborted signal (the gateway acts on it), the answer says so.
+  let seenSignal = null;
+  answer = () => new Promise((resolve, reject) => {
+    seenSignal = calls.at(-1).opts.signal;
+    seenSignal.addEventListener('abort', () => reject(new GatewayError('cancelled', 'It was cancelled before it reached the browser. Nothing was run.')));
+  });
+  const s2 = createMcpSession({ write: (l) => s2.out.push(JSON.parse(l)), browser, version: '0.8.0', uploadsDir: dir, uploads });
+  s2.out = [];
+  const pc = s2.handleLine(JSON.stringify({ jsonrpc: '2.0', id: 'up-7', method: 'tools/call', params: { name: 'upload_file', arguments: args } }));
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(seenSignal.aborted, false);
+  await s2.handleLine(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 'other' } }));
+  assert.equal(seenSignal.aborted, false, 'another request id does nothing');
+  await s2.handleLine(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 'up-7' } }));
+  await pc;
+  assert.match(s2.out.at(-1).result.content[0].text, /^Cancelled\. Nothing was uploaded/);
+  assert.equal(uploads.busy, false);
+
   // Another browser connected while the files were read: not sent to it.
   answer = async () => ({ ok: true, data: {} });
   const n = calls.length;

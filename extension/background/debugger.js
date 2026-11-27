@@ -335,12 +335,14 @@ class TabSession {
    * Call a function of the page library (page-scripts.js) in the isolated world. Library
    * functions report expected failures as { __error: { code, message } }. If the page's world
    * went away (a navigation), the call is tried again in the new one, unless `retry` is false.
+   * check(): throws if the call must not go out after all; run right before it is sent.
    */
-  async lib(fn, args = [], { timeoutMs = DEFAULT_TIMEOUT_MS, retry = true } = {}) {
+  async lib(fn, args = [], { timeoutMs = DEFAULT_TIMEOUT_MS, retry = true, check = null } = {}) {
     for (let attempt = 0; ; attempt++) {
       let ctx;
       try {
         ctx = await this.guardDialog(this.world());
+        check?.(); // last synchronous checks of the caller, right before the command goes out
         const r = await this.guardDialog(this.send('Runtime.callFunctionOn', {
           functionDeclaration: LIB_CALL,
           executionContextId: ctx,

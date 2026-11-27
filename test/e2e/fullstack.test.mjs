@@ -60,6 +60,8 @@ function mcpClient() {
   };
   return {
     request,
+    notify: (method, params) => p.stdin.write(JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n'),
+    lastId: () => id,
     async call(name, args = {}, ms) {
       const r = await request('tools/call', { name, arguments: args }, ms);
       if (r.error) throw new Error(`${name}: ${r.error.message}`);
@@ -245,6 +247,20 @@ test('upload_file: files from the uploads directory reach the page, in fragments
     { name: 'big data.bin', size: big.length, type: 'application/octet-stream', sha: createHash('sha256').update(big).digest('hex') },
     { name: '说明.txt', size: 6, type: 'text/plain', sha: createHash('sha256').update('你好').digest('hex') },
   ]);
+  // Cancelled by the client (Esc in Claude Code) right after asking: nothing reaches the page.
+  writeFileSync(join(dir, 'huge.bin'), randomBytes(15 * 1024 * 1024));
+  await mcp.call('evaluate', { tab, expression: 'window.got = null; true' });
+  const pending = mcp.request('tools/call', { name: 'upload_file', arguments: { tab, origin, selector: '#f', files: ['huge.bin'] } }, 60000);
+  await sleep(50);
+  mcp.notify('notifications/cancelled', { requestId: mcp.lastId() });
+  const cancelled = (await pending).result;
+  assert.equal(cancelled.isError, true);
+  assert.match(text(cancelled), /^(Cancelled\. Nothing was uploaded|Not done: it was cancelled, so nothing was given to the page)/);
+  // Cancelled while being sent, the connection was reset: wait until it is back.
+  await waitConn('connected');
+  await sleep(300);
+  assert.match(text(await mcp.call('evaluate', { tab, expression: 'window.got' })), /\nnull\n/);
+
   // Refused by the service before anything is sent: a path, another site.
   const path = await mcp.call('upload_file', { tab, origin, files: ['../config.json'] });
   assert.match(text(path), /^Nothing was uploaded: .*is a path/);
