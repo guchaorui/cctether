@@ -2459,7 +2459,7 @@ test('upload_file: file inputs (hidden, by label, the only one), events, accept,
   // The page shows the file in an alert while handling the events: the result names the dialog's
   // kind only, never its text.
   r = await ok('upload_file', { tab, origin, selector: '#echo', files: [file('named.txt', 'text/plain', 'x')] });
-  assert.match(r.text, /^Gave the file "named\.txt" .* to file#echo on .*, and while the page handled the input and change events \(synthetic\) it opened a JavaScript alert dialog: the rest of its handling runs once it is closed\. The page is frozen until it is closed: call handle_dialog first/);
+  assert.match(r.text, /^Gave the file "named\.txt" .* to file#echo on .*, and sent input and change \(synthetic events\), but the page opened a JavaScript alert dialog before they were confirmed: whatever of them has not run yet runs once the dialog is closed\. The page is frozen until it is closed: call handle_dialog first/);
   assert.doesNotMatch(r.text, /Got:/);
   await ok('handle_dialog', { tab, accept: true });
   r = await ok('upload_file', { tab, origin, selector: '#echoText', files: [file('secret.txt', 'text/plain', 'SECRET-123')] });

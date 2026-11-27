@@ -34,7 +34,7 @@ test('fragment slices: each sealed fragment fits its size, counting UTF-8 bytes 
   // Mostly-ASCII content (base64) fills the fragments: 20 MiB of files (26.7 MiB of base64) fit.
   const b64 = JSON.stringify({ data: 'A'.repeat(Math.ceil((20 * MiB) / 3) * 4) });
   const n = fragmentSlices(b64).length;
-  assert.ok(n <= Math.ceil(b64.length / FRAGMENT_BYTES) + 1 && n <= MAX_FRAGMENTS, `${n} fragments for 20 MiB of files`);
+  assert.ok(n <= Math.ceil(b64.length / (FRAGMENT_BYTES - 64)) && n <= MAX_FRAGMENTS, `${n} fragments for 20 MiB of files`);
   // The limits: bytes of frames in all, and the number of fragments.
   assert.throws(() => fragmentSlices('A'.repeat(MAX_FRAGMENTED_TO_EXTENSION + 1)), /too large/);
   assert.throws(() => fragmentSlices('A'.repeat(3 * MiB), { maxCount: 2 }), /too large/);
@@ -122,16 +122,16 @@ test('a slow transfer: the heartbeat keeps the connection, other calls wait for 
 });
 
 test('a very slow link: each fragment arrives within the heartbeat, so the connection holds', async (t) => {
-  // 128 KiB/s with a 1 s pong timeout stands for about 13 KB/s with the real 10 s.
+  // 32 KiB/s with a 1 s pong timeout stands for about 3.2 KiB/s with the real 10 s.
   const g = await startGateway();
-  const proxy = await slowProxy(g.port, 128 * 1024);
+  const proxy = await slowProxy(g.port, 32 * 1024);
   const ext = makeExtension({ url: `ws://127.0.0.1:${proxy.port}/cctether`, key: g.key, options: { heartbeatMs: 200, pongTimeoutMs: 1000 } });
   t.after(() => { ext.stop(); proxy.close(); g.gw.close(); });
   ext.start();
   await ext.waitFor((s) => s.conn === 'connected');
   const before = ext.statuses.length;
   // Under one frame (so once sent whole), but over a fragment: it goes in fragments.
-  assert.equal((await g.gw.call('upload_file', { data: 'A'.repeat(600 * 1024) }, 30000, { fragments: true })).ok, true);
+  assert.equal((await g.gw.call('upload_file', { data: 'A'.repeat(100 * 1024) }, 30000, { fragments: true })).ok, true);
   assert.ok(ext.statuses.slice(before).every((s) => s.conn === 'connected'), 'the connection dropped');
 });
 

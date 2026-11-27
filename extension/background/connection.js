@@ -29,7 +29,7 @@ const MAX_MESSAGE_BYTES = 30 * 1024 * 1024;
 // most MAX_FRAGMENTS of them and MAX_FRAGMENTED bytes of frames, within FRAG_TIME_MS.
 const MAX_FRAME = 1024 * 1024;
 const MAX_HANDSHAKE_TEXT = 4096;
-const MAX_FRAGMENTS = 544;
+const MAX_FRAGMENTS = 2200;
 const MAX_FRAGMENTED = 32 * 1024 * 1024;
 const FRAG_TIME_MS = 5 * 60_000;
 /** Frames waiting to be decrypted, in bytes: more than one fragmented message's worth is wrong. */

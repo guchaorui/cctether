@@ -30,12 +30,12 @@ export const MAX_TO_EXTENSION = 1024 * 1024;
  */
 export const MAX_FRAGMENTED_TO_EXTENSION = 32 * 1024 * 1024;
 /**
- * Fragments are smaller than a frame may be: the extension counts each one arriving as a sign of
- * life. A link too slow to bring one within the heartbeat's 10 s (under about 6.5 KB/s) is too
- * slow for the service's own deadline anyway, which then gives up cleanly first.
+ * Fragments are much smaller than a frame may be: the extension counts each one arriving as a
+ * sign of life, so one must arrive within the heartbeat's 10 s even on a very slow link (16 KiB:
+ * down to about 1.6 KB/s).
  */
-export const FRAGMENT_BYTES = 64 * 1024;
-export const MAX_FRAGMENTS = 544;
+export const FRAGMENT_BYTES = 16 * 1024;
+export const MAX_FRAGMENTS = 2200;
 export const HANDSHAKE_TIMEOUT_MS = 5000;
 export const IDLE_TIMEOUT_MS = 60000;
 

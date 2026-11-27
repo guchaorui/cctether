@@ -108,11 +108,12 @@ async function openedTabs(w, newTabs) {
 
 /**
  * After an action: wait briefly for a navigation to start; if one does, wait for it to load.
- * Returns a sentence about what happened ('' if nothing). quiet: say only where (origin and
- * path) and what kind of dialog, no title, query or dialog text (upload_file: the page has the
- * files by then and could put them there).
+ * Returns a sentence about what happened ('' if nothing). quiet: { origin } known before the
+ * action: say only whether the page stayed on it, and what kind of dialog opened, nothing the
+ * page could have written (upload_file: the page has the files by then, and could put them in
+ * an address, a title or a dialog).
  */
-export async function settle(s, w, tabId, beforeUrl, { startMs = 400, loadMs = 10000, newTabs = null, quiet = false } = {}) {
+export async function settle(s, w, tabId, beforeUrl, { startMs = 400, loadMs = 10000, newTabs = null, quiet = null } = {}) {
   const started = await w.until((st) => st.requested || st.sameDoc || st.committed, startMs);
   let loading = false;
   if (started && !w.st.sameDoc) loading = !(await w.until((st) => st.loaded || st.stopped || st.sameDoc, loadMs));
@@ -122,7 +123,11 @@ export async function settle(s, w, tabId, beforeUrl, { startMs = 400, loadMs = 1
   if (t.url !== beforeUrl || w.st.committed) {
     const status = w.st.status ? ` (HTTP ${w.st.status})` : '';
     let where = t.url;
-    if (quiet) { try { const u = new URL(t.url); where = u.origin + u.pathname; } catch { where = 'another page'; } }
+    if (quiet) {
+      let same = false;
+      try { same = new URL(t.url).origin === quiet.origin; } catch { /* not a web address */ }
+      where = same ? `another address on ${quiet.origin}` : 'another site (list_tabs shows which)';
+    }
     notes.push(loading
       ? `The page is navigating to ${where} (still loading after ${loadMs / 1000} s).`
       : `The page ${w.st.committed ? 'navigated' : 'changed its URL'} to ${where}${status}${quiet ? '' : `: ${q(t.title || '(no title)', 100)}`}.`);

@@ -25,8 +25,8 @@ const FRAG_HIGH_WATER = 256 * 1024;
 const FRAG_POLL_MS = 10;
 /** Messages that may wait for the fragments to be out; more are refused as busy. */
 const MAX_HELD = 64;
-/** Most bytes of a fragment's envelope around its JSON-quoted slice: {"t":"frag","i":543,"n":544,"s":…}. */
-const FRAG_ENVELOPE = 33;
+/** Most bytes of a fragment's envelope around its JSON-quoted slice: {"t":"frag","i":2199,"n":2200,"s":…}. */
+const FRAG_ENVELOPE = 35;
 
 const isHighSurrogate = (c) => c >= 0xd800 && c <= 0xdbff;
 
