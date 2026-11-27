@@ -8,7 +8,7 @@ import { EventEmitter } from 'node:events';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
   PROTO, LABEL_SERVER, LABEL_CLIENT, CLOSE, HANDSHAKE_TIMEOUT_MS, IDLE_TIMEOUT_MS,
-  MAX_FROM_EXTENSION, MAX_TO_EXTENSION, MAX_FRAGMENTED_TO_EXTENSION, MAX_FRAGMENTS, b64u, fromB64u, newNonce,
+  MAX_FROM_EXTENSION, MAX_TO_EXTENSION, MAX_FRAGMENTED_TO_EXTENSION, MAX_FRAGMENTS, FRAGMENT_BYTES, b64u, fromB64u, newNonce,
   proof, proofMatches, deriveSessionKeys, SessionCipher, TooLargeError,
 } from './protocol.js';
 import { FailureLimiter, clientIp } from './ratelimit.js';
@@ -23,8 +23,10 @@ const MAX_PENDING_HANDSHAKES = 16;
  */
 const FRAG_HIGH_WATER = 256 * 1024;
 const FRAG_POLL_MS = 10;
-/** Most bytes of a fragment's envelope around its JSON-quoted slice: {"t":"frag","i":63,"n":64,"s":…}. */
-const FRAG_ENVELOPE = 31;
+/** Messages that may wait for the fragments to be out; more are refused as busy. */
+const MAX_HELD = 64;
+/** Most bytes of a fragment's envelope around its JSON-quoted slice: {"t":"frag","i":159,"n":160,"s":…}. */
+const FRAG_ENVELOPE = 33;
 
 const isHighSurrogate = (c) => c >= 0xd800 && c <= 0xdbff;
 
@@ -34,7 +36,7 @@ const isHighSurrogate = (c) => c >= 0xd800 && c <= 0xdbff;
  * TooLargeError if it needs more than `maxCount` fragments or `totalMax` bytes of frames.
  * @returns {string[]} the slices, in order
  */
-export function fragmentSlices(text, { frameMax = MAX_TO_EXTENSION, totalMax = MAX_FRAGMENTED_TO_EXTENSION, maxCount = MAX_FRAGMENTS } = {}) {
+export function fragmentSlices(text, { frameMax = FRAGMENT_BYTES, totalMax = MAX_FRAGMENTED_TO_EXTENSION, maxCount = MAX_FRAGMENTS } = {}) {
   const room = frameMax - 16 - FRAG_ENVELOPE;
   const slices = [];
   let total = 0;
@@ -302,6 +304,7 @@ export class BrowserConnection extends EventEmitter {
   #closed = false;
   /** True while a fragmented message goes out; other messages but pongs wait in #held. */
   #fragmenting = false;
+  /** [{ plain, id? }]: a call's entry is taken out when it times out, so it is never sent late. */
   #held = [];
 
   #idleTimeoutMs;
@@ -348,9 +351,14 @@ export class BrowserConnection extends EventEmitter {
       } catch (e) {
         return reject(new GatewayError('too_large', e.message));
       }
+      if (!slices && this.#fragmenting && this.#held.length >= MAX_HELD) {
+        return reject(new GatewayError('busy', 'The connection to the browser is busy sending a large upload. Try again when it is done.'));
+      }
       const sending = { on: !!slices };
       const timer = setTimeout(() => {
         this.#pending.delete(id);
+        // Still waiting behind fragments: never sent now (the caller is told it timed out).
+        this.#held = this.#held.filter((h) => h.id !== id);
         // The extension holds part of a message: only a new connection starts it afresh.
         if (sending.on) {
           this.log('timed out sending a large message to the browser: disconnecting');
@@ -362,7 +370,7 @@ export class BrowserConnection extends EventEmitter {
       }, timeoutMs);
       this.#pending.set(id, { resolve, reject, timer, sending });
       if (slices) this.#sendFragments(slices, sending);
-      else this.#queue(plain, false);
+      else this.#queue(plain, false, id);
     });
   }
 
@@ -395,9 +403,9 @@ export class BrowserConnection extends EventEmitter {
   }
 
   /** Seal and send now, or (while fragments go out, except a pong) once they are all sent. */
-  #queue(plain, urgent) {
+  #queue(plain, urgent, id) {
     if (this.#fragmenting && !urgent) {
-      this.#held.push(plain);
+      this.#held.push({ plain, id });
       return;
     }
     this.#ws.send(this.#cipher.sealBytes(plain, MAX_TO_EXTENSION));
@@ -424,9 +432,11 @@ export class BrowserConnection extends EventEmitter {
     this.#fragmenting = false;
     const held = this.#held;
     this.#held = [];
-    for (const p of held) {
+    for (const h of held) {
       if (this.#closed) return;
-      this.#queue(p, false);
+      // A call is sent only if its caller is still waiting for it.
+      if (h.id !== undefined && !this.#pending.has(h.id)) continue;
+      this.#queue(h.plain, false);
     }
   }
 

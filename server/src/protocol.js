@@ -28,7 +28,12 @@ export const MAX_TO_EXTENSION = 1024 * 1024;
  * with `frag: true` in its (encrypted) info message.
  */
 export const MAX_FRAGMENTED_TO_EXTENSION = 32 * 1024 * 1024;
-export const MAX_FRAGMENTS = 64;
+/**
+ * Fragments are smaller than a frame may be: the extension counts each one arriving as a sign of
+ * life, so on a slow link (down to about 30 KB/s) one never takes as long as a missed pong.
+ */
+export const FRAGMENT_BYTES = 256 * 1024;
+export const MAX_FRAGMENTS = 160;
 export const HANDSHAKE_TIMEOUT_MS = 5000;
 export const IDLE_TIMEOUT_MS = 60000;
 

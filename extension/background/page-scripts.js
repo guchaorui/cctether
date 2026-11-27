@@ -2168,7 +2168,14 @@ export function cctetherPageLib() {
   // uploadAssign. The bytes are kept for that one upload only (uploadDrop, or the next upload).
   const UPLOAD_MAX = 20 * 1024 * 1024;
   const isFileInput = (el) => !!el && el.nodeType === 1 && el.localName === 'input' && String(el.type).toLowerCase() === 'file';
-  let upload = null; // { id, sizes, parts: Uint8Array[][], got: number[], dt }
+  let upload = null; // { id, sizes, parts: Uint8Array[][], got: number[], dt, timer }
+  /** The bytes are dropped after this even if nobody says so (the cleanup call can fail, e.g. under a dialog). */
+  const UPLOAD_KEEP_MS = 60_000;
+  function setUpload(u) {
+    if (upload) clearTimeout(upload.timer);
+    upload = u;
+    if (u) u.timer = setTimeout(() => { if (upload === u) upload = null; }, UPLOAD_KEEP_MS);
+  }
   const GONE = 'The page navigated or reloaded during the upload, so nothing was given to it.';
 
   function fileInputs() {
@@ -2267,17 +2274,17 @@ export function cctetherPageLib() {
   function uploadChunk(o) {
     if (o.doc !== docToken) return ERR('navigated', GONE);
     if (o.begin) {
-      upload = null;
+      setUpload(null);
       const total = o.sizes.reduce((a, b) => a + b, 0);
       if (!(total <= UPLOAD_MAX)) return ERR('bad_args', 'The files are too large.');
-      upload = { id: o.id, sizes: o.sizes, parts: o.sizes.map(() => []), got: o.sizes.map(() => 0), dt: null };
+      setUpload({ id: o.id, sizes: o.sizes, parts: o.sizes.map(() => []), got: o.sizes.map(() => 0), dt: null });
       return true;
     }
     const u = upload;
     if (!u || u.id !== o.id || !u.parts) return ERR('navigated', GONE);
     const bytes = fromBase64(o.b64);
     if (!(o.file >= 0 && o.file < u.sizes.length) || u.got[o.file] + bytes.length > u.sizes[o.file]) {
-      upload = null;
+      setUpload(null);
       return ERR('internal', 'cctether passed a file into the page wrongly, so nothing was given to it.');
     }
     u.parts[o.file].push(bytes);
@@ -2292,15 +2299,15 @@ export function cctetherPageLib() {
   function uploadAssign(o) {
     const u = upload;
     if (!u || u.id !== o.id || !u.parts || o.doc !== docToken) return ERR('navigated', GONE);
-    if (u.got.some((g, i) => g !== u.sizes[i])) { upload = null; return ERR('internal', 'Part of a file did not reach the page, so nothing was given to it.'); }
+    if (u.got.some((g, i) => g !== u.sizes[i])) { setUpload(null); return ERR('internal', 'Part of a file did not reach the page, so nothing was given to it.'); }
     const el = resolve({ ref: o.ref, doc: o.doc });
-    if (el.__error) { upload = null; return ERR('stale_ref', 'The element was removed (or its frame navigated) during the upload, so nothing was given to the page. Find it again, then retry.'); }
+    if (el.__error) { setUpload(null); return ERR('stale_ref', 'The element was removed (or its frame navigated) during the upload, so nothing was given to the page. Find it again, then retry.'); }
     const d = el.ownerDocument;
-    if (realmOrigin(d) !== o.origin || realmOrigin(document) !== o.origin) { upload = null; return ERR('navigated', `The page is no longer on ${o.origin}, so nothing was given to it.`); }
-    if (isFileInput(el) !== !o.drop) { upload = null; return ERR('stale_ref', 'The element changed during the upload, so nothing was given to the page. Find it again, then retry.'); }
+    if (realmOrigin(d) !== o.origin || realmOrigin(document) !== o.origin) { setUpload(null); return ERR('navigated', `The page is no longer on ${o.origin}, so nothing was given to it.`); }
+    if (isFileInput(el) !== !o.drop) { setUpload(null); return ERR('stale_ref', 'The element changed during the upload, so nothing was given to the page. Find it again, then retry.'); }
     if (!o.drop) {
       const why = inputRefusal(el, o.files.length);
-      if (why) { upload = null; return ERR('bad_args', `Not done: ${why}.`); }
+      if (why) { setUpload(null); return ERR('bad_args', `Not done: ${why}.`); }
     }
     const W = d.defaultView;
     const dt = new W.DataTransfer();
@@ -2320,10 +2327,12 @@ export function cctetherPageLib() {
   /** Fire input and change on the file input, or dragenter, dragover and drop on the drop zone. */
   function uploadDispatch(o) {
     const u = upload;
-    upload = null;
-    if (!u || u.id !== o.id || o.doc !== docToken) return ERR('navigated', 'The page navigated or reloaded before the events were fired.');
+    setUpload(null);
+    if (!u || u.id !== o.id || o.doc !== docToken) return ERR('navigated', 'the page navigated or reloaded before the events were fired');
     const el = resolve({ ref: o.ref, doc: o.doc });
-    if (el.__error) return ERR('stale_ref', 'The element was removed before the events were fired.');
+    if (el.__error) return ERR('stale_ref', 'the element was removed before the events were fired');
+    if (realmOrigin(el.ownerDocument) !== o.origin || realmOrigin(document) !== o.origin) return ERR('navigated', `the page is no longer on ${o.origin}`);
+    if (o.drop && !u.dt) return ERR('internal', 'the files for the drop were not ready');
     const W = el.ownerDocument.defaultView;
     if (!o.drop) {
       el.dispatchEvent(new W.Event('input', { bubbles: true, composed: true }));
@@ -2341,7 +2350,7 @@ export function cctetherPageLib() {
 
   /** Forget the bytes of upload o.id (it stopped). */
   function uploadDrop(o) {
-    if (upload && upload.id === o.id) upload = null;
+    if (upload && upload.id === o.id) setUpload(null);
     return true;
   }
 

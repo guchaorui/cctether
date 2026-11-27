@@ -61,33 +61,41 @@ export function badName(name) {
 
 const uid = () => (process.getuid ? process.getuid() : null);
 
+// Messages name "the uploads directory" (its path is in the tool's description), not the path.
+const MISSING = 'The uploads directory does not exist (cctether makes it when it starts, mode 700). Create it, copy the files into it, then try again.';
+const NOT_PRIVATE = 'The uploads directory is not a private directory of this user (it is a link, or others can use it), so upload_file is off. Make it a plain directory with mode 700.';
+
 /**
- * The real path of the uploads directory, after checking it is a private directory of this user
- * and that no directory above it can be changed by another user (root's and this user's own are
- * fine, and so are sticky ones like /tmp, where others can't rename what isn't theirs).
+ * The real path of the uploads directory, after checking that it, as named and as resolved, is
+ * a private directory of this user, and that no directory above the resolved one can be changed
+ * by another user (root's and this user's own are fine, and so are sticky ones like /tmp, where
+ * others can't rename what isn't theirs). Then nobody else can swap anything on the path the
+ * files are opened by.
  */
 async function checkedDir(dir) {
   const ok = await privateDir(dir);
-  if (ok === null) fail(`The uploads directory ${dir} does not exist. Create it (mode 700), copy the files into it, then try again.`);
-  if (!ok) fail(`The uploads directory ${dir} is not a private directory of this user (it is a link, or others can use it), so upload_file is off. Make it a plain directory with mode 700.`);
+  if (ok === null) fail(MISSING);
+  if (!ok) fail(NOT_PRIVATE);
   let real;
   try {
     real = await realpath(dir);
   } catch {
-    fail(`The uploads directory ${dir} does not exist. Create it (mode 700), copy the files into it, then try again.`);
+    fail(MISSING);
   }
+  // What the path resolves to now (a directory above may have been swapped since the check).
+  if ((await privateDir(real)) !== true) fail(NOT_PRIVATE);
   const me = uid();
   for (let d = dirname(real); ; d = dirname(d)) {
     let st;
     try {
       st = await lstat(d);
     } catch (e) {
-      fail(`Can't check ${d}, a directory above the uploads directory (${e.code || 'error'}).`);
+      fail(`Can't check a directory above the uploads directory (${e.code || 'error'}).`);
     }
     const owner = me === null || st.uid === 0 || st.uid === me;
     const othersWrite = (st.mode & 0o022) !== 0 && (st.mode & 0o1000) === 0;
     if (!st.isDirectory() || !owner || othersWrite) {
-      fail(`${d}, a directory above the uploads directory, can be changed by another user, so upload_file is off: files there could be swapped while being read.`);
+      fail(`A directory above the uploads directory (${d}) can be changed by another user, so upload_file is off: files there could be swapped while being read.`);
     }
     if (d === dirname(d)) break;
   }
@@ -121,7 +129,7 @@ export async function readUploads(names, dir, { maxBytes = UPLOAD_MAX_BYTES } = 
       // block the open (fstat then refuses it).
       fh = await open(p, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0) | (constants.O_NOCTTY ?? 0));
     } catch (e) {
-      if (e.code === 'ENOENT') fail(`There is no file ${JSON.stringify(name)} in the uploads directory, ${dir}. Copy it there first.`);
+      if (e.code === 'ENOENT') fail(`There is no file ${JSON.stringify(name)} in the uploads directory. Copy it there first.`);
       if (e.code === 'ELOOP' || e.code === 'EMLINK') fail(`${JSON.stringify(name)} in the uploads directory is a link, which upload_file doesn't take. Copy the file itself there.`);
       fail(`Can't open ${JSON.stringify(name)} in the uploads directory (${e.code || 'error'}).`);
     }

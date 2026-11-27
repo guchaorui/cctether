@@ -29,7 +29,7 @@ const MAX_MESSAGE_BYTES = 30 * 1024 * 1024;
 // most MAX_FRAGMENTS of them and MAX_FRAGMENTED bytes of frames, within FRAG_TIME_MS.
 const MAX_FRAME = 1024 * 1024;
 const MAX_HANDSHAKE_TEXT = 4096;
-const MAX_FRAGMENTS = 64;
+const MAX_FRAGMENTS = 160;
 const MAX_FRAGMENTED = 32 * 1024 * 1024;
 const FRAG_TIME_MS = 5 * 60_000;
 /** Frames waiting to be decrypted, in bytes: more than one fragmented message's worth is wrong. */
@@ -41,7 +41,8 @@ const CLOSE_CODE_ERRORS = { 4401: 'auth_rejected', 4403: 'origin_rejected', 4409
 /**
  * @typedef {object} ConnectionOptions
  * @property {(patch: object) => void} onStatus   receives partial Status updates (see shared/contract.js)
- * @property {(tool: string, args: object) => Promise<{ok: true, data: any}|{ok: false, error: {code: string, message: string}}>} onCall
+ * @property {(tool: string, args: object, ctx: { live: () => boolean }) => Promise<{ok: true, data: any}|{ok: false, error: {code: string, message: string}}>} onCall
+ *   ctx.live(): whether the connection the call came on is still up (else its result can't be sent)
  * @property {() => object} getInfo               { extension, browser, platform } sent after connecting
  * @property {(connected: boolean) => void} [onConnectedChange]
  * @property {(url: string) => any} [createSocket]
@@ -398,7 +399,7 @@ export class Connection {
       result = { ok: false, error: { code: 'bad_args', message: 'Malformed call.' } };
     } else {
       try {
-        result = await this.#o.onCall(m.tool, m.args);
+        result = await this.#o.onCall(m.tool, m.args, { live: () => gen === this.#gen && this.#phase === 'connected' });
       } catch (e) {
         result = { ok: false, error: { code: 'internal', message: `Unexpected extension error: ${e?.message ?? e}` } };
       }

@@ -2527,7 +2527,7 @@ test('upload_file stops before giving the files: pause, leaving the group, navig
   await swEval(`chrome.tabs.ungroup(${tab})`);
   r = await p;
   assert.equal(r.ok, false);
-  assert.match(r.message, /cctether no longer has the tab|left the cctether group|no longer shared|detached/i);
+  assert.match(r.message, /^Not done: (cctether no longer has the tab|the tab left the cctether group).*, so nothing was given to the page\./);
   await rejoin(tab);
   await nothing();
 

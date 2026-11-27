@@ -120,7 +120,7 @@ function onConnectedChange(connected) {
 
 // --- tool calls from the server ----------------------------------------------------------
 
-async function onCall(tool, args) {
+async function onCall(tool, args, { live = () => true } = {}) {
   await ready;
   if (!TOOL_NAMES.includes(tool)) {
     return { ok: false, error: { code: 'bad_args', message: `Unknown tool "${String(tool).slice(0, 50)}". Update the cctether extension?` } };
@@ -130,7 +130,7 @@ async function onCall(tool, args) {
     return { ok: false, error: { code: 'paused', message: PAUSED_MESSAGES[settings.pausedReason] ?? PAUSED_MESSAGES.user } };
   }
   try {
-    const r = await runTool(tool, args, { paused: () => settings.paused });
+    const r = await runTool(tool, args, { paused: () => settings.paused, live });
     recordActivity(tool, r?.tab ?? null, true);
     return { ok: true, data: { content: r.content } };
   } catch (e) {
@@ -149,7 +149,9 @@ async function onCall(tool, args) {
 function recordActivity(tool, tab, ok, error) {
   let host = '';
   try { host = tab?.url ? new URL(tab.url).host : ''; } catch {}
-  const entry = { t: Date.now(), tool, tab: tab ? { id: tab.id, title: String(tab.title ?? '').slice(0, 200), host } : null, ok };
+  // An upload's entry keeps the site only: a page that got the files could put them in its title.
+  const title = tool === 'upload_file' ? '' : String(tab?.title ?? '').slice(0, 200);
+  const entry = { t: Date.now(), tool, tab: tab ? { id: tab.id, title, host } : null, ok };
   if (error) entry.error = error;
   activity = [entry, ...activity].slice(0, ACTIVITY_MAX);
   chrome.storage.session.set({ [KEYS.activity]: activity }).catch(() => {});

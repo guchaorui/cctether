@@ -9,27 +9,27 @@ import { WebSocketServer } from 'ws';
 import { startGateway, makeExtension, sleep } from './helpers.js';
 import { fragmentSlices } from '../src/gateway.js';
 import {
-  PROTO, LABEL_SERVER, b64u, fromB64u, proof, deriveSessionKeys, SessionCipher, MAX_TO_EXTENSION,
-  MAX_FRAGMENTED_TO_EXTENSION,
+  PROTO, LABEL_SERVER, b64u, fromB64u, proof, deriveSessionKeys, SessionCipher, FRAGMENT_BYTES,
+  MAX_FRAGMENTED_TO_EXTENSION, MAX_FRAGMENTS,
 } from '../src/protocol.js';
 
 const MiB = 1024 * 1024;
 const frameBytes = (s, i, n) => Buffer.byteLength(JSON.stringify({ t: 'frag', i, n, s })) + 16;
 
-test('fragment slices: each sealed fragment fits a frame, counting UTF-8 bytes after quoting', () => {
+test('fragment slices: each sealed fragment fits its size, counting UTF-8 bytes after quoting', () => {
   // Characters JSON makes 6 bytes of, 3-byte characters, and surrogate pairs at every offset.
   const text = JSON.stringify({ t: 'call', id: 1, tool: 'upload_file', args: { s: '\u0001'.repeat(300_000) + '中'.repeat(400_000) + '😀'.repeat(300_000) + 'A'.repeat(2 * MiB) } });
   const slices = fragmentSlices(text);
   assert.equal(slices.join(''), text);
   slices.forEach((s, i) => {
-    assert.ok(frameBytes(s, i, slices.length) <= MAX_TO_EXTENSION, `fragment ${i} is ${frameBytes(s, i, slices.length)} bytes`);
+    assert.ok(frameBytes(s, i, slices.length) <= FRAGMENT_BYTES, `fragment ${i} is ${frameBytes(s, i, slices.length)} bytes`);
     const last = s.charCodeAt(s.length - 1);
     assert.ok(!(last >= 0xd800 && last <= 0xdbff), `fragment ${i} ends in half a surrogate pair`);
   });
-  // Mostly-ASCII content (base64) fills the frames.
-  const b64 = JSON.stringify({ data: 'A'.repeat(20 * MiB) });
+  // Mostly-ASCII content (base64) fills the fragments: 20 MiB of files (26.7 MiB of base64) fit.
+  const b64 = JSON.stringify({ data: 'A'.repeat(Math.ceil((20 * MiB) / 3) * 4) });
   const n = fragmentSlices(b64).length;
-  assert.ok(n <= 21, `${n} fragments for 20 MiB`);
+  assert.ok(n <= Math.ceil(b64.length / FRAGMENT_BYTES) + 1 && n <= MAX_FRAGMENTS, `${n} fragments for 20 MiB of files`);
   // The limits: bytes of frames in all, and the number of fragments.
   assert.throws(() => fragmentSlices('A'.repeat(MAX_FRAGMENTED_TO_EXTENSION + 1)), /too large/);
   assert.throws(() => fragmentSlices('A'.repeat(3 * MiB), { maxCount: 2 }), /too large/);
@@ -114,6 +114,35 @@ test('a slow transfer: the heartbeat keeps the connection, other calls wait for 
   assert.deepEqual(order, ['upload_file', 'list_tabs'], 'the other call came after the fragments');
   assert.ok(ext.statuses.slice(before).every((s) => s.conn === 'connected'), `the connection dropped: ${JSON.stringify(ext.statuses.slice(before).map((s) => s.conn))}`);
   ext.stop();
+});
+
+test('a call that times out while waiting behind fragments is never sent; the wait is bounded', async (t) => {
+  const g = await startGateway();
+  const proxy = await slowProxy(g.port, 5 * MiB);
+  const order = [];
+  const ext = makeExtension({
+    url: `ws://127.0.0.1:${proxy.port}/cctether`, key: g.key,
+    onCall: async (tool) => { order.push(tool); return { ok: true, data: { content: [] } }; },
+  });
+  t.after(() => { ext.stop(); proxy.close(); g.gw.close(); });
+  ext.start();
+  await ext.waitFor((s) => s.conn === 'connected');
+  // Big enough to outlast the buffers on the way, so the service really holds fragments back.
+  const up = g.gw.call('upload_file', { data: 'A'.repeat(28 * MiB) }, 30000, { fragments: true });
+  await sleep(200);
+  // It times out before the fragments are out: the caller hears so, and it is never run.
+  await assert.rejects(g.gw.call('click', { x: 1, y: 1 }, 300), (e) => e.code === 'timeout');
+  const later = g.gw.call('list_tabs', {}, 30000);
+  // More waiting calls than the queue takes are refused at once.
+  const extra = [];
+  for (let i = 0; i < 70; i++) extra.push(g.gw.call('find', { selector: 'a' }, 30000).then(() => 'sent', (e) => e.code));
+  assert.equal((await up).ok, true);
+  assert.equal((await later).ok, true);
+  const outcomes = await Promise.all(extra);
+  assert.ok(outcomes.includes('busy') && outcomes.includes('sent'), JSON.stringify(outcomes));
+  await sleep(200);
+  assert.ok(!order.includes('click'), `the timed-out click was run: ${order.join(', ')}`);
+  assert.deepEqual(order.slice(0, 2), ['upload_file', 'list_tabs']);
 });
 
 test('the server gives up on a transfer that takes too long, and disconnects', async (t) => {
@@ -216,7 +245,7 @@ test('the extension takes only well-formed fragment sequences', async (t) => {
     c.send({ t: 'call', id: 2, tool: 'list_tabs', args: {} });
     c.send({ t: 'frag', i: 1, n: 2, s: b });
   }));
-  await t.test('too many fragments', () => expectBroken(t, (c) => c.send({ t: 'frag', i: 0, n: 65, s: a })));
+  await t.test('too many fragments', () => expectBroken(t, (c) => c.send({ t: 'frag', i: 0, n: 161, s: a })));
   await t.test('a single fragment', () => expectBroken(t, (c) => c.send({ t: 'frag', i: 0, n: 1, s: text })));
   await t.test('bad fields', () => expectBroken(t, (c) => c.send({ t: 'frag', i: '0', n: 2, s: a })));
   await t.test('a fragmented message that is not an upload_file call', () => expectBroken(t, (c) => {
