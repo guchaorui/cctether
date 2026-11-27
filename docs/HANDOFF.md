@@ -52,12 +52,12 @@
 
 | 在哪 | 版本 | 说明 |
 |---|---|---|
-| 仓库 `main` | 0.8.0 | 已公开（`guchaorui/cctether`），GitHub 上的测试全过 |
-| npm（`cctether`） | 0.8.0 | 2026-11-09 起由 GitHub Actions 可信发布，带来源证明。0.6.2、0.7.0、0.8.0 的包都和 Release 里的逐字节一致 |
-| GitHub Release | v0.8.0 | 附插件 zip、npm 包和校验和；两个插件 zip 和本地打的一致 |
-| Chrome 应用商店 | 0.5.1 | **0.8.0 的包等主人上传**（`dist/cctether-extension-0.8.0-store.zip`，也在 GitHub Release 里；0.6.x、0.7.0 的都不用传）。0.5.1 2026-11-26 过审，和 v0.5.1 逐文件核对过（只有 manifest 按预期不同，多了 `_metadata/`）。[商店页面](https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib)，插件 ID `mbkadoolgknacadjkfjjajldmllbkdib` |
-| 主人的服务器 | 0.8.0 | 2026-11-27 从 npm 装的，`cctether check` 全过，上传目录已建好（700）。在这台服务器上开着的 Claude Code 会话里直接调了一次 `upload_file`（0.6.2 让它不用重开就出现了）：插件还是 0.5.1，在读文件之前就说「请更新插件」，符合预期（细节在 `CLAUDE.local.md`） |
-| 主人的 Mac | 商店版 0.5.1 | Chrome 158，连接正常（0.6.2、0.8.0 升级服务时断开十几秒后都自己连回来了） |
+| 仓库 `main` | 0.8.2 | 已公开（`guchaorui/cctether`），GitHub 上的测试全过 |
+| npm（`cctether`） | 0.8.2 | 2026-11-09 起由 GitHub Actions 可信发布，带来源证明。0.8.1、0.8.2 的包都和 Release 里的逐字节一致 |
+| GitHub Release | v0.8.2 | 附插件 zip、npm 包和校验和；两个插件 zip 和本地打的一致 |
+| Chrome 应用商店 | 0.8.0 | 2026-11-27 过审（主人告知），主人 Mac 已自动更新到 0.8.0。0.8.1、0.8.2 只改服务端，不用传新包。[商店页面](https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib)，插件 ID `mbkadoolgknacadjkfjjajldmllbkdib` |
+| 主人的服务器 | 0.8.2 | 2026-11-28 从 npm 装的，`cctether check` 全过。`~/.config` 原来是 771（同组可写），上传被拒，改成了 751（`chmod g-w`，要改回就 `chmod g+w ~/.config`）。之后在主人真 Mac 上经公网地址传了一个小文件，网页收到的内容一字不差 |
+| 主人的 Mac | 商店版 0.8.0 | Chrome 158，连接正常（升级服务时断开十几秒后都自己连回来了） |
 | 官网主页 | 已有卡片 | site-ops 做的。要改卡片交给 site-ops |
 
 - **测试**：服务端 138 个（0.8.1 的在 `uploads.test.js` 末尾：沙盒里属主看不出来的几种情况，其中一个在开发机上用 `unshare --user --map-current-user` 真建命名空间，Ubuntu 24.04 这类不许建的地方会跳过；`setup.test.js` 末尾：npm 全局目录还没建出来、不能写时不提问；0.6.2 的在 `server/test/shim.test.js`：假的常驻服务 + 子进程跑的 `cctether mcp`；0.8.0 的上传目录在 `uploads.test.js`，分段协议在 `fragments.test.js`：带背压的限速转发、按规矩乱发的假服务）；端到端 89 个（88 个通过，1 个要有界面的 Chrome，GitHub 上会跳过）。上传文件的两个测试在 `tools.test.mjs` 末尾，测试页 `fixtures/pages/upload.html`、`upload-one.html`，经真服务的一个在 `fullstack.test.mjs`；拖拽的在它们前面，测试页 `fixtures/pages/drag.html`；iframe 的再前面，测试页 `fixtures/pages/frames.html`、`frame-inner.html`（别的网站用 localhost 对 127.0.0.1 来模拟）。
@@ -198,6 +198,8 @@
 - 改了服务端代码，要打包安装再重启服务，主人在用的才会变（见 `CLAUDE.local.md`）。
 - 别用 `pkill -f` / `pgrep -f` 配同一条命令里出现过的文字：会把跑这条命令的 shell 也杀掉，或者一直找到它自己（2026-11-26 用 `while pgrep -f …` 等 GPT 跑完，就因此一直等下去）。等 Codex 跑完，就用后台方式直接跑 `codex exec`，完成时会有通知。
 - `xvfb-run` 在开发机上用不了（没有 xauth），要有界面的 Chrome 就直接起 `Xvfb :97`。
+- 想在开发机上模拟 systemd 服务的沙盒：开发机没有用户级 D-Bus，`systemd-run --user` 用不了。用 `unshare --user --map-current-user <命令>`，得到的 uid_map 和 systemd 服务的一样（只映射自己，root 的目录显示成 65534）。Ubuntu 24.04（包括 GitHub 的机器）默认不许这样建，GitHub 的服务端测试那一步先用 sysctl 放开了。
+- 想看服务进程到底在什么样的命名空间里：`cat /proc/$(systemctl --user show cctether -p MainPID --value)/uid_map`。
 
 **测试：**
 
