@@ -238,14 +238,14 @@ export async function uploadFile({ tab, s, startedAt = Date.now(), paused = () =
       given = true;
       if (err) throw unclear(err, `the files were being dropped on ${t.desc}`);
       if (r.dialog) {
-        lines.push(`Sent the drop of ${named} on ${t.desc} on ${want} (synthetic dragenter, dragover and drop), and the page opened ${dialogKind(r.dialog)} before it was confirmed: whatever of the drop has not run yet runs once the dialog is closed. ${dialogHint(r.dialog)}`);
+        lines.push(`Sent the drop of ${named} on ${t.desc} on ${want} (synthetic dragenter, dragover and drop), but the page opened ${dialogKind(r.dialog)} before it was confirmed, so whether the drop ran is not known. ${dialogHint(r.dialog)} Then check the page.`);
       } else {
         lines.push(`Dropped ${named} on ${t.desc} on ${want}: fired dragenter, dragover and drop with ${them} (synthetic events).`);
       }
     } else {
       const replacing = a.before ? `, replacing the ${a.before === 1 ? 'file' : `${a.before} files`} chosen there before` : '';
       if (r.dialog && !unsent) {
-        lines.push(`Gave ${named} to ${t.desc} on ${want}${replacing}, and sent input and change (synthetic events), but the page opened ${dialogKind(r.dialog)} before they were confirmed: whatever of them has not run yet runs once the dialog is closed. ${dialogHint(r.dialog)}`);
+        lines.push(`Gave ${named} to ${t.desc} on ${want}${replacing}, and sent input and change (synthetic events), but the page opened ${dialogKind(r.dialog)} before they were confirmed, so whether they ran is not known. ${dialogHint(r.dialog)}`);
       } else {
         lines.push(`Gave ${named} to ${t.desc} on ${want}${replacing}`
           + (err || r.dialog ? '.' : ', and fired input and change on it (synthetic events: a page that only accepts a real user\'s choice ignores them).'));

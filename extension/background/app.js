@@ -131,11 +131,11 @@ async function onCall(tool, args, { live = () => true, cancelled = () => false }
   }
   try {
     const r = await runTool(tool, args, { paused: () => settings.paused, live, cancelled });
-    recordActivity(tool, r?.tab ?? null, true);
+    recordActivity(tool, r?.tab ?? null, true, null, args);
     return { ok: true, data: { content: r.content } };
   } catch (e) {
     const known = e instanceof ToolError;
-    recordActivity(tool, e?.tab ?? null, false, known ? e.code : 'internal');
+    recordActivity(tool, e?.tab ?? null, false, known ? e.code : 'internal', args);
     if (!known) log(`tool ${tool} failed`, e);
     return {
       ok: false,
@@ -146,11 +146,13 @@ async function onCall(tool, args, { live = () => true, cancelled = () => false }
   }
 }
 
-function recordActivity(tool, tab, ok, error) {
+function recordActivity(tool, tab, ok, error, args = null) {
   let host = '';
-  try { host = tab?.url ? new URL(tab.url).host : ''; } catch {}
-  // An upload's entry keeps the site only: a page that got the files could put them in its title.
-  const title = tool === 'upload_file' ? '' : String(tab?.title ?? '').slice(0, 200);
+  // An upload's entry keeps only the site Claude named (and cctether checked): a page that got
+  // the files could put them in its title or address.
+  const upload = tool === 'upload_file';
+  try { host = upload ? new URL(args?.origin).host : tab?.url ? new URL(tab.url).host : ''; } catch {}
+  const title = upload ? '' : String(tab?.title ?? '').slice(0, 200);
   const entry = { t: Date.now(), tool, tab: tab ? { id: tab.id, title, host } : null, ok };
   if (error) entry.error = error;
   activity = [entry, ...activity].slice(0, ACTIVITY_MAX);

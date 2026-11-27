@@ -268,6 +268,12 @@ test('upload_file: files from the uploads directory reach the page, in fragments
   assert.match(text(other), /not https:\/\/example\.com, so nothing was given/);
   // The connection is still fine afterwards.
   assert.ok(!(await mcp.call('list_tabs')).isError);
+  // The popup's activity list has the uploads with the site only, no tab title.
+  const activity = await sw.evaluate('chrome.storage.session.get("activity").then(x => x.activity)');
+  const up = activity.filter((a) => a.tool === 'upload_file');
+  assert.ok(up.length >= 2 && up.every((a) => a.tab?.title === ''), JSON.stringify(up.slice(0, 2)));
+  assert.ok(up.some((a) => a.ok && a.tab.host === new URL(base).host), 'a successful one under its site');
+  assert.ok(up.some((a) => !a.ok && a.tab.host === 'example.com'), 'a refused one under the site Claude named');
   await mcp.call('close_tab', { tab });
 });
 
