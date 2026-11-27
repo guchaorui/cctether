@@ -92,7 +92,9 @@ export function createMcpSession({
         files = await readUploads(args.files, uploadsDir);
       } catch (e) {
         if (e instanceof UploadError) return { result: errorResult(`Nothing was uploaded: ${e.message}`) };
-        throw e;
+        // Anything else (an I/O error, say) still gets an answer.
+        log(`upload_file: reading the files failed: ${e.code ?? e.message}`);
+        return { result: errorResult(`Nothing was uploaded: the files couldn't be read (${e.code || 'error'}).`) };
       }
       if (cancel.signal.aborted) return { result: errorResult('Cancelled. Nothing was uploaded.') };
       const sent = { ...args, files: files.map((f) => ({ name: f.name, type: f.type, data: f.bytes.toString('base64') })) };

@@ -89,7 +89,7 @@ async function notifyDaemon(P) {
 export async function main(argv) {
   const [major] = process.versions.node.split('.').map(Number);
   if (major < 22) {
-    err(`cctether needs Node.js 22 or newer (this is ${process.version}).`);
+    err(`cctether needs Node.js 22 or newer (this is ${process.version}). Get it at https://nodejs.org/en/download`);
     return 1;
   }
   let parsed;

@@ -366,15 +366,16 @@ async function installFromNpx({ c, t, out, yn, runFn, env }) {
     if (!found.onPath) out.line(t('install.notOnPath', { dir: dirname(binPath) }));
     return found;
   }
+  // Before asking: a yes that can't be acted on is a wasted question.
+  if (!sys.npmPrefixWritable(prefix)) {
+    out.line(t('install.noWrite', { dir: prefix, version: c.version }));
+    return null;
+  }
   const ok = await yn(existingVersion
     ? t('install.npx.update', { old: existingVersion, path: binPath, version: c.version })
     : t('install.npx.ask', { version: c.version }), true);
   if (!ok) {
     out.line(t('install.declined'));
-    return null;
-  }
-  if (!sys.npmPrefixWritable(prefix)) {
-    out.line(t('install.noWrite', { dir: prefix, version: c.version }));
     return null;
   }
   out.line(t('install.running', { version: c.version }));
@@ -574,7 +575,7 @@ async function ensureRunning({ t, out, runFn, env, P, cfg, version, self, manage
     out.line(t('check.startFailed'));
     return false;
   }
-  out.line(t(restarting ? 'check.restarted' : 'check.started', { version: st.version }));
+  out.line(t(restarting ? 'check.restarted' : 'check.started', { version: st.version, port: st.port }));
   if (st.version !== version) out.line(t('check.service.old', { running: st.version, version, how: 'systemctl --user restart cctether' }));
   return true;
 }

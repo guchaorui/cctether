@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, existsSync, rmSync, statSync, lstatSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, existsSync, rmSync, statSync, lstatSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,7 +13,7 @@ import { WebSocketServer } from 'ws';
 import { startGateway, makeExtension, sleep, EXT_ID } from './helpers.js';
 import { checkAddress } from '../src/check.js';
 import { runSetup, runCheck, normalizePublicUrl, shellJoin, caddySnippet } from '../src/setup.js';
-import { renderUnit, sdQuote, UNIT_HEADER, UnitError, unitConfigDir } from '../src/system.js';
+import { renderUnit, sdQuote, UNIT_HEADER, UnitError, unitConfigDir, npmPrefixWritable } from '../src/system.js';
 import { loadConfig, paths } from '../src/config.js';
 import { decodePairingCode } from '../src/pairing.js';
 import { adminRequest } from '../src/control.js';
@@ -627,4 +627,57 @@ test('setup skips the CLAUDE.md note when Claude Code isn’t set up, and prints
   assert.ok(!existsSync(join(sb.env.CLAUDE_CONFIG_DIR, 'CLAUDE.md')), 'no note about tools that aren’t registered');
   assert.equal(r.out.split('claude mcp add').length, 2, r.out);
   assert.match(r.out, /To add it later:\n\s+claude mcp add -s user cctether -e CCTETHER_HOME=\S+ -- \S+ mcp\n/);
+});
+
+test('npm’s global folder: missing folders count as the nearest one that exists; broken paths don’t', (t) => {
+  if (process.getuid?.() === 0) return t.skip('root can write anywhere');
+  const root = mkdtempSync(join(tmpdir(), 'cct-npmpfx-'));
+  t.after(() => { chmodSync(join(root, 'ro'), 0o755); rmSync(root, { recursive: true, force: true }); });
+  // `npm config set prefix ~/.local` on a new account: ~/.local doesn't exist yet, npm makes it.
+  mkdirSync(join(root, 'home'));
+  assert.equal(npmPrefixWritable(join(root, 'home', '.local')), true);
+  mkdirSync(join(root, 'home', '.local', 'lib', 'node_modules'), { recursive: true });
+  assert.equal(npmPrefixWritable(join(root, 'home', '.local')), true);
+  // A read-only prefix (like /usr for a user), or only its bin folder read-only.
+  mkdirSync(join(root, 'ro', 'lib', 'node_modules'), { recursive: true });
+  chmodSync(join(root, 'ro'), 0o555);
+  assert.equal(npmPrefixWritable(join(root, 'ro')), false, 'bin would be made in a read-only folder');
+  chmodSync(join(root, 'ro'), 0o755);
+  mkdirSync(join(root, 'ro', 'bin'));
+  chmodSync(join(root, 'ro', 'bin'), 0o555);
+  assert.equal(npmPrefixWritable(join(root, 'ro')), false, 'bin is read-only');
+  chmodSync(join(root, 'ro', 'bin'), 0o755);
+  assert.equal(npmPrefixWritable(join(root, 'ro')), true);
+  // A file where a folder should be, or a dangling link: no.
+  writeFileSync(join(root, 'file'), '');
+  assert.equal(npmPrefixWritable(join(root, 'file', 'prefix')), false);
+  symlinkSync(join(root, 'nowhere'), join(root, 'dangling'));
+  assert.equal(npmPrefixWritable(join(root, 'dangling')), false);
+});
+
+test('setup from npx doesn’t ask to install when it can’t, and says how to fix it', async (t) => {
+  if (process.getuid?.() === 0) return t.skip('root can write anywhere');
+  const sb = await sandbox(t, { systemd: false, claude: false });
+  const prefix = join(sb.root, 'npm-ro');
+  mkdirSync(join(prefix, 'lib', 'node_modules'), { recursive: true });
+  chmodSync(join(prefix, 'lib', 'node_modules'), 0o555);
+  const npx = { kind: 'npx', cliPath: '/home/u/.npm/_npx/123/node_modules/cctether/bin/cctether.js' };
+  const calls = [];
+  const runFn = (cmd, args) => {
+    calls.push([cmd, ...args].join(' '));
+    return cmd === 'npm' && args[0] === 'prefix' ? { status: 0, stdout: prefix + '\n', stderr: '' } : { status: 1, stdout: '', stderr: '' };
+  };
+  const lines = [];
+  const code = await runSetup({
+    dir: sb.dir, version: VERSION, cliPath: npx.cliPath, self: npx, opts: {}, env: sb.env,
+    platform: 'linux', runFn, write: (l) => lines.push(l), interactive: true,
+    ask: async (q) => assert.fail(`asked: ${q}`),
+  });
+  const out = lines.join('\n');
+  assert.equal(code, 1, out);
+  assert.match(out, /can’t write to npm’s global folder/);
+  assert.match(out, /npm config set prefix ~\/\.local/);
+  assert.ok(!calls.some((c) => c.startsWith('npm install')), calls.join('\n'));
+  assert.ok(!existsSync(join(sb.dir, 'config.json')));
+  chmodSync(join(prefix, 'lib', 'node_modules'), 0o755);
 });

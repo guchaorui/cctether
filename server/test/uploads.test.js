@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, linkSync, rmSync, realpathSync, statSync, chmodSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, linkSync, rmSync, realpathSync, statSync, chmodSync, readFileSync, renameSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { readUploads, ensureUploadsDir, uploadsDir, UploadError, UPLOAD_MAX_BYTES, mimeType, badName } from '../src/uploads.js';
+import { readUploads, ensureUploadsDir, uploadsDir, UploadError, UPLOAD_MAX_BYTES, mimeType, badName, parseUidMap, idView, ownerKind } from '../src/uploads.js';
 
 // A private config directory with its uploads directory, a secret next to it, and a directory elsewhere.
 const base = realpathSync(mkdtempSync(join(tmpdir(), 'cct-up-')));
@@ -125,4 +125,150 @@ test('uploads: a link above the directory is followed, and the real directories 
   chmodSync(real, 0o777);
   await rejects(['g.txt'], /can be changed by another user/, join(base, 'linkconf', 'uploads'));
   chmodSync(real, 0o700);
+});
+
+// A systemd user service with ProtectSystem=/PrivateTmp= runs in a user namespace that maps only its
+// own user, so root's directories (/, /home, /tmp) show the overflow owner (65534).
+
+test('uploads: uid_map and the overflow id tell which owners this process can see', () => {
+  assert.deepEqual(parseUidMap('         0          0 4294967295\n'), [{ inside: 0, count: 4294967295 }]);
+  assert.equal(parseUidMap('0 0'), null);
+  assert.equal(parseUidMap('a b c'), null);
+  assert.equal(parseUidMap(''), null);
+  // Outside any namespace, or without /proc: everything is mapped, as before.
+  const full = idView({ uidMap: '0 0 4294967295\n', overflow: '65534\n' });
+  assert.deepEqual(full, { partial: false, rootMapped: true, overflow: 65534 });
+  assert.deepEqual(idView({ uidMap: null, overflow: '65534' }), { partial: false, rootMapped: true, overflow: null });
+  assert.equal(ownerKind(65534, 1000, full), 'other');
+  assert.equal(ownerKind(0, 1000, full), 'root');
+  // The systemd sandbox: only this user (1000) is mapped.
+  const sandbox = idView({ uidMap: '      1000       1000          1\n', overflow: '65534\n' });
+  assert.deepEqual(sandbox, { partial: true, rootMapped: false, overflow: 65534 });
+  assert.equal(ownerKind(65534, 1000, sandbox), 'unknown');
+  assert.equal(ownerKind(1000, 1000, sandbox), 'me');
+  assert.equal(ownerKind(999, 1000, sandbox), 'other');
+  assert.equal(ownerKind(1001, 1000, sandbox), 'other');
+  assert.equal(ownerKind(0, 1000, sandbox), 'other', 'uid 0 is not root where root is not mapped');
+  // Range edges: "1000 1000 2" maps 1000 and 1001, not 1002.
+  const two = idView({ uidMap: '1000 1000 2', overflow: '1002' });
+  assert.equal(two.rootMapped, false);
+  assert.equal(ownerKind(1002, 1000, two), 'unknown');
+  // The overflow id mapped too (or equal to this user): ambiguous, so never this user's or root's.
+  const clash = idView({ uidMap: '1000 1000 1', overflow: '1000' });
+  assert.equal(ownerKind(1000, 1000, clash), 'unknown');
+  const rootClash = idView({ uidMap: '0 100000 65536', overflow: '0' });
+  assert.equal(ownerKind(0, 1000, rootClash), 'unknown');
+  // Overflow unreadable: nothing counts as unknown (no exception), and root still has to be mapped.
+  const noOverflow = idView({ uidMap: '1000 1000 1', overflow: null });
+  assert.deepEqual(noOverflow, { partial: true, rootMapped: false, overflow: null });
+  assert.equal(ownerKind(65534, 1000, noOverflow), 'other');
+  assert.equal(ownerKind(0, 1000, noOverflow), 'other');
+});
+
+test('uploads: in a sandbox, unknown owners are trusted only above this user\'s home', async (t) => {
+  // Simulate the sandbox without one: whatever owner / shows (root, or the overflow id when these
+  // tests run in a namespace themselves) is "the overflow id" of a namespace that doesn't map root.
+  const rootOwner = statSync('/').uid;
+  if (rootOwner === process.getuid()) return t.skip('running as the owner of /');
+  const view = { partial: true, rootMapped: false, overflow: rootOwner };
+  const home = join(base, 'home');
+  const up = join(home, '.config', 'cctether', 'uploads');
+  mkdirSync(join(home, '.config', 'cctether'), { recursive: true, mode: 0o700 });
+  ensureUploadsDir(up);
+  put(join(up, 'h.txt'), 'h');
+  // Inside the home: /, /tmp (above the home) are trusted.
+  assert.equal((await readUploads(['h.txt'], up, { view, homeDir: home }))[0].bytes.toString(), 'h');
+  // A link to the home in the password database is resolved first.
+  symlinkSync(home, join(base, 'homelink'));
+  assert.equal((await readUploads(['h.txt'], up, { view, homeDir: join(base, 'homelink') })).length, 1);
+  // Not inside the home (another home; one whose name is a prefix of this one): not trusted.
+  const other = join(base, 'otherhome');
+  mkdirSync(other, { mode: 0o700 });
+  await rejects(['h.txt'], /owner this service can't see/, up, { view, homeDir: other });
+  mkdirSync(join(base, 'hom'), { mode: 0o700 });
+  await rejects(['h.txt'], /owner this service can't see/, up, { view, homeDir: join(base, 'hom') });
+  // No home (password database failed) or not an absolute path: not trusted.
+  await rejects(['h.txt'], /owner this service can't see/, up, { view, homeDir: null });
+  await rejects(['h.txt'], /owner this service can't see/, up, { view, homeDir: 'home' });
+  // A home whose own owner is unknown (here /, "root's"): not trusted.
+  await rejects(['h.txt'], /owner this service can't see/, up, { view, homeDir: '/' });
+  // The permission bits still count above the home: a trusted owner, but writable by others.
+  chmodSync(home, 0o777);
+  await rejects(['h.txt'], /can be changed by another user/, up, { view, homeDir: home });
+  chmodSync(home, 0o700);
+  // The overflow id unreadable: no exception, and "root" (0) is not trusted where root isn't mapped.
+  await rejects(['h.txt'], /can be changed by another user|not a directory of this user or root/, up, { view: { ...view, overflow: null }, homeDir: home });
+});
+
+test('uploads: in a real user namespace that maps only this user (like the systemd service)', async (t) => {
+  if (process.platform !== 'linux') return t.skip('Linux only');
+  const me = process.getuid();
+  const home = join(base, 'nshome');
+  const up = join(home, 'conf', 'uploads');
+  mkdirSync(join(home, 'conf'), { recursive: true, mode: 0o700 });
+  ensureUploadsDir(up);
+  put(join(up, 'n.txt'), 'namespace');
+  const script = `
+    import { readUploads } from ${JSON.stringify(new URL('../src/uploads.js', import.meta.url).href)};
+    import { readFileSync, statSync } from 'node:fs';
+    const [up, home] = process.argv.slice(1);
+    const out = { uidMap: readFileSync('/proc/self/uid_map', 'utf8').trim().split(/\\s+/).map(Number), rootUid: statSync('/').uid };
+    for (const [k, h] of [['inHome', home], ['otherHome', '/nonexistent']]) {
+      try { out[k] = (await readUploads(['n.txt'], up, { homeDir: h }))[0].bytes.toString(); }
+      catch (e) { out[k] = 'error: ' + e.message; }
+    }
+    console.log(JSON.stringify(out));`;
+  let r;
+  try {
+    r = execFileSync('unshare', ['--user', '--map-current-user', process.execPath, '--input-type=module', '-e', script, up, home], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (e) {
+    // Only when this system won't make one (no unshare; AppArmor on Ubuntu 24.04 forbids it).
+    if (e.code === 'ENOENT' || /Operation not permitted|Permission denied|unrecognized option/.test(String(e.stderr))) return t.skip(`can't make a user namespace here: ${String(e.stderr || e.code).trim()}`);
+    throw e;
+  }
+  const out = JSON.parse(r);
+  assert.deepEqual(out.uidMap, [me, me, 1], 'the same map as the systemd service');
+  assert.equal(out.rootUid, Number(readFileSync('/proc/sys/kernel/overflowuid', 'utf8')), 'root shows as the overflow id');
+  assert.equal(out.inHome, 'namespace');
+  assert.match(out.otherHome, /owner this service can't see/);
+});
+
+test('uploads: on Linux, files are opened from the directory that was checked, even if the path changes', async (t) => {
+  if (process.platform !== 'linux') return t.skip('Linux only (/proc/self/fd)');
+  const conf = join(base, 'bound');
+  const up = join(conf, 'uploads');
+  mkdirSync(conf, { mode: 0o700 });
+  ensureUploadsDir(up);
+  put(join(up, 'b.txt'), 'checked');
+  // Between the checks and the opens, the uploads directory is moved away and another put in its place.
+  const got = await readUploads(['b.txt'], up, {
+    afterCheck: () => {
+      renameSync(up, join(conf, 'moved'));
+      ensureUploadsDir(up);
+      put(join(up, 'b.txt'), 'swapped');
+    },
+  });
+  assert.equal(got[0].bytes.toString(), 'checked', 'opened by the path, it would be the swapped one');
+});
+
+test('uploads: a directory this user may enter but not read: by path as before, but not after a relaxed check', async (t) => {
+  if (process.platform !== 'linux') return t.skip('Linux only (/proc/self/fd)');
+  if (process.getuid() === 0) return t.skip('root reads any directory');
+  const rootOwner = statSync('/').uid;
+  const home = join(base, 'h300');
+  const up = join(home, 'uploads');
+  mkdirSync(home, { mode: 0o700 });
+  ensureUploadsDir(up);
+  put(join(up, 'x.txt'), 'x');
+  chmodSync(up, 0o300); // can't be opened for reading, so it can't be bound
+  try {
+    // Nothing relaxed: opened by the checked path, as in 0.8.0. (Not when these tests themselves
+    // run in a namespace that hides root: then the real check is the relaxed one.)
+    const real = idView({ uidMap: readFileSync('/proc/self/uid_map', 'utf8'), overflow: readFileSync('/proc/sys/kernel/overflowuid', 'utf8') });
+    if (!real.partial) assert.equal((await readUploads(['x.txt'], up))[0].bytes.toString(), 'x');
+    // Passed only because unknown owners above the home were trusted: the binding is required.
+    await rejects(['x.txt'], /can't open the files through the directory it checked/, up, { view: { partial: true, rootMapped: false, overflow: rootOwner }, homeDir: home });
+  } finally {
+    chmodSync(up, 0o700);
+  }
 });

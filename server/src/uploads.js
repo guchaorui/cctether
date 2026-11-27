@@ -9,8 +9,9 @@
 // between the checks and the open); the opened file is checked again, and read to its size.
 
 import { constants } from 'node:fs';
-import { open, lstat, realpath } from 'node:fs/promises';
-import { dirname, extname, join } from 'node:path';
+import { open, lstat, stat, statfs, realpath, readFile } from 'node:fs/promises';
+import { userInfo } from 'node:os';
+import { dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { ensurePrivateDir } from './evalfile.js';
 
 export const UPLOAD_MAX_BYTES = 20 * 1024 * 1024; // all files of one call together
@@ -61,33 +62,126 @@ export function badName(name) {
 
 const uid = () => (process.getuid ? process.getuid() : null);
 
+// Who owns a file, as far as this process can tell. A systemd user service with ProtectSystem= or
+// PrivateTmp= (cctether setup writes one) runs in a user namespace that maps only its own user:
+// there every other owner, root included, shows as the overflow id ("nobody", usually 65534).
+
+/** Parse /proc/self/uid_map into [{ inside, count }], or null if it doesn't look like one. */
+export function parseUidMap(text) {
+  const map = [];
+  for (const line of String(text).split('\n')) {
+    if (!line.trim()) continue;
+    const f = line.trim().split(/\s+/);
+    if (f.length !== 3 || !f.every((x) => /^\d+$/.test(x))) return null;
+    map.push({ inside: Number(f[0]), count: Number(f[2]) });
+  }
+  return map.length ? map : null;
+}
+
+const mapsId = (map, id) => map.some((r) => id >= r.inside && id < r.inside + r.count);
+const ALL_IDS = 4294967295; // 0 … 2^32-2; outside any user namespace, uid_map is "0 0 4294967295"
+
+/**
+ * { partial, rootMapped, overflow } from the texts of /proc/self/uid_map and
+ * /proc/sys/kernel/overflowuid (null when unreadable). partial: some ids are not mapped, so files
+ * of those owners show as `overflow`. overflow is null when it can't be read; then no owner counts
+ * as unknown. Without a uid_map (macOS, or unreadable): everything is mapped, as before.
+ */
+export function idView({ uidMap, overflow }) {
+  const map = uidMap == null ? null : parseUidMap(uidMap);
+  if (!map) return { partial: false, rootMapped: true, overflow: null };
+  const covered = map.reduce((n, r) => n + r.count, 0);
+  const o = overflow != null && /^\d+$/.test(String(overflow).trim()) ? Number(String(overflow).trim()) : null;
+  return { partial: covered < ALL_IDS, rootMapped: mapsId(map, 0), overflow: o };
+}
+
+async function readIdView() {
+  if (process.platform !== 'linux') return idView({ uidMap: null, overflow: null });
+  const read = (p) => readFile(p, 'utf8').catch(() => null);
+  const [uidMap, overflow] = await Promise.all([read('/proc/self/uid_map'), read('/proc/sys/kernel/overflowuid')]);
+  return idView({ uidMap, overflow });
+}
+
+/**
+ * 'me', 'root', 'unknown' (an owner this namespace doesn't map: root or another user, can't tell
+ * which; also the overflow id when it is mapped too, as that is ambiguous) or 'other'. Uid 0
+ * only counts as root when root is mapped here.
+ */
+export function ownerKind(fileUid, me, view) {
+  if (view.partial && view.overflow !== null && fileUid === view.overflow) return 'unknown';
+  if (me !== null && fileUid === me) return 'me';
+  if (fileUid === 0 && view.rootMapped) return 'root';
+  return 'other';
+}
+
+/**
+ * The directories above this user's home directory (from the password database, resolved), when
+ * the resolved uploads directory `real` is inside that home and the home is this user's: an
+ * unknown owner of one of these can be trusted, because whoever owns a directory above your home
+ * can replace the whole home (shell profile, Claude Code's settings, cctether's key) anyway.
+ * Empty when owners can't be unknown here, or anything about the home can't be established.
+ */
+async function aboveHome(real, view, homeDir) {
+  const none = new Set();
+  if (!view.partial || view.overflow === null) return none;
+  let home = homeDir;
+  if (home === undefined) {
+    try { home = userInfo().homedir; } catch { return none; }
+  }
+  if (typeof home !== 'string' || !isAbsolute(home)) return none;
+  let realHome;
+  try {
+    realHome = await realpath(home);
+    const st = await lstat(realHome);
+    if (!st.isDirectory() || ownerKind(st.uid, uid(), view) !== 'me') return none;
+  } catch {
+    return none;
+  }
+  const rel = relative(realHome, real);
+  if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return none;
+  const above = new Set();
+  for (let d = realHome; d !== dirname(d);) {
+    d = dirname(d);
+    above.add(d);
+  }
+  return above;
+}
+
 // Messages name "the uploads directory" (its path is in the tool's description), not the path.
 const MISSING = 'The uploads directory does not exist (cctether makes it when it starts, mode 700). Create it, copy the files into it, then try again.';
 const NOT_PRIVATE = 'The uploads directory is not a private directory of this user (it is a link, or others can use it), so upload_file is off. Make it a plain directory with mode 700.';
 
-/** lstat of a directory of this user that nobody else can use (not a link); fails otherwise. */
-async function privateStat(dir) {
+/**
+ * lstat of a directory of this user that nobody else can use (not a link); fails otherwise.
+ * BigInt, so that device and inode numbers compare exactly (inodes can be above 2^53).
+ */
+async function privateStat(dir, view) {
   let st;
   try {
-    st = await lstat(dir);
+    st = await lstat(dir, { bigint: true });
   } catch {
     fail(MISSING);
   }
   const me = uid();
-  if (!st.isDirectory() || (me !== null && st.uid !== me) || (st.mode & 0o077) !== 0) fail(NOT_PRIVATE);
+  if (!st.isDirectory() || (me !== null && ownerKind(Number(st.uid), me, view) !== 'me') || (Number(st.mode) & 0o077) !== 0) fail(NOT_PRIVATE);
   return st;
 }
 
+const sameDir = (a, b) => a.dev === b.dev && a.ino === b.ino; // both BigInt stats
+
 /**
- * The real path of the uploads directory, after checking that it is a private directory of this
+ * { real, st, relaxed }: the real path of the uploads directory, its lstat, and whether a directory
+ * above passed only as an unknown owner above the home (then the files must be opened through
+ * the checked directory, see bindDir), after checking that it is a private directory of this
  * user, that no directory above the resolved path can be changed by another user (root's and
  * this user's own are fine, and so are sticky ones like /tmp, where others can't rename what
  * isn't theirs), and that the resolved path is that very directory (same device and inode: a
  * directory above may have been swapped meanwhile). Then nobody else can swap anything on the
- * path the files are opened by.
+ * path the files are opened by. In a sandbox where root's directories show an unknown owner (see
+ * ownerKind), those above this user's home directory count as root's (see aboveHome).
  */
-async function checkedDir(dir) {
-  const first = await privateStat(dir);
+async function checkedDir(dir, view, homeDir) {
+  const first = await privateStat(dir, view);
   let real;
   try {
     real = await realpath(dir);
@@ -102,6 +196,8 @@ async function checkedDir(dir) {
     if (d === dirname(d)) break;
   }
   const me = uid();
+  const trusted = await aboveHome(real, view, homeDir);
+  let relaxed = false;
   for (const d of above) {
     let st;
     try {
@@ -109,23 +205,70 @@ async function checkedDir(dir) {
     } catch (e) {
       fail(`Can't check a directory above the uploads directory (${e.code || 'error'}).`);
     }
-    const owner = me === null || st.uid === 0 || st.uid === me;
+    const kind = ownerKind(st.uid, me, view);
+    const owner = me === null || kind === 'me' || kind === 'root' || (kind === 'unknown' && trusted.has(d));
     const othersWrite = (st.mode & 0o022) !== 0 && (st.mode & 0o1000) === 0;
+    if (st.isDirectory() && !othersWrite && kind === 'unknown' && !owner) {
+      fail('A directory above the uploads directory belongs to an owner this service can\'t see (it runs in a sandbox, such as the background service\'s, that only knows its own user), so upload_file is off: files there could be swapped while being read. Keep cctether\'s configuration directory inside your home directory.');
+    }
     if (!st.isDirectory() || !owner || othersWrite) {
       fail('A directory above the uploads directory can be changed by another user (or is not a directory of this user or root), so upload_file is off: files there could be swapped while being read. Check the permissions of the directories above it.');
     }
+    if (me !== null && kind === 'unknown') relaxed = true;
   }
-  const resolved = await privateStat(real);
-  if (resolved.dev !== first.dev || resolved.ino !== first.ino) fail('The uploads directory changed while it was being checked. Try again.');
-  return real;
+  const resolved = await privateStat(real, view);
+  if (!sameDir(resolved, first)) fail(CHANGED);
+  return { real, st: resolved, relaxed };
+}
+
+const CHANGED = 'The uploads directory changed while it was being checked. Try again.';
+
+const PROC_SUPER_MAGIC = 0x9fa0;
+const CANT_BIND = 'upload_file is off: this service runs in a sandbox where it can\'t tell who owns the directories above your home, and it can\'t open the files through the directory it checked (/proc/self/fd isn\'t usable here, or the uploads directory isn\'t readable: it should be mode 700).';
+
+/**
+ * On Linux, a handle on the directory just checked (same device and inode), through which the files
+ * are opened: /proc/self/fd/<n>/<name> resolves from that very directory, like openat, so nothing
+ * done to the path after the checks can redirect the opens. Where that isn't available (macOS;
+ * Linux without procfs; a directory this user may enter but not read), null: the files are
+ * opened by the checked path, as in 0.8.0. But not after a relaxed check (see checkedDir): then
+ * the binding is what makes it safe, so no binding means no upload.
+ */
+async function bindDir(real, checked, relaxed) {
+  const without = () => (relaxed ? fail(CANT_BIND) : null);
+  if (process.platform !== 'linux' || constants.O_DIRECTORY === undefined) return without();
+  let fh;
+  try {
+    fh = await open(real, constants.O_RDONLY | constants.O_DIRECTORY | (constants.O_NOFOLLOW ?? 0));
+  } catch (e) {
+    if (e.code === 'ENOENT' || e.code === 'ELOOP' || e.code === 'ENOTDIR') fail(CHANGED);
+    return without();
+  }
+  try {
+    const st = await fh.stat({ bigint: true });
+    if (!sameDir(st, checked)) fail(CHANGED);
+    const path = `/proc/self/fd/${fh.fd}`;
+    // The fd folder itself is procfs (statfs of the link would report the uploads directory's).
+    const fs = await statfs('/proc/self/fd').catch(() => null);
+    const via = fs?.type === PROC_SUPER_MAGIC ? await stat(path, { bigint: true }).catch(() => null) : null;
+    if (!via || !sameDir(via, checked)) {
+      await fh.close();
+      return without();
+    }
+    return fh;
+  } catch (e) {
+    await fh.close().catch(() => {});
+    if (e instanceof UploadError) throw e;
+    fail(`Can't check the uploads directory (${e.code || 'error'}).`);
+  }
 }
 
 /**
  * Read the files `names` from the uploads directory `dir`, all checked before any is returned.
  * Returns [{ name, type, bytes }]. Throws UploadError with a message for Claude, never with file
- * contents.
+ * contents. `homeDir`, `view` and `afterCheck` are for tests (default: the password database, /proc).
  */
-export async function readUploads(names, dir, { maxBytes = UPLOAD_MAX_BYTES } = {}) {
+export async function readUploads(names, dir, { maxBytes = UPLOAD_MAX_BYTES, homeDir, view, afterCheck } = {}) {
   if (!Array.isArray(names) || !names.length) fail('Pass at least one file name in `files`.');
   if (names.length > UPLOAD_MAX_FILES) fail(`At most ${UPLOAD_MAX_FILES} files at a time.`);
   const seen = new Set();
@@ -135,12 +278,23 @@ export async function readUploads(names, dir, { maxBytes = UPLOAD_MAX_BYTES } = 
     if (seen.has(n)) fail(`${JSON.stringify(n)} is in \`files\` twice.`);
     seen.add(n);
   }
-  const real = await checkedDir(dir);
+  const ids = view ?? await readIdView();
+  const { real, st: checked, relaxed } = await checkedDir(dir, ids, homeDir);
+  const dirFh = await bindDir(real, checked, relaxed);
+  try {
+    await afterCheck?.();
+    return await readAll(names, dirFh ? `/proc/self/fd/${dirFh.fd}` : real, ids, maxBytes);
+  } finally {
+    await dirFh?.close().catch(() => {});
+  }
+}
+
+async function readAll(names, at, ids, maxBytes) {
   const me = uid();
   const out = [];
   let left = maxBytes;
   for (const name of names) {
-    const p = join(real, name);
+    const p = join(at, name);
     let fh;
     try {
       // O_NOFOLLOW: no link (also one put there after the checks); O_NONBLOCK: a FIFO doesn't
@@ -154,7 +308,7 @@ export async function readUploads(names, dir, { maxBytes = UPLOAD_MAX_BYTES } = 
     try {
       const st = await fh.stat();
       if (!st.isFile()) fail(`${JSON.stringify(name)} in the uploads directory is not a regular file.`);
-      if (me !== null && st.uid !== me) fail(`${JSON.stringify(name)} in the uploads directory belongs to another user.`);
+      if (me !== null && ownerKind(st.uid, me, ids) !== 'me') fail(`${JSON.stringify(name)} in the uploads directory belongs to another user.`);
       if (st.nlink !== 1) fail(`${JSON.stringify(name)} in the uploads directory has other hard links, which upload_file doesn't take. Copy the file there instead of linking it.`);
       const tooBig = () => fail(`The files are larger than ${maxBytes / 1048576} MiB in all, the most upload_file takes at a time.`);
       if (st.size > left) tooBig();

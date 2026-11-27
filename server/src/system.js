@@ -3,7 +3,7 @@
 // `run` so tests can fake it.
 
 import { spawnSync } from 'node:child_process';
-import { accessSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { delimiter, dirname, join, sep } from 'node:path';
 
@@ -64,15 +64,34 @@ export function npmGlobalPrefix(runFn = run) {
   return p || null;
 }
 
-/** Can this user install into npm's global folder? */
+/**
+ * Can this user install into npm's global folder? npm makes missing folders itself (after
+ * `npm config set prefix ~/.local`, ~/.local may not exist yet), so for the package folder and
+ * the bin folder, the nearest one that exists must be a folder this user can write to. Something
+ * on the way that is a file, a dangling link or can't be looked at means no.
+ */
 export function npmPrefixWritable(prefix) {
-  const target = existsSync(join(prefix, 'lib', 'node_modules')) ? join(prefix, 'lib', 'node_modules') : prefix;
-  try {
-    accessSync(target, constants.W_OK);
-    return true;
-  } catch {
-    return false;
-  }
+  const ok = (target) => {
+    for (let p = target; ; p = dirname(p)) {
+      let st;
+      try {
+        st = statSync(p);
+      } catch (e) {
+        if (e.code !== 'ENOENT') return false;
+        try { lstatSync(p); return false; } catch (e2) { if (e2.code !== 'ENOENT') return false; } // a dangling link
+        if (p === dirname(p)) return false;
+        continue;
+      }
+      if (!st.isDirectory()) return false;
+      try {
+        accessSync(p, constants.W_OK | constants.X_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  };
+  return ok(join(prefix, 'lib', 'node_modules')) && ok(join(prefix, 'bin'));
 }
 
 /**

@@ -34,7 +34,7 @@ cctether works in all of these, because the browser connects to a service that y
 
 ## Quick start
 
-You need Node.js 22 or newer on the computer that runs Claude Code.
+You need Node.js 22 or newer on the computer that runs Claude Code ([download](https://nodejs.org/en/download)). The `nodejs` package that comes with some Linux distributions is older (Ubuntu 24.04 has 18), and setup stops with a message if Node is too old.
 
 1. On that computer, open a terminal and run:
 

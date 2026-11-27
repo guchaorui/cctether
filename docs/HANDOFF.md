@@ -4,8 +4,15 @@
 
 ## 零、现在到哪了（先看这里）
 
+> **2026-11-27 晚：在干净的机器上从头装了一遍（第二节第 1 条），修了测出来的问题，做成 0.8.1。** 新窗口从这一段开始：
+> - **怎么测的**（结果全文在 SPEC §11 第 18 条）：主人开了一台谷歌云服务器（Ubuntu 24.04.5 精简镜像，IP 在 `CLAUDE.local.md`），Claude 照 README 当新用户：nvm 装 Node 26（长期支持版），`npx cctether@latest setup` 选 SSH 隧道，后台服务、linger、重启机器、Claude Code（官方一行命令装，没登录）注册都走了一遍；浏览器是开发机上的测试 Chrome（带工作区的插件），经 SSH 隧道配对；扮演 Claude Code 起 `cctether mcp` 调工具。另开了一个用户 `bob` 试 Ubuntu 自带的 Node 18 和 NodeSource 装到系统的 Node 22。
+> - **测出来、0.8.1 修了的**：① **`upload_file` 在 setup 装的 systemd 服务里一律被拒**（沙盒带来一个只映射本用户的用户命名空间，root 的目录在服务眼里属主是 65534，「上面每一级都得是 root 或自己的」就过不去）。**主人自己的服务也一样**，主人 Mac 上的 0.8.0 一试上传就会撞上，所以要先把主人的服务升到 0.8.1。改法在 SPEC §5.2「后台服务的沙盒里」：属主看不出来的目录，只在本用户真实主目录的上级放行；检查完经 `/proc/self/fd` 从核对过的目录打开文件。② 照 setup 的提示 `npm config set prefix ~/.local` 以后，`~/.local` 不存在，又被判成没权限，绕圈子。③ 先问「要不要装」，答了才说装不了。④ 因为换端口而重启时提示写成「为了换版本」。另外 README 和「Node 太旧」的提示加了 nodejs.org 下载链接。
+> - **测出来、没改的**（第二节有）：nvm 装的 Node，注册给 Claude Code 的命令靠 `#!/usr/bin/env node` 找 node，在没加载 nvm 的环境里起不来；Node 26 在精简版 Ubuntu 上缺 `libatomic1`（Node 的事）；linger 要用户自己 `sudo`（setup 给了命令，照做就好）。
+> - **临时服务器还开着**：等 0.8.1 发布以后，在上面用新用户从 npm 再走一遍 setup（验证②③），然后提醒主人删掉（忘了删每月一百多元）。删之前 Claude 不用做别的清理。
+> - **GPT 把关**：方案挑过刺（采纳了把放行收窄到「真实主目录的严格上级」等），做完复审提了 2 条，处理和理由在 SPEC §13 v0.23。
+
 > **2026-11-27：「上传文件」做完了，0.8.0 已发布**（npm、GitHub Release、主人的服务器；主人说「开工」，并说 0.7.0 的商店包先不传，全部做完一起传）。 新窗口从这一段开始：
-> - **主人要做的**：① ~~上传商店的新包~~（主人 2026-11-27 已上传 `dist/cctether-extension-0.8.0-store.zip`，等审核）一次带上 0.6.x 的 iframe、0.7.0 的拖拽和这次的上传文件，0.7.0 的不用传了。商店介绍的功能列表多了「拖拽」和「上传文件」，调试器权限的理由也多了半句（`store/listing*.md` 已改），上传时顺手把介绍文字也更新。② 商店版过审以后，在真 Mac 上试一次上传文件（顺便看插件的内存，见下面），再请 Oracle 那个项目的 Claude 用一次（iframe、`file`、拖拽、上传文件）。
+> - **主人要做的**：① ~~上传商店的新包~~（主人 2026-11-27 已上传 `dist/cctether-extension-0.8.0-store.zip`，**当天过审**，主人 Mac 上已是 0.8.0）一次带上 0.6.x 的 iframe、0.7.0 的拖拽和这次的上传文件，0.7.0 的不用传了。商店介绍的功能列表多了「拖拽」和「上传文件」，调试器权限的理由也多了半句（`store/listing*.md` 已改），上传时顺手把介绍文字也更新。② 商店版过审以后，在真 Mac 上试一次上传文件（顺便看插件的内存，见下面），再请 Oracle 那个项目的 Claude 用一次（iframe、`file`、拖拽、上传文件）。
 > - **下一步（主人 2026-11-27 定）：在干净的机器上从头装一遍**（第二节第 1 条）。商店 0.8.0 主人已经上传，过审以后主人开一台谷歌云服务器，开新窗口把外部 IP 给 Claude。配置已和主人说好：e2-small（2 核 2 GB）、Ubuntu 24.04 LTS、10–20 GB 标准盘、asia-southeast1、只开 SSH、什么都不预装；创建时加了 coding 的公钥（`~/.ssh/id_ed25519.pub`，用户名 `guchaorui`）。IP 记进 `CLAUDE.local.md`，不进仓库。测完提醒主人删掉服务器（忘了删一个月约一百元）。
 >   - 怎么测：照 README 当新用户走。① 装 Node 22，`npx cctether@latest setup` 选 SSH 连法；② 看 systemd 用户服务和 linger 装好没有，重启机器确认自己起来；③ `cctether check`；④ 装 Claude Code，看 setup 能不能注册 MCP（不登录主人的账号）；⑤ 浏览器用 coding 上的测试 Chrome（`test/e2e/lib/chrome.js` 的 `launchChrome` 带工作区插件），经 SSH 隧道连到新机器的服务，配对后经 `cctether mcp` 调几个工具，包括 `upload_file`。不动主人 Mac 上的插件。结果和发现的问题报给主人，记进本文和 SPEC。
 > - **0.8.0（`upload_file`）**：把运行 Claude Code 那台电脑上的文件交给网页的上传框，或者拖进放置区。规则在 SPEC §5.2「上传文件 `upload_file`」（含「施工时定下的细节」），经过在 §13 v0.22。要点：
@@ -52,7 +59,7 @@
 | 主人的 Mac | 商店版 0.5.1 | Chrome 158，连接正常（0.6.2、0.8.0 升级服务时断开十几秒后都自己连回来了） |
 | 官网主页 | 已有卡片 | site-ops 做的。要改卡片交给 site-ops |
 
-- **测试**：服务端 131 个（0.6.2 的在 `server/test/shim.test.js`：假的常驻服务 + 子进程跑的 `cctether mcp`；0.8.0 的上传目录在 `uploads.test.js`，分段协议在 `fragments.test.js`：带背压的限速转发、按规矩乱发的假服务）；端到端 89 个（88 个通过，1 个要有界面的 Chrome，GitHub 上会跳过）。上传文件的两个测试在 `tools.test.mjs` 末尾，测试页 `fixtures/pages/upload.html`、`upload-one.html`，经真服务的一个在 `fullstack.test.mjs`；拖拽的在它们前面，测试页 `fixtures/pages/drag.html`；iframe 的再前面，测试页 `fixtures/pages/frames.html`、`frame-inner.html`（别的网站用 localhost 对 127.0.0.1 来模拟）。
+- **测试**：服务端 138 个（0.8.1 的在 `uploads.test.js` 末尾：沙盒里属主看不出来的几种情况，其中一个在开发机上用 `unshare --user --map-current-user` 真建命名空间，Ubuntu 24.04 这类不许建的地方会跳过；`setup.test.js` 末尾：npm 全局目录还没建出来、不能写时不提问；0.6.2 的在 `server/test/shim.test.js`：假的常驻服务 + 子进程跑的 `cctether mcp`；0.8.0 的上传目录在 `uploads.test.js`，分段协议在 `fragments.test.js`：带背压的限速转发、按规矩乱发的假服务）；端到端 89 个（88 个通过，1 个要有界面的 Chrome，GitHub 上会跳过）。上传文件的两个测试在 `tools.test.mjs` 末尾，测试页 `fixtures/pages/upload.html`、`upload-one.html`，经真服务的一个在 `fullstack.test.mjs`；拖拽的在它们前面，测试页 `fixtures/pages/drag.html`；iframe 的再前面，测试页 `fixtures/pages/frames.html`、`frame-inner.html`（别的网站用 localhost 对 127.0.0.1 来模拟）。
 - **两个新工具在主人的真 Mac 上试过的（2026-11-18，Chrome 157，Retina 屏，系统是浅色）**：调到 390 宽、只改高度、调到比窗口还高（1280×2000）；截图是 1 图片像素 = 1 CSS 像素，按截图坐标点击点得中；强制深色、再恢复跟随系统；跳到别的页面后两个模拟都还在；恢复后回到真实大小（1710×806）；标签页在前台和在后台都试了；在一个真实网站上（nodejs.org）也试了。模拟自动结束后的提醒两种情况都试了：5 分钟没操作后，下一次截图的说明末尾带了一句提醒，再下一次就不带了；Mac 断线几分钟再连上后，按旧坐标点击被拒绝了一次，之后正常。两种情况下页面都回到了真实大小和浅色。
 - **主人在真 Mac 上确认过的**：合盖再打开，连接很快恢复；常用快捷键都对（清单在 SPEC §13 v0.10）；商店版能连上服务端，整条链走通。
 - **外部反馈**：GitHub 上目前 0 个 star，没有 issue。还没有别人用过的反馈。
@@ -83,7 +90,10 @@
 
 **先把「别人能不能装上」验证了。** 项目是给别人用的，这一段却测得最少：
 
-1. **在一台干净的机器上从头装一遍。** `cctether setup` 里 systemd 那几步只用假的 `systemctl` 测过，因为真的会碰到主人在用的服务。开一台临时机器跑 `npx cctether@latest setup`，一路走到连上浏览器。要花一点云服务器的钱，先问主人。
+1. ~~在一台干净的机器上从头装一遍~~：2026-11-27 做完（Ubuntu 24.04，SPEC §11 第 18 条），测出来的问题在 0.8.1 修了。剩下没改的两条：
+   - **用 nvm 装 Node 的人**：注册给 Claude Code 的命令是 `…/bin/cctether mcp`，靠第一行 `#!/usr/bin/env node` 找 node。从交互终端起的 Claude Code 没问题；在没加载 nvm 的环境里（`ssh 服务器 'claude -p …'`、定时任务、项目里 `.nvmrc` 切到旧 Node）会起不来或用错 Node。可以考虑：`node` 和 `cctether` 在同一个 bin 目录时，注册成 `<那个目录>/node <cctether> mcp`（Homebrew 的也是稳定的链接路径）。要注意已经注册过的用户重跑 setup 会被问要不要替换。
+   - **`cctether check` 看不出上传能不能用**：这次的问题只在服务进程（沙盒里）出现，`check` 在沙盒外跑。可以让服务在 `status` 里报告「上传目录能不能用、为什么」，`check` 显示出来。
+   - Mac、WSL 当服务端仍没测（下面第 2、3 条）。HTTPS 连法在干净机器上没测（要域名和开 80/443）。
 2. **Mac 当服务端。** 代码里没有 Mac 的后台服务（launchd），setup 在 Mac 上不会装开机自启，靠 Claude Code 启动时把服务拉起来。文档写的是「没测过，欢迎反馈」。Claude 碰不到 Mac，要主人配合，或者等用户反馈。
 3. **WSL 当服务端。** 同样没测过，开发机上测不了。
 
@@ -146,7 +156,7 @@
 - 真实断网时，扩展后台收不收得到 offline/online 事件（收不到也没关系，每秒会读一次联网状态）。
 - 界面在 Mac 上的样子：开发机没有苹方字体，截图里中文标题是常规粗细。
 - 0.5.x 的新功能没在真的谷歌云控制台上试过、0.6.0 的 iframe 没在真的 Oracle 控制台上试过（那是主人登录的账号，Claude 不自己去点）。0.6.x 的插件部分要等商店过审才到主人的 Mac 上，在那之前只在开发机的测试 Chrome 里测过。在主人的真 Mac 上用公开演示网站（MUI、Angular Material）试过的见 SPEC §11 第 13 条。
-- 第二节第 1、2、3 条：干净机器上真实的 systemd 流程（生成的服务文件用 `systemd-analyze --user verify` 验过）、Mac 和 WSL 当服务端。
+- 第二节第 2、3 条：Mac 和 WSL 当服务端。（干净的 Ubuntu 上真实的 systemd 流程 2026-11-27 测过了，见 SPEC §11 第 18 条。）
 - `resize_viewport` 和 `set_color_scheme` 在主人的真 Mac 上还没试成的：
   - 主人的 Mac 是深色时强制浅色（试的时候系统是浅色）。自动测试里用 `--force-dark-mode` 测过。
   - 页面缩放不是 100% 时调宽度（自动测试里测过）。

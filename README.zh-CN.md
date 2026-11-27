@@ -34,7 +34,7 @@ cctether 这些情况都能用，因为浏览器连的是你自己跑的服务�
 
 ## 快速开始
 
-跑 Claude Code 的那台电脑上要有 Node.js 22 或更新的版本。
+跑 Claude Code 的那台电脑上要有 Node.js 22 或更新的版本（[下载](https://nodejs.org/zh-cn/download)）。有些 Linux 发行版自带的 `nodejs` 软件包比较旧（Ubuntu 24.04 的是 18），版本不够时安装向导会提示并停下。
 
 1. 在那台电脑上打开终端，运行：
 
