@@ -205,14 +205,19 @@ async function checkedDir(dir, view, homeDir) {
     } catch (e) {
       fail(`Can't check a directory above the uploads directory (${e.code || 'error'}).`);
     }
+    const n = relative(d, real).split(sep).length;
+    const where = `The directory ${n} level${n === 1 ? '' : 's'} above the uploads directory`;
     const kind = ownerKind(st.uid, me, view);
     const owner = me === null || kind === 'me' || kind === 'root' || (kind === 'unknown' && trusted.has(d));
+    // Writable by the group is refused too, even when the group is this user's own (Debian and
+    // Ubuntu's umask 002 makes ~/.config so): who else can write can't be told reliably (ACLs,
+    // LDAP, supplementary groups a process kept). The message says which directory, to fix it.
     const othersWrite = (st.mode & 0o022) !== 0 && (st.mode & 0o1000) === 0;
     if (st.isDirectory() && !othersWrite && kind === 'unknown' && !owner) {
-      fail('A directory above the uploads directory belongs to an owner this service can\'t see (it runs in a sandbox, such as the background service\'s, that only knows its own user), so upload_file is off: files there could be swapped while being read. Keep cctether\'s configuration directory inside your home directory.');
+      fail(`${where} belongs to an owner this service can't see (it runs in a sandbox, such as the background service's, that only knows its own user), so upload_file is off: files there could be swapped while being read. Keep cctether's configuration directory inside your home directory.`);
     }
     if (!st.isDirectory() || !owner || othersWrite) {
-      fail('A directory above the uploads directory can be changed by another user (or is not a directory of this user or root), so upload_file is off: files there could be swapped while being read. Check the permissions of the directories above it.');
+      fail(`${where} can be changed by another user (or is not a directory of this user or root), so upload_file is off: files there could be swapped while being read. If it is yours, make it writable only by you (chmod go-w).`);
     }
     if (me !== null && kind === 'unknown') relaxed = true;
   }

@@ -272,3 +272,26 @@ test('uploads: a directory this user may enter but not read: by path as before, 
     chmodSync(up, 0o700);
   }
 });
+
+test('uploads: a group-writable directory above is refused, and the error says which one', async (t) => {
+  if (process.getuid() === 0) return t.skip('root');
+  // Like ~/.config on Debian and Ubuntu (umask 002).
+  const home = join(base, 'gwhome');
+  const up = join(home, '.config', 'cctether', 'uploads');
+  mkdirSync(join(home, '.config', 'cctether'), { recursive: true, mode: 0o700 });
+  ensureUploadsDir(up);
+  put(join(up, 'g.txt'), 'g');
+  const cfg = join(home, '.config');
+  try {
+    chmodSync(cfg, 0o771);
+    await rejects(['g.txt'], /^The directory 2 levels above the uploads directory can be changed by another user.*chmod go-w/, up, { homeDir: home });
+    chmodSync(cfg, 0o700);
+    chmodSync(join(cfg, 'cctether'), 0o770);
+    await rejects(['g.txt'], /^The directory 1 level above the uploads directory can be changed/, up, { homeDir: home });
+    chmodSync(join(cfg, 'cctether'), 0o700);
+    assert.equal((await readUploads(['g.txt'], up, { homeDir: home }))[0].bytes.toString(), 'g');
+  } finally {
+    chmodSync(cfg, 0o700);
+    chmodSync(join(cfg, 'cctether'), 0o700);
+  }
+});

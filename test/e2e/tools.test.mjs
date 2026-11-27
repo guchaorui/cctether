@@ -2563,12 +2563,20 @@ test('upload_file stops before giving the files: pause, leaving the group, navig
   await until(async () => (await call('evaluate', { tab, expression: 'document.readyState' })).ok, 'the page to load');
   await nothing();
 
-  // A dialog opens in the middle (and is handled before the end).
-  await pageEval(tab, 'setTimeout(() => alert("Wait"), 100), true');
-  p = swEval(big());
-  await until(async () => (await call('handle_dialog', { tab, accept: true })).ok, 'the alert to be handled');
-  r = await p;
-  assert.equal(r.ok, false);
+  // A dialog opens in the middle (and is handled before the end). On a busy computer it can open
+  // before the upload starts, which is refused differently (a dialog is open): then again.
+  for (let attempt = 1; ; attempt++) {
+    await pageEval(tab, 'setTimeout(() => alert("Wait"), 100), true');
+    p = swEval(big());
+    await until(async () => (await call('handle_dialog', { tab, accept: true })).ok, 'the alert to be handled');
+    r = await p;
+    assert.equal(r.ok, false);
+    if (attempt < 4 && /^A JavaScript alert dialog saying "Wait" is open/.test(r.message)) {
+      await nothing();
+      continue;
+    }
+    break;
+  }
   assert.match(r.message, /^Not done: a JavaScript alert dialog opened, so nothing was given to the page\./);
   assert.doesNotMatch(r.message, /Wait/);
   await nothing();
