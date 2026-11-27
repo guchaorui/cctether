@@ -4,7 +4,7 @@
 
 ## 零、现在到哪了（先看这里）
 
-> **2026-11-27：「上传文件」做完了，0.8.0（主人说「开工」，并说 0.7.0 的商店包先不传，全部做完一起传）。** 新窗口从这一段开始：
+> **2026-11-27：「上传文件」做完了，0.8.0 已发布**（npm、GitHub Release、主人的服务器；主人说「开工」，并说 0.7.0 的商店包先不传，全部做完一起传）。 新窗口从这一段开始：
 > - **主人要做的**：① 上传商店的新包 `dist/cctether-extension-0.8.0-store.zip`（也在 GitHub Release v0.8.0 里），一次带上 0.6.x 的 iframe、0.7.0 的拖拽和这次的上传文件，0.7.0 的不用传了。商店介绍的功能列表多了「拖拽」和「上传文件」，调试器权限的理由也多了半句（`store/listing*.md` 已改），上传时顺手把介绍文字也更新。② 商店版过审以后，在真 Mac 上试一次上传文件（顺便看插件的内存，见下面），再请 Oracle 那个项目的 Claude 用一次（iframe、`file`、拖拽、上传文件）。
 > - **0.8.0（`upload_file`）**：把运行 Claude Code 那台电脑上的文件交给网页的上传框，或者拖进放置区。规则在 SPEC §5.2「上传文件 `upload_file`」（含「施工时定下的细节」），经过在 §13 v0.22。要点：
 >   - 文件只能来自 cctether 的上传文件夹（`~/.config/cctether/uploads/`，服务自己建，权限 700）。Claude 先把文件复制进去，再传文件名。不收路径、链接、硬链接；上面任何一级文件夹别人能改的话就不干。一次最多 10 个、合计 20 MiB。
@@ -43,11 +43,11 @@
 | 在哪 | 版本 | 说明 |
 |---|---|---|
 | 仓库 `main` | 0.8.0 | 已公开（`guchaorui/cctether`），GitHub 上的测试全过 |
-| npm（`cctether`） | 0.7.0 | 2026-11-09 起由 GitHub Actions 可信发布，带来源证明。0.6.2、0.7.0 的包都和 Release 里的逐字节一致 |
-| GitHub Release | v0.7.0 | 附插件 zip、npm 包和校验和；两个插件 zip 和本地打的一致 |
+| npm（`cctether`） | 0.8.0 | 2026-11-09 起由 GitHub Actions 可信发布，带来源证明。0.6.2、0.7.0、0.8.0 的包都和 Release 里的逐字节一致 |
+| GitHub Release | v0.8.0 | 附插件 zip、npm 包和校验和；两个插件 zip 和本地打的一致 |
 | Chrome 应用商店 | 0.5.1 | **0.8.0 的包等主人上传**（`dist/cctether-extension-0.8.0-store.zip`，也在 GitHub Release 里；0.6.x、0.7.0 的都不用传）。0.5.1 2026-11-26 过审，和 v0.5.1 逐文件核对过（只有 manifest 按预期不同，多了 `_metadata/`）。[商店页面](https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib)，插件 ID `mbkadoolgknacadjkfjjajldmllbkdib` |
-| 主人的服务器 | 0.7.0 | 2026-11-27 从 npm 装的，`cctether check` 全过（细节在 `CLAUDE.local.md`） |
-| 主人的 Mac | 商店版 0.5.1 | Chrome 158，连接正常（0.6.2 升级时断开十几秒后自己连回来了） |
+| 主人的服务器 | 0.8.0 | 2026-11-27 从 npm 装的，`cctether check` 全过，上传目录已建好（700）。在这台服务器上开着的 Claude Code 会话里直接调了一次 `upload_file`（0.6.2 让它不用重开就出现了）：插件还是 0.5.1，在读文件之前就说「请更新插件」，符合预期（细节在 `CLAUDE.local.md`） |
+| 主人的 Mac | 商店版 0.5.1 | Chrome 158，连接正常（0.6.2、0.8.0 升级服务时断开十几秒后都自己连回来了） |
 | 官网主页 | 已有卡片 | site-ops 做的。要改卡片交给 site-ops |
 
 - **测试**：服务端 131 个（0.6.2 的在 `server/test/shim.test.js`：假的常驻服务 + 子进程跑的 `cctether mcp`；0.8.0 的上传目录在 `uploads.test.js`，分段协议在 `fragments.test.js`：带背压的限速转发、按规矩乱发的假服务）；端到端 89 个（88 个通过，1 个要有界面的 Chrome，GitHub 上会跳过）。上传文件的两个测试在 `tools.test.mjs` 末尾，测试页 `fixtures/pages/upload.html`、`upload-one.html`，经真服务的一个在 `fullstack.test.mjs`；拖拽的在它们前面，测试页 `fixtures/pages/drag.html`；iframe 的再前面，测试页 `fixtures/pages/frames.html`、`frame-inner.html`（别的网站用 localhost 对 127.0.0.1 来模拟）。
