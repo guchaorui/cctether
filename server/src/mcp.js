@@ -4,6 +4,7 @@
 import { TOOLS, mcpToolList, toolTimeoutMs } from './tools.js';
 import { validate } from './schema.js';
 import { expandEvalFile } from './evalfile.js';
+import { readUploads, UploadError } from './uploads.js';
 
 export const SUPPORTED_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 const MAX_TEXT = 2_000_000;
@@ -29,8 +30,12 @@ const NOT_CONNECTED = [
  * @param {(msg: string) => void} [opts.log]
  * @param {string} [opts.unavailable]  if set, every tool call fails with this message (used by the shim's fallback)
  * @param {string} [opts.scriptsDir]  where evaluate's `file` is read from (SPEC §5.2); none: no `file`
+ * @param {string} [opts.uploadsDir]  where upload_file reads files from (SPEC §5.2); none: no uploads
+ * @param {{ busy: boolean }} [opts.uploads]  shared by all sessions of a service: one upload at a time
  */
-export function createMcpSession({ write, browser, version, log = () => {}, unavailable = null, scriptsDir = null }) {
+export function createMcpSession({
+  write, browser, version, log = () => {}, unavailable = null, scriptsDir = null, uploadsDir = null, uploads = { busy: false },
+}) {
   const reply = (id, result) => write(JSON.stringify({ jsonrpc: '2.0', id, result }));
   const replyError = (id, code, message) => write(JSON.stringify({ jsonrpc: '2.0', id: id ?? null, error: { code, message } }));
 
@@ -58,6 +63,54 @@ export function createMcpSession({ write, browser, version, log = () => {}, unav
       + 'Ask the user to update the extension; until then, use the arguments the error says it accepts.)';
   }
 
+  /**
+   * upload_file (SPEC §5.2): the service reads the files and sends their contents, in fragments,
+   * to the connection it checked; one upload at a time for the whole service.
+   */
+  async function uploadFile(tool, args) {
+    const conn = browser?.browser ?? null;
+    if (!conn) return { result: errorResult(NOT_CONNECTED) };
+    // Checked before any file is read.
+    if (!conn.info) return { result: errorResult('The browser connected a moment ago and is still setting up the connection. Try again in a second.') };
+    if (!conn.info.frag) {
+      return { result: errorResult(`upload_file needs the cctether browser extension 0.8.0 or newer; the connected one is ${conn.info.extension || 'older'} (this server is ${version}). `
+        + 'Ask the user to update the extension (chrome://extensions → Developer mode → Update). Until then, ask the user to choose the file on the page themselves.') };
+    }
+    if (!uploadsDir) return { result: errorResult('upload_file is not available here (no uploads directory).') };
+    if (uploads.busy) return { result: errorResult('Another upload is in progress (one at a time). Try again when it is done.') };
+    uploads.busy = true;
+    try {
+      let files;
+      try {
+        files = await readUploads(args.files, uploadsDir);
+      } catch (e) {
+        if (e instanceof UploadError) return { result: errorResult(`Nothing was uploaded: ${e.message}`) };
+        throw e;
+      }
+      const sent = { ...args, files: files.map((f) => ({ name: f.name, type: f.type, data: f.bytes.toString('base64') })) };
+      files = null;
+      let r;
+      try {
+        r = await browser.call('upload_file', sent, toolTimeoutMs('upload_file', sent), { connection: conn, fragments: true });
+      } catch (e) {
+        if (e.code === 'no_browser') return { result: errorResult(NOT_CONNECTED) };
+        const nothing = /Nothing was run|nothing was run/.test(e.message);
+        if (e.code === 'timeout' || (e.code === 'disconnected' && !nothing)) {
+          return { result: errorResult(`${e.message} The files may or may not have been given to the page: check the page (screenshot or read_page) before trying again, so that they are not given twice.`) };
+        }
+        if (e.code === 'disconnected' || e.code === 'send_timeout') return { result: errorResult(`Nothing was uploaded: ${e.message} It may reconnect in a few seconds; then try again.`) };
+        if (e.code === 'too_large' || e.code === 'busy') return { result: errorResult(`Nothing was uploaded: ${e.message}`) };
+        log(`tool upload_file failed: ${e.code ?? 'error'}`);
+        return { result: errorResult(`cctether error: ${e.message}`) };
+      }
+      if (!r.ok && r.error?.code === 'bad_args') return { result: errorResult(withVersionNote(r.error.message)) };
+      if (!r.ok) return { result: errorResult(r.error.message) };
+      return { result: { content: sanitizeContent(r.data?.content) } };
+    } finally {
+      uploads.busy = false;
+    }
+  }
+
   async function callTool(params) {
     const name = params?.name;
     const tool = TOOLS.find((t) => t.name === name);
@@ -66,6 +119,7 @@ export function createMcpSession({ write, browser, version, log = () => {}, unav
     const invalid = validate(tool.inputSchema, args);
     if (invalid) return { result: errorResult(`Invalid arguments: ${invalid}.`) };
     if (unavailable) return { result: errorResult(unavailable) };
+    if (name === 'upload_file') return uploadFile(tool, args);
     let pinned; // for `file`: the browser connection when the call came, the only one it may go to
     if (name === 'evaluate') {
       // The service reads `file` and sends the script as `expression` (SPEC §5.2).
@@ -120,7 +174,7 @@ export function createMcpSession({ write, browser, version, log = () => {}, unav
       case 'ping':
         return isRequest && reply(id, {});
       case 'tools/list':
-        return reply(id, { tools: mcpToolList(scriptsDir) });
+        return reply(id, { tools: mcpToolList(scriptsDir, uploadsDir) });
       case 'tools/call': {
         const r = await callTool(params);
         return r.error ? replyError(id, r.error.code, r.error.message) : reply(id, r.result);

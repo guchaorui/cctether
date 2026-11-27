@@ -143,7 +143,7 @@ Settings live in `$CCTETHER_HOME`, else `$XDG_CONFIG_HOME/cctether`, else `~/.co
 
 ## Tools
 
-Claude gets these 23 tools:
+Claude gets these 24 tools:
 
 | Tool | What it does |
 |---|---|
@@ -165,6 +165,7 @@ Claude gets these 23 tools:
 | `select_option` | Chooses options in a `<select>`, or in a custom dropdown that declares itself (`role=combobox` / `listbox`). |
 | `wait_for` | Waits until text or an element appears (or disappears), for up to 10 minutes. |
 | `evaluate` | Runs JavaScript in the page and returns the result as JSON (a returned Promise is awaited). A long script can be saved once in cctether's scripts directory and then run by its file name. |
+| `upload_file` | Gives files to a file input on the page, or drops them on a drop zone. The files come from cctether's uploads folder on the computer that runs Claude Code (`~/.config/cctether/uploads`): Claude copies a file there first. Up to 20 MiB at a time. |
 | `console_messages` | Reads console messages and uncaught errors. |
 | `network_requests` | Lists network requests, or shows headers and body of one. |
 | `handle_dialog` | Accepts or dismisses an alert, confirm or prompt. |
@@ -192,6 +193,7 @@ When you install it, Chrome warns that the extension can "Read and change all yo
 - After the handshake, every message is encrypted with AES-256-GCM. A proxy that can read HTTPS traffic still can't read or inject commands.
 - To another computer, the extension only connects over `wss://`. Plain `ws://` is only allowed to this computer.
 - Claude can only use tabs in the cctether tab group. You can pause at any time.
+- `upload_file` reads files only from cctether's own uploads folder, not from anywhere else on the computer, and gives them only to the site Claude names for that tab.
 - The service accepts only this extension, rate-limits failed attempts, and serves only the path `/cctether`.
 - No analytics, no telemetry. Nothing is sent anywhere except to your own service.
 - The connection code is a secret. If it leaks, run `cctether rotate` on the server, then pair again.
@@ -226,7 +228,7 @@ Your pairing is kept either way.
 
 ## Does it cost much?
 
-- **Claude's context:** the 23 tool descriptions take about 5,400 tokens, under 3% of a 200k context. Recent Claude Code versions load MCP tools on demand when there are many of them, so until Claude actually uses the browser, only the tool names (about 150 tokens) and a short note (about 120 tokens) sit in the context.
+- **Claude's context:** the 24 tool descriptions take about 5,900 tokens, under 3% of a 200k context. Recent Claude Code versions load MCP tools on demand when there are many of them, so until Claude actually uses the browser, only the tool names (about 150 tokens) and a short note (about 120 tokens) sit in the context.
 - **Memory on the Claude Code computer:** the service uses about 75 MB, and each open Claude Code window adds a small relay process of about 55 MB.
 - **The browser:** the extension does nothing while Claude isn't using it, apart from a tiny heartbeat every 10 seconds.
 
@@ -238,6 +240,7 @@ Your pairing is kept either way.
 - Very long full-page screenshots are scaled down (to stay under the image size limit), so they come out narrow.
 - `resize_viewport` gives a narrow desktop viewport, not a phone emulation: the user agent, touch and pixel ratio stay as they are, so it checks the layout at that width, not everything a real phone does.
 - `set_color_scheme` changes what the page is told about the system's color scheme; it does not operate a site's own theme switch or change a theme the site has saved.
+- `upload_file` sets the files of a file input with script events, as a page's own code could; it can't answer the browser's "choose a file" window. Most pages and upload widgets take files this way. A page that insists on a real person's choice won't, and some drop zones (react-dropzone, for example) ignore a drop that didn't come from a real drag: setting the files on their file input works instead. Files go only from the uploads folder; inputs in other sites' iframes and choosing folders aren't supported.
 - One browser per service at a time.
 - The service doesn't run on Windows directly. Use WSL.
 
@@ -253,7 +256,7 @@ Both should work, but nobody has tried them yet. Feedback is welcome: [open an i
 1. `claude mcp remove -s user cctether`, and if setup added it, the cctether note in `~/.claude/CLAUDE.md`
 2. If you installed the background service: `systemctl --user disable --now cctether`, then delete `~/.config/systemd/user/cctether.service`.
 3. `npm uninstall -g cctether`
-4. Delete the config folder: `~/.config/cctether` (or `$CCTETHER_HOME` if you set it).
+4. Delete the config folder: `~/.config/cctether` (or `$CCTETHER_HOME` if you set it). It also holds the scripts and uploads folders.
 5. In Chrome, remove the extension on `chrome://extensions`. If you loaded it yourself, also delete the `cctether-extension` folder.
 
 ## Development

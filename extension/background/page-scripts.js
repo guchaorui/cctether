@@ -2161,9 +2161,194 @@ export function cctetherPageLib() {
     return true;
   }
 
+  // ---- upload_file (SPEC §5.2) -----------------------------------------------------------------
+  // tools/upload.js names the target once (uploadTarget), passes the files' bytes in, in pieces
+  // (uploadChunk), has the files made and set, or a drop made ready (uploadAssign), then fires the
+  // events (uploadDispatch). The page can't see this world, so nothing reaches it before
+  // uploadAssign. The bytes are kept for that one upload only (uploadDrop, or the next upload).
+  const UPLOAD_MAX = 20 * 1024 * 1024;
+  const isFileInput = (el) => !!el && el.nodeType === 1 && el.localName === 'input' && String(el.type).toLowerCase() === 'file';
+  let upload = null; // { id, sizes, parts: Uint8Array[][], got: number[], dt }
+  const GONE = 'The page navigated or reloaded during the upload, so nothing was given to it.';
+
+  function fileInputs() {
+    const out = [];
+    for (const d of allDocs()) for (const el of d.querySelectorAll('input[type=file i]')) out.push(el);
+    return out;
+  }
+
+  function fileInputLine(el) {
+    const bits = [];
+    const acc = el.getAttribute('accept');
+    if (acc) bits.push(`accept=${JSON.stringify(clip(acc, 80))}`);
+    if (el.multiple) bits.push('multiple');
+    if (el.disabled) bits.push('disabled');
+    if (el.webkitdirectory) bits.push('folders');
+    bits.push(rendered(el) ? 'visible' : 'hidden');
+    const lab = el.labels && [...el.labels].map((l) => norm(l.innerText || '')).find(Boolean);
+    if (lab) bits.push(`label ${JSON.stringify(clip(lab, 60))}`);
+    return `[${ref(el)}] ${labelIn(el)}: ${bits.join(', ')}`;
+  }
+
+  /** File inputs inside el (drop zones usually have one, often hidden). */
+  const innerFileInputs = (el) => [...el.querySelectorAll('input[type=file i]')];
+
+  function fileInputList() {
+    const all = fileInputs();
+    const lines = all.slice(0, 20).map(fileInputLine);
+    if (all.length > 20) lines.push(`… and ${all.length - 20} more`);
+    return lines;
+  }
+
+  /** The origin of a document's realm ('null' if opaque): srcdoc and about:blank frames share their parent's. */
+  const realmOrigin = (d) => { try { return String(d.defaultView.origin); } catch { return 'null'; } };
+
+  /** Why a file input can't take `count` files, or null. */
+  function inputRefusal(el, count) {
+    if (el.disabled) return `${labelIn(el)} is disabled`;
+    if (el.webkitdirectory) return `${labelIn(el)} is for choosing a folder, which upload_file doesn't do`;
+    if (count > 1 && !el.multiple) return `${labelIn(el)} takes one file (it has no "multiple"), and ${count} were given`;
+    return null;
+  }
+
+  /** The element the files go to: a file input (or the one a label is for), or with drop, a drop zone. */
+  function uploadTarget(o) {
+    let el;
+    if (o.ref == null && o.selector == null && o.text == null) {
+      if (o.drop) return ERR('bad_args', 'Say which element to drop the files on: `ref`, `selector` or `text`.');
+      const all = fileInputs();
+      if (!all.length) {
+        return ERR('no_element', `There is no file input on the page that cctether can reach.${blindNote()} `
+          + 'Pages that open a file chooser from a button usually have a hidden one; if it is in another site\'s frame or a closed shadow root, or the page makes it only when clicked, ask the user to choose the file.');
+      }
+      if (all.length > 1) return ERR('ambiguous', `The page has ${all.length} file inputs, so cctether did not pick one. Pass the ref of the right one:`, fileInputList());
+      el = all[0];
+    } else {
+      el = resolve(o);
+      if (el.__error) return el;
+    }
+    let t = el;
+    if (o.drop) {
+      if (isFileInput(t)) return ERR('bad_args', `${labelIn(t)} is a file input: pass it without drop (drop is for drop zones).`);
+      if (!rendered(t)) return ERR('no_element', `${labelIn(t)} is not visible (hidden or zero size), so it is not a drop zone the user could drop on.`);
+    } else {
+      if (!isFileInput(t) && t.localName === 'label' && isFileInput(t.control)) t = t.control;
+      if (!isFileInput(t)) {
+        const inner = innerFileInputs(el);
+        if (inner.length === 1) {
+          return ERR('no_element', `${labelIn(el)} is not a file input, but it contains one: pass its ref (without drop) to set the files on it:`, [fileInputLine(inner[0])]);
+        }
+        const list = fileInputList();
+        return ERR('no_element', `${labelIn(el)} is not a file input (<input type=file>) or the label of one, so upload_file can't set files on it. `
+          + (list.length ? 'These are the file inputs cctether can reach; pass the ref of the right one (or pass drop: true to drop the files on the element instead):' : `The page has no file input cctether can reach.${blindNote()} To drop the files on the element instead, pass drop: true.`),
+        list.length ? list : undefined);
+      }
+      const why = inputRefusal(t, o.count);
+      if (why) return ERR('bad_args', `Not done: ${why}.`);
+    }
+    const inner = o.drop ? innerFileInputs(t) : [];
+    return {
+      ref: ref(t), doc: docToken, desc: labelIn(t), input: isFileInput(t),
+      inner: inner.length === 1 ? ref(inner[0]) : null,
+      origin: realmOrigin(t.ownerDocument), top: realmOrigin(document),
+      accept: isFileInput(t) ? t.getAttribute('accept') || '' : '',
+    };
+  }
+
+  function fromBase64(b64) {
+    if (typeof Uint8Array.fromBase64 === 'function') return Uint8Array.fromBase64(b64);
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+
+  /** Start an upload ({ begin, sizes }) or add a piece of file `file` ({ b64 }). */
+  function uploadChunk(o) {
+    if (o.doc !== docToken) return ERR('navigated', GONE);
+    if (o.begin) {
+      upload = null;
+      const total = o.sizes.reduce((a, b) => a + b, 0);
+      if (!(total <= UPLOAD_MAX)) return ERR('bad_args', 'The files are too large.');
+      upload = { id: o.id, sizes: o.sizes, parts: o.sizes.map(() => []), got: o.sizes.map(() => 0), dt: null };
+      return true;
+    }
+    const u = upload;
+    if (!u || u.id !== o.id || !u.parts) return ERR('navigated', GONE);
+    const bytes = fromBase64(o.b64);
+    if (!(o.file >= 0 && o.file < u.sizes.length) || u.got[o.file] + bytes.length > u.sizes[o.file]) {
+      upload = null;
+      return ERR('internal', 'cctether passed a file into the page wrongly, so nothing was given to it.');
+    }
+    u.parts[o.file].push(bytes);
+    u.got[o.file] += bytes.length;
+    return true;
+  }
+
+  /**
+   * Make the files (in the target's own frame) and set them on the file input, or keep them for
+   * the drop. Checks first that it is still the same element, page and site. Fires no events.
+   */
+  function uploadAssign(o) {
+    const u = upload;
+    if (!u || u.id !== o.id || !u.parts || o.doc !== docToken) return ERR('navigated', GONE);
+    if (u.got.some((g, i) => g !== u.sizes[i])) { upload = null; return ERR('internal', 'Part of a file did not reach the page, so nothing was given to it.'); }
+    const el = resolve({ ref: o.ref, doc: o.doc });
+    if (el.__error) { upload = null; return ERR('stale_ref', 'The element was removed (or its frame navigated) during the upload, so nothing was given to the page. Find it again, then retry.'); }
+    const d = el.ownerDocument;
+    if (realmOrigin(d) !== o.origin || realmOrigin(document) !== o.origin) { upload = null; return ERR('navigated', `The page is no longer on ${o.origin}, so nothing was given to it.`); }
+    if (isFileInput(el) !== !o.drop) { upload = null; return ERR('stale_ref', 'The element changed during the upload, so nothing was given to the page. Find it again, then retry.'); }
+    if (!o.drop) {
+      const why = inputRefusal(el, o.files.length);
+      if (why) { upload = null; return ERR('bad_args', `Not done: ${why}.`); }
+    }
+    const W = d.defaultView;
+    const dt = new W.DataTransfer();
+    const now = Date.now();
+    o.files.forEach((f, i) => dt.items.add(new W.File(u.parts[i], f.name, { type: f.type, lastModified: now })));
+    u.parts = null; // the files hold the bytes now
+    const list = (fl) => [...fl].map((f) => ({ name: f.name, size: f.size, type: f.type }));
+    if (o.drop) {
+      u.dt = dt;
+      return { before: 0, got: list(dt.files) };
+    }
+    const before = el.files ? el.files.length : 0;
+    el.files = dt.files;
+    return { before, got: list(el.files || []) };
+  }
+
+  /** Fire input and change on the file input, or dragenter, dragover and drop on the drop zone. */
+  function uploadDispatch(o) {
+    const u = upload;
+    upload = null;
+    if (!u || u.id !== o.id || o.doc !== docToken) return ERR('navigated', 'The page navigated or reloaded before the events were fired.');
+    const el = resolve({ ref: o.ref, doc: o.doc });
+    if (el.__error) return ERR('stale_ref', 'The element was removed before the events were fired.');
+    const W = el.ownerDocument.defaultView;
+    if (!o.drop) {
+      el.dispatchEvent(new W.Event('input', { bubbles: true, composed: true }));
+      el.dispatchEvent(new W.Event('change', { bubbles: true }));
+      return { after: el.files ? el.files.length : 0, connected: el.isConnected };
+    }
+    const r = el.getBoundingClientRect();
+    const init = { bubbles: true, cancelable: true, composed: true, dataTransfer: u.dt, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+    el.dispatchEvent(new W.DragEvent('dragenter', init));
+    const over = el.dispatchEvent(new W.DragEvent('dragover', init));
+    const drop = el.dispatchEvent(new W.DragEvent('drop', init));
+    // dispatchEvent is false when a listener called preventDefault: the page took part.
+    return { accepted: !over, handled: !drop };
+  }
+
+  /** Forget the bytes of upload o.id (it stopped). */
+  function uploadDrop(o) {
+    if (upload && upload.id === o.id) upload = null;
+    return true;
+  }
+
   const api = {
     readText, interactive, html, find, point, pointNow, pressCheck, at, elementRect, metrics, shotCheck, scrollPageTo,
     dragWatch, dragResult,
+    uploadTarget, uploadChunk, uploadAssign, uploadDispatch, uploadDrop,
     focus, focusedOn, active, checkFocus, selectAllInFocused, focusedLength, forceClear, valueOf, selectOption,
     ddTarget, ddOptions, ddPick, ddFinal, ddShown, ddSettling, visibleOptions,
     scrollerInfo, scrollerStep, scrollerRestore, mainScroller,

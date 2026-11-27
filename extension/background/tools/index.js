@@ -18,6 +18,7 @@ import {
 } from './page.js';
 import { click, hover, drag, type, pressKey, scroll, selectOption } from './input.js';
 import { consoleMessages, networkRequests, handleDialog } from './logs.js';
+import { uploadFile, uploadFiles } from './upload.js';
 
 export { ToolError };
 
@@ -153,6 +154,14 @@ const TOOLS = {
     required: ['expression'],
     run: evaluate,
   },
+  upload_file: {
+    kind: 'page',
+    // files: what the service read from its uploads directory, [{ name, type, data (base64) }].
+    args: { files: uploadFiles(), ref: A.ref, selector: A.selector, text: A.text, drop: bool(), tab: A.tab, origin: str(1, 2000) },
+    required: ['files', 'tab', 'origin'],
+    check: (a) => { if (a.ref != null && (a.selector != null || a.text != null)) throw new ToolError('bad_args', 'Pass `ref` alone, or `selector` and/or `text`, not both kinds.'); },
+    run: uploadFile,
+  },
   console_messages: {
     kind: 'page',
     args: {
@@ -219,7 +228,7 @@ function withNote(e, note) {
   return new Error(`${String(e)}\n${note}`);
 }
 
-async function runPageTool(def, args, startedAt) {
+async function runPageTool(def, args, startedAt, paused) {
   const tab = await resolveTab(args.tab);
   setCurrentTab(tab.id);
   let summary = null;
@@ -254,7 +263,7 @@ async function runPageTool(def, args, startedAt) {
       if (def.gesture) s.gesture = true;
     }
     try {
-      const result = await def.run({ tab, s, startedAt }, args);
+      const result = await def.run({ tab, s, startedAt, paused }, args);
       result.tab ??= await tabSummary(tab.id);
       if (lost) result.content.push({ type: 'text', text: lostNote(lost) });
       return result;
@@ -276,15 +285,17 @@ async function runPageTool(def, args, startedAt) {
 /**
  * Run one tool. Never evaluates anything received here in the extension's own context:
  * `evaluate` sends its expression to the page through CDP.
+ * paused(): whether the user has paused cctether since the call started (upload_file checks it
+ * right before giving the files).
  */
-export async function runTool(name, args) {
+export async function runTool(name, args, { paused = () => false } = {}) {
   const startedAt = Date.now(); // drag keeps within the time the service waits, counted from here
   const def = typeof name === 'string' && Object.hasOwn(TOOLS, name) ? TOOLS[name] : null;
   if (!def) throw new ToolError('bad_args', `Unknown tool ${JSON.stringify(String(name)).slice(0, 80)}. Tools: ${TOOL_NAMES.join(', ')}.`);
   try {
     const clean = checkArgs(name, args, def.args, def.required);
     def.check?.(clean);
-    return def.kind === 'page' ? await runPageTool(def, clean, startedAt) : await def.run(clean);
+    return def.kind === 'page' ? await runPageTool(def, clean, startedAt, paused) : await def.run(clean);
   } catch (e) {
     if (e instanceof ToolError) throw e;
     const err = new ToolError('internal', `${name} failed unexpectedly: ${e?.message ?? e}`);

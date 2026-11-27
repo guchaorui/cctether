@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>One upload</title></head>
+<body>
+<!-- A page with a single, hidden file input, opened from a button (the usual upload widget). -->
+<button onclick="document.getElementById('only').click()">Attach a file</button>
+<input type="file" id="only" hidden>
+<p id="out"></p>
+<script>
+  const only = document.getElementById('only');
+  only.addEventListener('change', async () => { document.getElementById('out').textContent = `Attached ${only.files[0].name}: ${await only.files[0].text()}`; });
+</script>
+</body>
+</html>

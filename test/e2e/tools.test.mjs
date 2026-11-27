@@ -190,6 +190,11 @@ test('tool names and arguments match the server definitions', async () => {
       const props = Object.keys(t.inputSchema.properties).filter((k) => !(t.serverOnly ?? []).includes(k));
       assert.deepEqual([...ext.TOOL_ARGS[t.name]].sort(), props.sort(), `arguments of ${t.name}`);
     }
+    // Every tool has a name in the popup's activity log, in both languages.
+    const { STRINGS } = await import(join(EXT, 'shared', 'strings.js'));
+    for (const [lang, pack] of Object.entries(STRINGS)) {
+      for (const name of ext.TOOL_NAMES) assert.ok(pack[`tool.${name}`], `${lang} has no activity label for ${name}`);
+    }
     const util = await import(join(EXT, 'background', 'tools', 'util.js'));
     assert.equal(util.normalizeUrl('example.com'), 'https://example.com/');
     assert.equal(util.normalizeUrl('localhost:3000/x'), 'http://localhost:3000/x');
@@ -2382,5 +2387,168 @@ test('drag stops sending input when a dialog opens, the page navigates, or the t
   assert.doesNotMatch(msg, /^Dragged/);
   await rejoin(tab);
   assert.deepEqual(await pageEval(tab, 'window.events.splice(0)'), ['box-down'], 'nothing after the press reached the page');
+  await ok('close_tab', { tab });
+});
+
+// ---- upload_file ------------------------------------------------------------------------------
+// The extension gets the files as the service sends them: { name, type, data (base64) }.
+
+const file = (name, type, content) => ({ name, type, data: Buffer.from(content).toString('base64') });
+
+test('upload_file: file inputs (hidden, by label, the only one), events, accept, replacing, refusals', async () => {
+  const tab = await openShared('/pages/upload.html');
+  const origin = new URL(base).origin;
+  const log = () => until(async () => { const l = await pageEval(tab, 'window.log.splice(0)'); return l.length ? l : null; }, 'the page to log', 3000);
+  const quiet = async () => { await new Promise((r) => setTimeout(r, 300)); assert.deepEqual(await pageEval(tab, 'window.log.splice(0)'), [], 'nothing reached the page'); };
+
+  // A visible input, by selector: the page gets input and change (synthetic), and the contents.
+  let r = await ok('upload_file', { tab, origin, selector: '#plain', files: [file('报告 "1".txt', 'text/plain', 'hello 你好')] });
+  assert.match(r.text, /^Gave the file "报告 \\"1\\"\.txt" \(\d+ B, text\/plain\) to file#plain on http:\/\/127\.0\.0\.1:\d+, and fired input and change on it \(synthetic events/);
+  assert.doesNotMatch(r.text, /replacing/);
+  let l = await log();
+  assert.deepEqual(l.map((e) => `${e.where} ${e.ev} ${e.trusted}`), ['plain input false', 'plain change false']);
+  assert.deepEqual(l[1].files, [{ name: '报告 "1".txt', size: 12, type: 'text/plain', text: 'hello 你好' }]);
+  // Again: it replaces the file chosen before.
+  r = await ok('upload_file', { tab, origin, selector: '#plain', files: [file('b.txt', 'text/plain', 'second')] });
+  assert.match(r.text, /replacing the file chosen there before/);
+  assert.equal((await log()).at(-1).files[0].text, 'second');
+
+  // A hidden input, by the text of its label; a file its accept list doesn't match is noted.
+  r = await ok('upload_file', { tab, origin, text: 'Choose a photo', files: [file('doc.pdf', 'application/pdf', '%PDF')] });
+  assert.match(r.text, / to file(#photo| "Choose a photo") on /);
+  assert.match(r.text, /Note: the input's accept list is "image\/\*", which "doc\.pdf" does not match/);
+  assert.equal((await log()).at(-1).files[0].name, 'doc.pdf');
+  r = await ok('upload_file', { tab, origin, selector: '#photolabel', files: [file('p.png', 'image/png', 'PNG')] });
+  assert.doesNotMatch(r.text, /accept list/);
+  await log();
+
+  // Several files: in order, only on a multiple input.
+  const two = [file('one.txt', 'text/plain', '1'), file('two.csv', 'text/csv', '2')];
+  let e = await fails('upload_file', { tab, origin, selector: '#plain', files: two }, 'bad_args');
+  assert.match(e.message, /takes one file \(it has no "multiple"\), and 2 were given/);
+  await ok('upload_file', { tab, origin, selector: '#multi', files: two });
+  assert.deepEqual((await log()).at(-1).files.map((f) => f.name), ['one.txt', 'two.csv']);
+
+  // Refusals: nothing reaches the page.
+  e = await fails('upload_file', { tab, origin, selector: '#off', files: [two[0]] }, 'bad_args');
+  assert.match(e.message, /is disabled/);
+  e = await fails('upload_file', { tab, origin, selector: '#folder', files: [two[0]] }, 'bad_args');
+  assert.match(e.message, /choosing a folder/);
+  e = await fails('upload_file', { tab, origin, selector: '#btn', files: [two[0]] }, 'no_element');
+  assert.match(e.message, /button "Upload" is not a file input/);
+  assert.match(e.message, /\[\d+\] file#plain: visible/);
+  assert.match(e.message, /\[\d+\] file[^\n]*: accept="image\/\*", hidden, label "Choose a photo"/);
+  e = await fails('upload_file', { tab, origin, files: [two[0]] }, 'ambiguous');
+  assert.match(e.message, /The page has 8 file inputs/);
+  e = await fails('upload_file', { tab, origin: 'https://example.com', selector: '#plain', files: [two[0]] }, 'bad_args');
+  assert.match(e.message, /shows http:\/\/127\.0\.0\.1:\d+, not https:\/\/example\.com, so nothing was given/);
+  e = await fails('upload_file', { tab, origin: 'javascript:alert(1)', selector: '#plain', files: [two[0]] }, 'bad_args');
+  e = await fails('upload_file', { tab, origin, selector: '#plain', files: [{ name: '../x', type: 'text/plain', data: '' }] }, 'bad_args');
+  e = await fails('upload_file', { tab, origin, selector: '#plain', files: [{ name: 'x', type: 'text/plain', data: 'not base64!' }] }, 'bad_args');
+  assert.doesNotMatch(e.message, /not base64!/, 'the data is never echoed');
+  e = await fails('upload_file', { origin, selector: '#plain', files: [two[0]] }, 'bad_args');
+  assert.match(e.message, /`tab` is required/);
+  await quiet();
+
+  // A widget that takes the file at once and empties the input, then sends it.
+  r = await ok('upload_file', { tab, origin, selector: '#instant', files: [file('now.txt', 'text/plain', 'sent')] });
+  assert.match(r.text, /The page emptied the input right after/);
+  await until(async () => (await pageEval(tab, 'window.log.some((x) => x.where === "instant-sent" && x.ok)')), 'the page to send the file');
+  await pageEval(tab, 'window.log.splice(0)');
+
+  // A same-origin frame's input.
+  r = await ok('upload_file', { tab, origin, selector: '#inner', files: [file('in.txt', 'text/plain', 'framed')] });
+  assert.match(r.text, /to file#inner in frame "Inner form" on /);
+  l = await log();
+  assert.deepEqual(l.at(-1).files.map((f) => f.text), ['framed']);
+
+  // Drop zones.
+  r = await ok('upload_file', { tab, origin, selector: '#zone', drop: true, files: two });
+  assert.match(r.text, /^Dropped 2 files "one\.txt" \(1 B, text\/plain\), "two\.csv" \(1 B, text\/csv\) on div "Drop files here" on http:\/\/127\.0\.0\.1:\d+: fired dragenter, dragover and drop/);
+  assert.match(r.text, /The page handled the drop \(it called preventDefault on it\)\./);
+  l = await log();
+  assert.deepEqual(l.map((x) => x.ev), ['dragenter', 'dragover', 'drop']);
+  assert.deepEqual(l[0].types, ['Files']);
+  assert.deepEqual(l[2].files.map((f) => f.text), ['1', '2']);
+  r = await ok('upload_file', { tab, origin, text: 'Not a drop zone', drop: true, files: [two[0]] });
+  assert.match(r.text, /did not call preventDefault on the drop, so it may not have taken the files/);
+  e = await fails('upload_file', { tab, origin, selector: '#plain', drop: true, files: [two[0]] }, 'bad_args');
+  assert.match(e.message, /is a file input: pass it without drop/);
+  e = await fails('upload_file', { tab, origin, drop: true, files: [two[0]] }, 'bad_args');
+  // A widget with its file input inside: pointed at the input.
+  e = await fails('upload_file', { tab, origin, selector: '#widget', files: [two[0]] }, 'no_element');
+  assert.match(e.message, /is not a file input, but it contains one: pass its ref \(without drop\)[\s\S]*\[\d+\] file#hiddenin: hidden/);
+  r = await ok('upload_file', { tab, origin, selector: '#widget', drop: true, files: [two[0]] });
+  assert.match(r.text, /If it did not take them, set them on the file input inside the drop zone instead: ref \d+, without drop\./);
+  await quiet();
+
+  // A page with one (hidden) file input: no target needed.
+  await ok('navigate', { tab, url: `${base}/pages/upload-one.html` });
+  r = await ok('upload_file', { tab, origin, files: [file('only.txt', 'text/plain', 'just me')] });
+  assert.match(r.text, /to file#only on /);
+  await until(async () => (await pageEval(tab, 'document.getElementById("out").textContent')) === 'Attached only.txt: just me', 'the page to read the file');
+  await ok('close_tab', { tab });
+});
+
+test('upload_file stops before giving the files: pause, leaving the group, navigation, a dialog', async () => {
+  const tab = await openShared('/pages/upload.html');
+  const origin = new URL(base).origin;
+  // 15 MB: long enough to step in while it is being passed into the page.
+  await swEval(`self.__big = 'QUFB'.repeat(5_000_000), true`);
+  const big = (extra = '') => `self.cctether.runTool('upload_file', { tab: ${tab}, origin: ${JSON.stringify(origin)}, selector: '#plain', files: [{ name: 'big.bin', type: 'application/octet-stream', data: self.__big }] }${extra})
+    .then((r) => ({ ok: true, text: r.content[0].text }), (e) => ({ ok: false, code: e.code, message: e.message }))`;
+  const nothing = async () => {
+    await new Promise((r) => setTimeout(r, 200));
+    assert.deepEqual(await pageEval(tab, 'window.log.splice(0)'), [], 'nothing reached the page');
+    assert.equal(await pageEval(tab, 'document.getElementById("plain").files.length'), 0);
+  };
+  // It works when left alone (and is fast enough on this computer to need the steps below).
+  const t0 = Date.now();
+  let r = await swEval(big());
+  assert.ok(r.ok, JSON.stringify(r));
+  const took = Date.now() - t0;
+  assert.match(r.text, /^Gave the file "big\.bin" \(15\.0 MB, application\/octet-stream\)/);
+  assert.equal((await pageEval(tab, 'window.log.splice(0)')).at(-1).files[0].size, 15_000_000);
+  await ok('navigate', { tab, url: `${base}/pages/upload.html` });
+
+  // Paused in the middle.
+  await swEval('self.__paused = false');
+  let p = swEval(big(', { paused: () => self.__paused }'));
+  await new Promise((res) => setTimeout(res, Math.min(150, took / 4)));
+  await swEval('self.__paused = true');
+  r = await p;
+  assert.equal(r.ok, false);
+  assert.match(r.message, /^Not done: cctether was paused, so nothing was given to the page\./);
+  await nothing();
+
+  // The tab leaves the group in the middle.
+  p = swEval(big());
+  await new Promise((res) => setTimeout(res, Math.min(150, took / 4)));
+  await swEval(`chrome.tabs.ungroup(${tab})`);
+  r = await p;
+  assert.equal(r.ok, false);
+  assert.match(r.message, /cctether no longer has the tab|left the cctether group|no longer shared|detached/i);
+  await rejoin(tab);
+  await nothing();
+
+  // The page reloads in the middle.
+  p = swEval(big());
+  await new Promise((res) => setTimeout(res, Math.min(150, took / 4)));
+  await swEval(`chrome.tabs.reload(${tab})`);
+  r = await p;
+  assert.equal(r.ok, false);
+  assert.match(r.message, /navigated or reloaded during the upload, so nothing was given|the page navigated, so nothing was given/);
+  await until(async () => (await call('evaluate', { tab, expression: 'document.readyState' })).ok, 'the page to load');
+  await nothing();
+
+  // A dialog opens in the middle (and is handled before the end).
+  await pageEval(tab, 'setTimeout(() => alert("Wait"), 100), true');
+  p = swEval(big());
+  await until(async () => (await call('handle_dialog', { tab, accept: true })).ok, 'the alert to be handled');
+  r = await p;
+  assert.equal(r.ok, false);
+  assert.match(r.message, /a JavaScript alert dialog saying "Wait" opened|dialog/);
+  await nothing();
+  await swEval('delete self.__big, true');
   await ok('close_tab', { tab });
 });

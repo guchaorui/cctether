@@ -30,6 +30,7 @@ export function validate(schema, value, path = 'arguments') {
     if (schema.pattern && !new RegExp(schema.pattern).test(value)) return `${path} has the wrong format`;
   }
   if (Array.isArray(value)) {
+    if (schema.minItems !== undefined && value.length < schema.minItems) return `${path} needs at least ${schema.minItems} item${schema.minItems === 1 ? '' : 's'}`;
     if (schema.maxItems !== undefined && value.length > schema.maxItems) return `${path} has too many items (max ${schema.maxItems})`;
     if (schema.items) {
       for (let i = 0; i < value.length; i++) {

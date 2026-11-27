@@ -1,6 +1,6 @@
 # cctether privacy policy
 
-Last updated: 2026-11-08
+Last updated: 2026-11-27
 
 This policy covers the cctether browser extension (Chrome Web Store and the version you load yourself) and the cctether service you run next to Claude Code.
 
@@ -19,6 +19,7 @@ The extension lets your own AI coding agent (Claude Code, or another MCP client)
 - the console messages and network requests of a shared tab, including request and response headers and bodies
 - clicks, typing and key presses in a shared tab
 - JavaScript that your agent asks to run in a shared tab
+- files your agent uploads to a page in a shared tab (`upload_file`): your service reads them from its own uploads folder on your computer and sends them, encrypted, to the extension, which gives them to that page. The extension keeps them in memory only for that call and does not write them to disk (Chrome itself may move large in-memory files to a temporary file when memory is short). Once the page has them, what it does with them is up to that website.
 - the title and address of your tabs. These are not sent anywhere for tabs outside the group; the extension looks at them only to tell which tabs are in the group, and to show the Share button for the tab you are looking at.
 
 Tabs outside the cctether tab group are not read or controlled.

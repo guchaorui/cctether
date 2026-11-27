@@ -14,19 +14,19 @@
   - 全程走用户自己的连接，不经过 Anthropic 的中转服务器。
 - 起因：官方 Claude in Chrome 插件要经过 Anthropic 中转。主人的 Mac 有时连不上 Claude，这条链就断了。
 - 要开源（MIT），给有同样需求的人用。所以不能写死主人的环境，界面和 README 都要中英双语。
-- **当前：第二阶段全部做完，已公开发布（npm、GitHub、Chrome 应用商店），现在是 0.7.0（2026-11-27：0.6.2 让开着的会话在服务升级后拿到新工具，0.7.0 加了 `drag`；「上传文件」只写了方案在 SPEC §5.2，等主人定）。商店的 0.7.0 包等主人上传。新对话从 `docs/HANDOFF.md` 第零节开始，后续优化的候选清单在第二节。**
+- **当前：第二阶段全部做完，已公开发布（npm、GitHub、Chrome 应用商店），现在是 0.8.0（2026-11-27：0.6.2 让开着的会话在服务升级后拿到新工具，0.7.0 加了 `drag`，0.8.0 加了 `upload_file`）。商店的新包等主人上传（直接传 0.8.0 的，0.7.0 的不用传）。新对话从 `docs/HANDOFF.md` 第零节开始，后续优化的候选清单在第二节。**
 
 ## 仓库结构
 
 ```
 extension/          浏览器插件：MV3，零依赖，不打包，用户能直接「加载已解压的扩展程序」
   background/       service worker：main.js → app.js（总调度）、connection.js + crypto.js（连接和加密）、
-                    tabs.js（标签组范围）、debugger.js（调试器）、page-scripts.js（在页面里跑的库，含同源 iframe）、tools/（23 个工具）、badge.js（图标）
+                    tabs.js（标签组范围）、debugger.js（调试器）、page-scripts.js（在页面里跑的库，含同源 iframe）、tools/（24 个工具）、badge.js（图标）
   popup/ options/   弹窗、设置页；文字全在 shared/strings.js（中英）
   shared/           contract.js（后台和界面之间的约定）、pairing.js（连接码）、i18n、ui.css
   icons/            图标；源文件和生成脚本是 scripts/icons.mjs
 server/             npm 包 cctether：bin/cctether.js 命令行；src/ 里 gateway（插件入口）、control（控制入口）、
-                    mcp、shim（cctether mcp）、listwatch（服务换版本后通知客户端工具清单变了）、daemon、protocol、config、tools（工具定义，唯一来源）、evalfile（evaluate 读脚本文件）、
+                    mcp、shim（cctether mcp）、listwatch（服务换版本后通知客户端工具清单变了）、daemon、protocol、config、tools（工具定义，唯一来源）、evalfile（evaluate 读脚本文件）、uploads（upload_file 读上传目录）、
                     setup（安装向导）、check（自检）、system（探测 npm/systemd/claude）、text（setup 和 check 的中英文案）
 test/e2e/           端到端测试：无界面 Chrome for Testing + 插件 + 服务；lib/ 是自写的 CDP 客户端和 Chrome 启动器
 docs/               SPEC（施工图）、HANDOFF（交接）、install-mac.zh-CN.md（Mac 安装步骤）、

@@ -25,6 +25,16 @@ const timeout = (def, max) => ({ type: 'integer', minimum: 100, maximum: max, de
 export const SCRIPTS_DIR = '<scripts directory>';
 const FILE_DESC = `Instead of expression: the name of a .js file in cctether's scripts directory, ${SCRIPTS_DIR}. Write a long script there once, then pass its name (edit it there and pass the name again); it runs like expression (a browser script: no import/export). Globals it defines stay in the page until it reloads.`;
 
+/** upload_file's directory; mcpToolList puts its path where UPLOADS_DIR is. */
+export const UPLOADS_DIR = '<uploads directory>';
+const NO_UPLOADS_DIR = '"uploads" in cctether\'s configuration directory';
+
+/** How long the service waits for upload_file: the transfer (its size) plus the extension's own 30 s. */
+export const uploadTimeoutMs = (a) => {
+  const bytes = Array.isArray(a.files) ? a.files.reduce((n, f) => n + (typeof f?.data === 'string' ? f.data.length : 0), 0) : 0;
+  return Math.min(240_000, 60_000 + Math.ceil((bytes / 1048576) * 6000));
+};
+
 const READ = { readOnlyHint: true, destructiveHint: false, openWorldHint: true };
 const ACT = { readOnlyHint: false, destructiveHint: false, openWorldHint: true };
 const DANGER = { readOnlyHint: false, destructiveHint: true, openWorldHint: true };
@@ -317,6 +327,28 @@ export const TOOLS = [
     timeoutMs: (a) => (a.timeout_ms ?? 10000) + 5000,
   },
   {
+    name: 'upload_file',
+    title: 'Upload file',
+    description: `Set files on a file input (or its <label>; default: the page's only one), or drop them on a drop zone (drop: true; prefer its file input, often hidden: some widgets ignore synthetic drops). Files come only from cctether's uploads directory, ${UPLOADS_DIR}: copy them there, then pass their names. The site gets the files and may read or send them on at once: for personal or sensitive files, ask the user first. Files stay there until deleted; other sessions of this service can upload them too. If a page ignores the synthetic events, ask the user to pick the file.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        files: {
+          type: 'array', items: { type: 'string', minLength: 1, maxLength: 255 }, minItems: 1, maxItems: 10,
+          description: 'File names in the uploads directory (names, not paths). At most 20 MiB in all.',
+        },
+        ref, selector, text,
+        drop: { type: 'boolean', description: 'Drop the files on the element (a drop zone) instead of setting a file input.' },
+        tab: { type: 'integer', description: 'Tab id from list_tabs. Required here.' },
+        origin: { type: 'string', minLength: 1, maxLength: 2000, description: 'The site the files are for, e.g. "https://example.com". Nothing is given if the tab shows another site.' },
+      },
+      required: ['files', 'tab', 'origin'],
+      additionalProperties: false,
+    },
+    annotations: ACT,
+    timeoutMs: uploadTimeoutMs,
+  },
+  {
     name: 'console_messages',
     title: 'Console messages',
     description: 'Read console messages and uncaught errors of a tab, including ones from extension content scripts (labelled with the extension name). Newest last.',
@@ -397,9 +429,13 @@ export function toolTimeoutMs(name, args) {
   return t?.timeoutMs ? t.timeoutMs(args) : DEFAULT_TIMEOUT_MS;
 }
 
-/** Tool list as sent in MCP tools/list; `scriptsDir`: the path to put in evaluate's `file`. */
-export function mcpToolList(scriptsDir = null) {
+/**
+ * Tool list as sent in MCP tools/list; `scriptsDir`: the path to put in evaluate's `file`,
+ * `uploadsDir`: in upload_file's description.
+ */
+export function mcpToolList(scriptsDir = null, uploadsDir = null) {
   return TOOLS.map(({ name, title, description, inputSchema, annotations }) => {
+    if (description.includes(UPLOADS_DIR)) description = description.replace(UPLOADS_DIR, uploadsDir ?? NO_UPLOADS_DIR);
     let schema = inputSchema;
     if (inputSchema.properties.file) {
       const { file, ...props } = inputSchema.properties;

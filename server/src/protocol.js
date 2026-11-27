@@ -20,6 +20,15 @@ export const NONCE_BYTES = 32;
 /** Max frame sizes (SPEC §4.4). */
 export const MAX_FROM_EXTENSION = 32 * 1024 * 1024;
 export const MAX_TO_EXTENSION = 1024 * 1024;
+/**
+ * A message to the extension that is too big for one frame may be sent as fragments, for
+ * upload_file only (SPEC §4.4, §5.2): { t: 'frag', i, n, s } with i = 0 … n-1 and s a slice of the
+ * message's JSON text. At most MAX_FRAGMENTS of them, at most MAX_FRAGMENTED_TO_EXTENSION bytes
+ * of sealed frames in all. Only pongs may come between them. The extension says it takes them
+ * with `frag: true` in its (encrypted) info message.
+ */
+export const MAX_FRAGMENTED_TO_EXTENSION = 32 * 1024 * 1024;
+export const MAX_FRAGMENTS = 64;
 export const HANDSHAKE_TIMEOUT_MS = 5000;
 export const IDLE_TIMEOUT_MS = 60000;
 
@@ -99,7 +108,11 @@ export class SessionCipher {
    * value, if that would be longer than maxBytes: a counter value skipped would break the stream.
    */
   seal(obj, maxBytes = Infinity) {
-    const plain = Buffer.from(JSON.stringify(obj), 'utf8');
+    return this.sealBytes(Buffer.from(JSON.stringify(obj), 'utf8'), maxBytes);
+  }
+
+  /** seal() for a message already turned into JSON (UTF-8 bytes). */
+  sealBytes(plain, maxBytes = Infinity) {
     if (plain.length + 16 > maxBytes) throw new TooLargeError(plain.length + 16);
     const c = createCipheriv('aes-256-gcm', this.#sendKey, ivFor(this.#sendCounter++));
     return Buffer.concat([c.update(plain), c.final(), c.getAuthTag()]);

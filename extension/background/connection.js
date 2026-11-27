@@ -22,7 +22,19 @@ const SERVER_ERRORS = new Set(['auth_rejected', 'origin_rejected', 'update_exten
 const NO_AUTO_RECONNECT = new Set(['replaced', 'insecure_url', ...SLOW_ERRORS]);
 /** Messages above this many characters are sent as fragments (frames must stay under 1 MB). */
 const FRAG_CHARS = 120_000;
-const MAX_MESSAGE_CHARS = 30 * 1024 * 1024;
+const MAX_MESSAGE_BYTES = 30 * 1024 * 1024;
+
+// What the server may send (SPEC §4.4): frames of at most 1 MiB. A bigger message comes as
+// fragments { t: 'frag', i, n, s }, for upload_file only: in order, only pongs between them, at
+// most MAX_FRAGMENTS of them and MAX_FRAGMENTED bytes of frames, within FRAG_TIME_MS.
+const MAX_FRAME = 1024 * 1024;
+const MAX_HANDSHAKE_TEXT = 4096;
+const MAX_FRAGMENTS = 64;
+const MAX_FRAGMENTED = 32 * 1024 * 1024;
+const FRAG_TIME_MS = 5 * 60_000;
+/** Frames waiting to be decrypted, in bytes: more than one fragmented message's worth is wrong. */
+const MAX_QUEUED = MAX_FRAGMENTED + 2 * MAX_FRAME;
+const utf8Length = (text) => (text.length * 3 <= MAX_MESSAGE_BYTES ? text.length : new TextEncoder().encode(text).length);
 
 const CLOSE_CODE_ERRORS = { 4401: 'auth_rejected', 4403: 'origin_rejected', 4409: 'replaced', 4408: 'timeout' };
 
@@ -58,6 +70,10 @@ export class Connection {
   #cipher = null;
   #sendChain = Promise.resolve();
   #recvChain = Promise.resolve();
+  /** Bytes of frames received and not yet processed. */
+  #queued = 0;
+  /** A fragmented message arriving: { n, parts: string[], bytes, timer }. */
+  #frag = null;
 
   /** @param {ConnectionOptions} opts */
   constructor(opts) {
@@ -180,6 +196,8 @@ export class Connection {
     this.#retryAt = null;
     this.#waitingForNetwork = false;
     this.#cipher = null;
+    this.#queued = 0;
+    this.#dropFragments();
     const ws = this.#ws;
     this.#ws = null;
     if (ws) {
@@ -227,8 +245,22 @@ export class Connection {
     };
     ws.onmessage = (ev) => {
       if (gen !== this.#gen) return;
-      if (typeof ev.data === 'string') enqueue(() => this.#onText(gen, ev.data, cn, key));
-      else enqueue(() => this.#onBinary(gen, ev.data));
+      // Sizes are checked before anything is queued or decrypted.
+      if (typeof ev.data === 'string') {
+        if (ev.data.length > MAX_HANDSHAKE_TEXT) return this.#down(gen, 'protocol_error');
+        enqueue(() => this.#onText(gen, ev.data, cn, key));
+        return;
+      }
+      const size = ev.data.byteLength;
+      if (!(size <= MAX_FRAME) || this.#queued + size > MAX_QUEUED) {
+        this.#o.log('connection error: a frame from the server is too large');
+        return this.#down(gen, 'protocol_error');
+      }
+      this.#queued += size;
+      enqueue(() => {
+        this.#queued -= size;
+        return this.#onBinary(gen, ev.data);
+      });
     };
     ws.onerror = () => {};
     ws.onclose = (ev) => {
@@ -275,6 +307,12 @@ export class Connection {
       return this.#down(gen, 'protocol_error');
     }
     if (gen !== this.#gen) return;
+    // Any authenticated frame shows the link works: while a big message trickles in on a slow
+    // link, a pong may come late behind its fragments.
+    if (this.#phase === 'connected' && this.#pongTimer) {
+      clearTimeout(this.#pongTimer);
+      this.#pongTimer = null;
+    }
 
     if (this.#phase === 'auth') {
       if (m.t !== 'welcome') return this.#down(gen, 'protocol_error');
@@ -282,7 +320,8 @@ export class Connection {
       this.#phase = 'connected';
       this.#attempt = 0;
       this.#hbTimer = setInterval(() => this.#heartbeat(gen), this.#o.heartbeatMs);
-      this.#send(gen, { t: 'info', ...this.#o.getInfo() });
+      // frag: this extension takes fragmented messages from the server (upload_file).
+      this.#send(gen, { t: 'info', ...this.#o.getInfo(), frag: true });
       this.#setStatus({
         conn: 'connected', error: null, retryAt: null,
         serverVersion: typeof m.server === 'string' ? m.server.slice(0, 20) : null,
@@ -292,10 +331,15 @@ export class Connection {
       return;
     }
 
+    if (m.t === 'frag') {
+      m = this.#onFragment(gen, m, buf.byteLength);
+      if (!m) return;
+    } else if (this.#frag && m.t !== 'pong') {
+      return this.#protocolError(gen, 'another message in the middle of a fragmented one');
+    }
+
     switch (m.t) {
       case 'pong':
-        clearTimeout(this.#pongTimer);
-        this.#pongTimer = null;
         break;
       case 'call':
         // Calls run concurrently; don't block the receive chain.
@@ -309,6 +353,42 @@ export class Connection {
       default:
         break; // newer servers may send optional messages
     }
+  }
+
+  #protocolError(gen, why) {
+    this.#o.log(`connection error: ${why}`);
+    this.#down(gen, 'protocol_error');
+  }
+
+  #dropFragments() {
+    if (this.#frag) clearTimeout(this.#frag.timer);
+    this.#frag = null;
+  }
+
+  /**
+   * One fragment of a big message: checked against what came before. Returns the whole message
+   * once its last fragment is in, else null. Anything out of order breaks the connection.
+   */
+  #onFragment(gen, m, size) {
+    const bad = (why) => { this.#protocolError(gen, `bad fragment (${why})`); return null; };
+    if (typeof m.s !== 'string' || !Number.isSafeInteger(m.i) || !Number.isSafeInteger(m.n)) return bad('fields');
+    let f = this.#frag;
+    if (!f) {
+      if (m.i !== 0 || m.n < 2 || m.n > MAX_FRAGMENTS) return bad('start');
+      f = this.#frag = { n: m.n, parts: [], bytes: 0, timer: setTimeout(() => this.#protocolError(gen, 'fragmented message took too long'), FRAG_TIME_MS) };
+    } else if (m.n !== f.n || m.i !== f.parts.length) return bad('order');
+    f.bytes += size;
+    if (f.bytes > MAX_FRAGMENTED) return bad('too large');
+    f.parts.push(m.s);
+    if (m.i < f.n - 1) return null;
+    const text = f.parts.join('');
+    f.parts = null; // only the joined text from here on
+    this.#dropFragments();
+    let whole;
+    try { whole = JSON.parse(text); } catch { return bad('not JSON'); }
+    // Only upload_file is sent this way.
+    if (!whole || typeof whole !== 'object' || whole.t !== 'call' || whole.tool !== 'upload_file') return bad('not an upload_file call');
+    return whole;
   }
 
   async #handleCall(gen, m) {
@@ -337,10 +417,11 @@ export class Connection {
   /** Encrypt and send, splitting big messages into fragments; keeps wire order. */
   #send(gen, obj) {
     let text = JSON.stringify(obj);
-    if (text.length > MAX_MESSAGE_CHARS && obj.t === 'result') {
+    const bytes = utf8Length(text);
+    if (bytes > MAX_MESSAGE_BYTES && obj.t === 'result') {
       text = JSON.stringify({
         t: 'result', id: obj.id, ok: false,
-        error: { code: 'too_large', message: `The result is too large to send (${Math.round(text.length / 1048576)} MB). Ask for less, e.g. a smaller screenshot or a narrower selector.` },
+        error: { code: 'too_large', message: `The result is too large to send (${Math.round(bytes / 1048576)} MB). Ask for less, e.g. a smaller screenshot or a narrower selector.` },
       });
     }
     const pieces = [];

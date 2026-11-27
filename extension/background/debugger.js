@@ -333,9 +333,10 @@ class TabSession {
 
   /**
    * Call a function of the page library (page-scripts.js) in the isolated world. Library
-   * functions report expected failures as { __error: { code, message } }.
+   * functions report expected failures as { __error: { code, message } }. If the page's world
+   * went away (a navigation), the call is tried again in the new one, unless `retry` is false.
    */
-  async lib(fn, args = [], { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+  async lib(fn, args = [], { timeoutMs = DEFAULT_TIMEOUT_MS, retry = true } = {}) {
     for (let attempt = 0; ; attempt++) {
       let ctx;
       try {
@@ -353,11 +354,14 @@ class TabSession {
         const v = r.result?.value;
         if (v && typeof v === 'object' && v.__error) {
           const { code, message, list } = v.__error;
-          throw new ToolError(code, Array.isArray(list) ? `${message}\n${untrusted(list.join('\n'))}` : message);
+          const err = new ToolError(code, Array.isArray(list) ? `${message}\n${untrusted(list.join('\n'))}` : message);
+          err.fromPage = true; // the library's own answer: it ran, and says what happened
+          throw err;
         }
         return v;
       } catch (e) {
-        if (attempt < 3 && isContextGone(e)) {
+        // retry: false for calls that must not run in another document than the one before.
+        if (retry && attempt < 3 && isContextGone(e)) {
           if (ctx === undefined || this.worldCtx === ctx) this.worldCtx = null;
           await sleep(100 * (attempt + 1));
           continue;

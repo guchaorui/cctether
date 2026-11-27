@@ -130,7 +130,7 @@ async function onCall(tool, args) {
     return { ok: false, error: { code: 'paused', message: PAUSED_MESSAGES[settings.pausedReason] ?? PAUSED_MESSAGES.user } };
   }
   try {
-    const r = await runTool(tool, args);
+    const r = await runTool(tool, args, { paused: () => settings.paused });
     recordActivity(tool, r?.tab ?? null, true);
     return { ok: true, data: { content: r.content } };
   } catch (e) {

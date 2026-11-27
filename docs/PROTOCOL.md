@@ -23,7 +23,7 @@ extension                                   service (127.0.0.1:27182, path /ccte
 - WebSocket (RFC 6455). The service listens on `127.0.0.1` only (default port 27182) and accepts upgrades only on the path `/cctether`; any other path, and any plain HTTP request, gets `404`. Reaching it from another computer is left to an SSH tunnel or a reverse proxy that terminates TLS.
 - The extension only connects to `wss://` addresses, or to `ws://` on `127.0.0.1`, `localhost` or `[::1]`.
 - No WebSocket extensions (no per-message deflate).
-- Maximum frame payload: 1 MiB in both directions. Larger messages from the extension are split (see [Fragments](#fragments)).
+- Maximum frame payload: 1 MiB in both directions. Larger messages are split (see [Fragments](#fragments)).
 
 ### Origin check
 
@@ -105,19 +105,27 @@ iv    = 0x00000000 | counter (64-bit unsigned, big-endian)
 | `t` | Direction | Fields | Meaning |
 |---|---|---|---|
 | `welcome` | service → extension | `server`: service version | First encrypted message. The extension treats the connection as up only after decrypting it. |
-| `info` | extension → service | `extension`, `browser`, `platform` (strings) | Sent once after `welcome`; shown by `cctether status`. |
+| `info` | extension → service | `extension`, `browser`, `platform` (strings); `frag`: true if it takes fragments from the service (0.8.0 and later) | Sent once after `welcome`; shown by `cctether status`. |
 | `ping` | extension → service | | Every 10 s. |
-| `pong` | service → extension | | Reply to `ping`. No `pong` within 10 s and the extension reconnects. The service closes a connection that has sent nothing for 60 s (4408). |
+| `pong` | service → extension | | Reply to `ping`. If nothing at all arrives from the service within 10 s of a `ping` (a `pong`, or any other frame), the extension reconnects. The service closes a connection that has sent nothing for 60 s (4408). |
 | `call` | service → extension | `id` (integer), `tool` (string), `args` (object) | Run a browser tool. Calls may overlap. |
 | `result` | extension → service | `id`, `ok` (boolean), then `data` if ok, else `error`: `{ code, message }` | `data` is MCP tool content: `{ "content": [ { "type": "text", "text": … } \| { "type": "image", "data": <base64>, "mimeType": … } ] }`. |
 | `frag` | extension → service | `s` (string), `end` (true on the last piece) | A piece of a larger message; see below. |
+| `frag` | service → extension | `i`, `n` (integers), `s` (string) | Piece `i` of `n` of an `upload_file` call; see below. |
 | `bye` | service → extension | `reason`: `replaced`, `key_changed` or `shutdown` | Sent just before the service closes the connection on purpose. |
 
 The extension runs only tools on its fixed list, with arguments checked against each tool's schema. Code from `evaluate` runs only inside the web page, never in the extension.
 
 ### Fragments
 
-A single message from the extension may be large (a full-page screenshot can be tens of megabytes), but a frame may not exceed 1 MiB. The service accepts up to 32 Mi characters of reassembled JSON text; the extension stays under that by replacing any result over 30 Mi characters with a `too_large` error. The extension splits the JSON text of a large message into slices of at most 120,000 characters and sends each as its own encrypted `{"t":"frag","s":"<slice>"}`; the last one has `"end": true`. The service joins the slices and parses the result as one message. Other messages can't be interleaved with a fragmented one. Messages from the service are limited to 1 MiB and are never fragmented.
+**From the extension.** A single message from the extension may be large (a full-page screenshot can be tens of megabytes), but a frame may not exceed 1 MiB. The service accepts up to 32 MiB (UTF-8 bytes) of reassembled JSON text; the extension stays under that by replacing any result over 30 MiB with a `too_large` error. The extension splits the JSON text of a large message into slices of at most 120,000 characters and sends each as its own encrypted `{"t":"frag","s":"<slice>"}`; the last one has `"end": true`. The service joins the slices and parses the result as one message. Other messages can't be interleaved with a fragmented one.
+
+**From the service** (0.8.0 and later, only for `upload_file`, whose call carries file contents). The service sends a call over 1 MiB this way only if the extension's `info` said `"frag": true`; to an extension that didn't, the call is refused before anything is sent.
+
+- The JSON text of the message is cut into slices, each sent as its own encrypted `{"t":"frag","i":<0…n-1>,"n":<n>,"s":"<slice>"}`. Slices are cut so that every sealed frame stays within 1 MiB counting UTF-8 bytes after JSON quoting, and never inside a surrogate pair. At most 64 fragments, and at most 32 MiB of sealed frames in all.
+- The extension accepts fragments only once the connection is up (after `welcome`), and only in order: the first has `i` 0 and 2 ≤ `n` ≤ 64, each next one the next `i` and the same `n`. The only message allowed between two fragments is `pong`. The joined text must be a `call` of `upload_file`, and the whole message must arrive within 5 minutes. Anything else (a gap, a repeat, a change of `n`, another message in between, too many bytes, a frame over 1 MiB) is a protocol error: the extension drops the connection and reconnects, discarding what it had.
+- The service sends the fragments one at a time, each only when less than 256 KiB is waiting in its socket's buffer, so memory stays bounded and a `pong` can go between them. Other messages wait until the last fragment is out. If the call times out before then, or a fragment can't be sent, the service drops the connection at once (the extension holds part of a message, so only a new connection starts afresh).
+- On a slow link a `pong` may arrive late behind fragments already on the way. The extension counts any frame from the service as a sign of life, so it doesn't give up on a connection that is busy delivering one.
 
 ## Errors before encryption
 

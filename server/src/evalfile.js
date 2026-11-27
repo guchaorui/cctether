@@ -20,9 +20,10 @@ export const scriptsDir = (configDir) => join(configDir, 'scripts');
 /**
  * Create the scripts directory (private to the user) if it isn't there. One that is there is
  * left as it is, whatever it is: making a directory others could write to private now would
- * make the scripts they put there earlier look trusted. Reading checks it.
+ * make the scripts they put there earlier look trusted. Reading checks it. (The uploads
+ * directory, uploads.js, is made the same way.)
  */
-export function ensureScriptsDir(dir) {
+export function ensurePrivateDir(dir) {
   try {
     mkdirSync(dirname(dir), { recursive: true, mode: 0o700 });
     // Not recursive: if anything (a link put there meanwhile) is in the way, EEXIST, and it is
@@ -31,8 +32,10 @@ export function ensureScriptsDir(dir) {
   } catch { /* there already, or reported when a file is read from it */ }
 }
 
+export const ensureScriptsDir = ensurePrivateDir;
+
 /** Is dir itself (not a link to one) a directory of this user that nobody else can use? */
-async function privateDir(dir) {
+export async function privateDir(dir) {
   try {
     const st = await lstat(dir);
     return st.isDirectory() && (process.getuid ? st.uid === process.getuid() : true) && (st.mode & 0o077) === 0;

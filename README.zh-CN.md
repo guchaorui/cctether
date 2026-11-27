@@ -143,7 +143,7 @@ cctether 这些情况都能用，因为浏览器连的是你自己跑的服务�
 
 ## 工具
 
-Claude 能用这 23 个工具：
+Claude 能用这 24 个工具：
 
 | 工具 | 作用 |
 |---|---|
@@ -165,6 +165,7 @@ Claude 能用这 23 个工具：
 | `select_option` | 在 `<select>` 下拉框里选值，也能用在声明了 `role=combobox` / `listbox` 的自定义下拉框上。 |
 | `wait_for` | 等某段文字或某个元素出现（或消失），最多等 10 分钟。 |
 | `evaluate` | 在页面里执行 JavaScript，结果以 JSON 返回（返回的是 Promise 时会等它）。长脚本可以在 cctether 的脚本目录里存一次，以后只传文件名。 |
+| `upload_file` | 把文件交给页面上的上传框，或者拖进一个放置区。文件来自运行 Claude Code 那台电脑上 cctether 的上传文件夹（`~/.config/cctether/uploads`）：Claude 先把文件复制进去。一次最多 20 MiB。 |
 | `console_messages` | 读控制台消息和没被捕获的错误。 |
 | `network_requests` | 列出网络请求，或查看某一条的请求头、响应头和响应体。 |
 | `handle_dialog` | 接受或关闭 alert、confirm、prompt 弹框。 |
@@ -192,6 +193,7 @@ Claude 能用这 23 个工具：
 - 握手之后，每条消息都用 AES-256-GCM 加密。就算有代理能解开 HTTPS，也看不到、塞不进指令。
 - 连别的电脑时，插件只用 `wss://`。明文的 `ws://` 只允许连本机。
 - Claude 只能用 cctether 标签组里的标签页。你可以随时暂停。
+- `upload_file` 只从 cctether 自己的上传文件夹读文件，电脑上别的地方的文件它读不到；而且只交给 Claude 为这个标签页指明的那个网站。
 - 服务只接受这个插件，会对失败的尝试限流，并且只认路径 `/cctether`。
 - 没有统计，没有遥测。除了你自己的服务，数据不会发往任何地方。
 - 连接码是秘密。万一泄露，在服务器上运行 `cctether rotate`，再重新配对。
@@ -226,7 +228,7 @@ Claude 能用这 23 个工具：
 
 ## 占用大吗？
 
-- **Claude 的上下文：** 23 个工具的说明一共约 5400 个 token，不到 20 万上下文的 3%。新版 Claude Code 在 MCP 工具多的时候会按需加载：Claude 真正用到浏览器之前，上下文里只有工具名（约 150 个 token）和一小段说明（约 120 个 token）。
+- **Claude 的上下文：** 24 个工具的说明一共约 5900 个 token，不到 20 万上下文的 3%。新版 Claude Code 在 MCP 工具多的时候会按需加载：Claude 真正用到浏览器之前，上下文里只有工具名（约 150 个 token）和一小段说明（约 120 个 token）。
 - **跑 Claude Code 那台电脑的内存：** 服务本身约 75 MB；每开一个 Claude Code 窗口，多一个约 55 MB 的转接小进程。
 - **浏览器：** Claude 不用的时候插件什么也不做，只有每 10 秒一次很小的心跳。
 
@@ -238,6 +240,7 @@ Claude 能用这 23 个工具：
 - 很长的整页截图会被缩小（为了不超过图片尺寸上限），所以会很窄。
 - `resize_viewport` 模拟的是「窄的桌面视口」，不是手机：UA、触摸、像素比都不变，所以能检查这个宽度下的布局，不能代替真手机上的效果。
 - `set_color_scheme` 改的是「网页以为系统是深色还是浅色」；网页自己带的主题开关、自己存下来的主题，它不去动。
+- `upload_file` 是用脚本事件给上传框设文件，和网页自己的代码能做的一样；它应付不了浏览器弹出的「选择文件」窗口。大多数网页和上传组件都认这种方式。非要真人亲自选的网页不认；有些放置区（比如 react-dropzone）不认不是真的拖进来的文件，这时改成给它的上传框设文件就行。文件只能来自上传文件夹；别的网站的 iframe 里的上传框、选文件夹都不支持。
 - 一个服务同一时间只连一个浏览器。
 - 服务端不能直接在 Windows 上运行，请用 WSL。
 
@@ -253,7 +256,7 @@ Claude 能用这 23 个工具：
 1. `claude mcp remove -s user cctether`；如果安装时加过，再删掉 `~/.claude/CLAUDE.md` 里那段 cctether 说明
 2. 如果装过后台服务：`systemctl --user disable --now cctether`，然后删掉 `~/.config/systemd/user/cctether.service`。
 3. `npm uninstall -g cctether`
-4. 删掉设置文件夹：`~/.config/cctether`（如果设过 `$CCTETHER_HOME`，就删那个）。
+4. 删掉设置文件夹：`~/.config/cctether`（如果设过 `$CCTETHER_HOME`，就删那个）。脚本文件夹和上传文件夹也在里面。
 5. 在 Chrome 的 `chrome://extensions` 里移除插件。如果是自己加载的，再删掉 `cctether-extension` 文件夹。
 
 ## 开发

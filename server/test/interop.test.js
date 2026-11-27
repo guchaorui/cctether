@@ -16,7 +16,7 @@ test('handshake, info, tool call round trip', async (t) => {
   assert.equal(st.server, `127.0.0.1:${g.port}`);
   await sleep(50);
   assert.equal(g.gw.status().connected, true);
-  assert.deepEqual(g.gw.status().info, { extension: '0.1.0', browser: 'TestBrowser 1', platform: 'test' });
+  assert.deepEqual(g.gw.status().info, { extension: '0.1.0', browser: 'TestBrowser 1', platform: 'test', frag: true });
   const r = await g.gw.call('find', { selector: 'a' }, 2000);
   assert.deepEqual(r, { ok: true, data: { content: [{ type: 'text', text: 'find:{"selector":"a"}' }] } });
   ext.stop();

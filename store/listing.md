@@ -24,6 +24,7 @@ When your Claude Code asks, cctether can:
 - click, type, press keys, scroll, hover, drag and choose menu options
 - show console messages and network requests
 - run JavaScript in the page (the same as DevTools' console)
+- upload files to a page (only files placed in cctether's uploads folder on the computer running Claude Code)
 - list installed extensions and reload one (for extension developers)
 
 HOW IT STAYS SAFE
@@ -81,7 +82,7 @@ Let the user's own AI coding agent (Claude Code, or another MCP client) read and
 ### Permission justifications
 
 debugger:
-All page work goes through Chrome's debugger API, only on tabs in the user's "cctether" tab group: real mouse and keyboard input, screenshots, console messages, network requests, JavaScript dialogs and reading the page. No other API can do this, because the extension has no host permissions and no content scripts. Chrome shows its "started debugging this browser" bar while it is attached.
+All page work goes through Chrome's debugger API, only on tabs in the user's "cctether" tab group: real mouse and keyboard input, screenshots, console messages, network requests, JavaScript dialogs, reading the page, and giving a file input the files the user's agent uploads. No other API can do this, because the extension has no host permissions and no content scripts. Chrome shows its "started debugging this browser" bar while it is attached.
 
 tabs:
 To read the title and address of tabs, to tell which tabs are in the cctether group and show the Share button for the current tab, and to open, close and navigate tabs when the user's agent asks. Tabs outside the group are not read or controlled by tools.

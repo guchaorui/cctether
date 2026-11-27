@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createMcpSession, sanitizeContent, lineSplitter, compareVersions, minExtensionFor } from '../src/mcp.js';
 import { GatewayError } from '../src/gateway.js';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -23,7 +23,7 @@ test('initialize and tools/list', async () => {
   await send({ jsonrpc: '2.0', method: 'notifications/initialized' });
   assert.equal(out.length, 2, 'no reply to notifications');
   await send({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
-  assert.equal(out[2].result.tools.length, 23);
+  assert.equal(out[2].result.tools.length, 24);
   await send({ jsonrpc: '2.0', id: 3, method: 'ping' });
   assert.deepEqual(out[3], { jsonrpc: '2.0', id: 3, result: {} });
   await send({ jsonrpc: '2.0', id: 4, method: 'resources/list' });
@@ -217,4 +217,100 @@ test('evaluate file: the call goes only to the browser connection there was when
   // A plain expression is not pinned.
   await s.handleLine(JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'evaluate', arguments: { expression: '1' } } }));
   assert.equal(seen.at(-1), undefined);
+});
+
+test('upload_file: the service reads the files and sends their contents, in fragments, to the connection it checked', async (t) => {
+  const base = mkdtempSync(join(tmpdir(), 'cct-mcp-up-'));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const dir = join(base, 'uploads');
+  mkdirSync(dir, { mode: 0o700 });
+  chmodSync(base, 0o700);
+  writeFileSync(join(dir, 'a.pdf'), 'PDF');
+  writeFileSync(join(dir, 'b.png'), Buffer.from([1, 2, 3, 4]));
+  const conn = { info: { extension: '0.8.0', frag: true } };
+  const calls = [];
+  let answer = async () => ({ ok: true, data: { content: [{ type: 'text', text: 'given' }] } });
+  const browser = {
+    browser: conn,
+    status: () => ({ info: conn.info }),
+    async call(tool, args, timeoutMs, opts) {
+      calls.push({ tool, args, timeoutMs, opts });
+      if (opts?.connection !== this.browser) throw new GatewayError('disconnected', 'The browser connection changed while cctether was preparing the call, so nothing was run.');
+      return answer();
+    },
+  };
+  const uploads = { busy: false };
+  const mk = () => {
+    const out = [];
+    const s = createMcpSession({ write: (l) => out.push(JSON.parse(l)), browser, version: '0.8.0', uploadsDir: dir, uploads });
+    return { out, call: async (args) => { await s.handleLine(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'upload_file', arguments: args } })); return out.at(-1).result; } };
+  };
+  const one = mk();
+  // tools/list names the directory.
+  const list = createMcpSession({ write: (l) => { list.out = JSON.parse(l); }, browser, version: '0.8.0', uploadsDir: dir });
+  await list.handleLine(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }));
+  assert.ok(list.out.result.tools.find((x) => x.name === 'upload_file').description.includes(dir));
+
+  const args = { files: ['b.png', 'a.pdf'], tab: 7, origin: 'https://example.com', selector: '#f' };
+  assert.equal((await one.call(args)).content[0].text, 'given');
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].args, {
+    files: [{ name: 'b.png', type: 'image/png', data: 'AQIDBA==' }, { name: 'a.pdf', type: 'application/pdf', data: 'UERG' }],
+    tab: 7, origin: 'https://example.com', selector: '#f',
+  });
+  assert.equal(calls[0].opts.connection, conn, 'pinned to the connection that was checked');
+  assert.equal(calls[0].opts.fragments, true);
+  assert.ok(calls[0].timeoutMs >= 60000);
+
+  // Required arguments; refusals before anything is sent.
+  for (const [a, re] of [
+    [{ files: ['a.pdf'], origin: 'https://example.com' }, /tab is required/],
+    [{ files: ['a.pdf'], tab: 7 }, /origin is required/],
+    [{ files: [], tab: 7, origin: 'https://example.com' }, /at least 1/],
+    [{ files: ['../x'], tab: 7, origin: 'https://example.com' }, /Nothing was uploaded: .*is a path/],
+    [{ files: ['nope.pdf'], tab: 7, origin: 'https://example.com' }, /Nothing was uploaded: There is no file/],
+  ]) {
+    const r = await one.call(a);
+    assert.equal(r.isError, true);
+    assert.match(r.content[0].text, re);
+  }
+  assert.equal(calls.length, 1, 'refused calls never reach the browser');
+
+  // The connection: still starting up, or an extension that can't take fragments: said before any file is read.
+  conn.info = null;
+  assert.match((await one.call({ ...args, files: ['nope.pdf'] })).content[0].text, /still setting up/);
+  conn.info = { extension: '0.7.0', frag: false };
+  assert.match((await one.call({ ...args, files: ['nope.pdf'] })).content[0].text, /needs the cctether browser extension 0\.8\.0 or newer; the connected one is 0\.7\.0/);
+  conn.info = { extension: '0.8.0', frag: true };
+
+  // One upload at a time, across sessions.
+  let release;
+  answer = () => new Promise((r) => { release = () => r({ ok: true, data: { content: [{ type: 'text', text: 'given' }] } }); });
+  const first = one.call(args);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.match((await mk().call(args)).content[0].text, /Another upload is in progress/);
+  release();
+  await first;
+  answer = async () => ({ ok: true, data: { content: [{ type: 'text', text: 'given' }] } });
+  assert.equal((await mk().call(args)).content[0].text, 'given', 'free again afterwards');
+
+  // What the gateway says, said for an upload.
+  for (const [err, re] of [
+    [new GatewayError('timeout', 'The browser did not answer within 60 s.'), /may or may not have been given to the page: check the page/],
+    [new GatewayError('disconnected', 'The browser disconnected before answering.'), /may or may not have been given/],
+    [new GatewayError('disconnected', 'The browser disconnected before the whole message reached it. Nothing was run.'), /^Nothing was uploaded: .*try again/],
+    [new GatewayError('send_timeout', 'Sending it to the browser took more than 60 s (a slow connection?), so cctether stopped and the browser reconnects. Nothing was run.'), /^Nothing was uploaded/],
+    [new GatewayError('too_large', 'The message for the browser is too large.'), /^Nothing was uploaded/],
+  ]) {
+    answer = async () => { throw err; };
+    assert.match((await one.call(args)).content[0].text, re);
+    assert.equal(uploads.busy, false);
+  }
+  // Another browser connected while the files were read: not sent to it.
+  answer = async () => ({ ok: true, data: {} });
+  const n = calls.length;
+  const p = one.call(args);
+  browser.browser = { info: { extension: '0.8.0', frag: true } };
+  assert.match((await p).content[0].text, /^Nothing was uploaded: The browser connection changed/);
+  assert.equal(calls.length, n + 1);
 });

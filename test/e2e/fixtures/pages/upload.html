@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Upload test</title>
+<style>
+  body { font: 13px sans-serif; margin: 10px; }
+  section { margin: 6px 0; }
+  #zone, #plainzone { width: 220px; height: 60px; border: 2px dashed #999; display: inline-block; }
+  .pick { display: inline-block; padding: 4px 10px; background: #36c; color: #fff; border-radius: 4px; cursor: pointer; }
+  iframe { width: 300px; height: 50px; border: 1px solid #999; }
+</style>
+</head>
+<body>
+<!-- File inputs for upload_file: a plain one, a hidden one behind its label (accepts images), a
+     multiple one, a disabled one, a folder one, one whose change handler takes the file at once
+     and empties it, a drop zone that takes dropped files, a box that ignores drops, a widget with
+     a hidden input inside, and a same-origin frame with its own input. Every event is logged in window.log. -->
+<script>
+  window.log = [];
+  window.record = async (where, el, e, files) => {
+    const list = [];
+    for (const f of files) list.push({ name: f.name, size: f.size, type: f.type, text: (await f.text()).slice(0, 40) });
+    window.log.push({ where, ev: e.type, trusted: e.isTrusted, files: list });
+  };
+  const watch = (el, where) => {
+    for (const t of ['input', 'change']) el.addEventListener(t, (e) => window.record(where, el, e, [...el.files]));
+  };
+</script>
+<section><input type="file" id="plain"></section>
+<section>
+  <label for="photo" class="pick" id="photolabel">Choose a photo</label>
+  <input type="file" id="photo" accept="image/*" style="display:none">
+</section>
+<section><input type="file" id="multi" multiple></section>
+<section><input type="file" id="off" disabled></section>
+<section><input type="file" id="folder" webkitdirectory></section>
+<section><input type="file" id="instant"></section>
+<section><div id="zone">Drop files here</div> <div id="plainzone">Not a drop zone</div></section>
+<section><div id="widget" style="border:1px solid #999;padding:6px">Drop or click <input type="file" id="hiddenin" hidden></div></section>
+<section><button id="btn">Upload</button></section>
+<section><iframe id="fr" title="Inner form" srcdoc="<input type=file id=inner><script>document.getElementById('inner').addEventListener('change', (e) => parent.record('inner', e.target, e, [...e.target.files]))</script>"></iframe></section>
+<script>
+  watch(document.getElementById('plain'), 'plain');
+  watch(document.getElementById('photo'), 'photo');
+  watch(document.getElementById('multi'), 'multi');
+  const instant = document.getElementById('instant');
+  instant.addEventListener('change', async (e) => {
+    const files = [...instant.files];
+    instant.value = '';
+    await window.record('instant', instant, e, files);
+    const body = new FormData();
+    body.append('f', files[0]);
+    const r = await fetch('/api/echo', { method: 'POST', body });
+    window.log.push({ where: 'instant-sent', ok: r.ok, size: (await r.text()).length > 0 });
+  });
+  const zone = document.getElementById('zone');
+  for (const t of ['dragenter', 'dragover']) zone.addEventListener(t, (e) => { e.preventDefault(); window.log.push({ where: 'zone', ev: e.type, types: [...e.dataTransfer.types] }); });
+  zone.addEventListener('drop', (e) => { e.preventDefault(); window.record('zone', zone, e, [...e.dataTransfer.files]); });
+</script>
+</body>
+</html>

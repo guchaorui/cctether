@@ -6,6 +6,7 @@ import { Gateway } from './gateway.js';
 import { startControl, adminRequest, AlreadyRunningError } from './control.js';
 import { createMcpSession, lineSplitter } from './mcp.js';
 import { scriptsDir, ensureScriptsDir } from './evalfile.js';
+import { uploadsDir, ensureUploadsDir } from './uploads.js';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 /**
@@ -41,6 +42,9 @@ export async function runDaemon({ dir, version, log, port: portOverride, exitOnS
   const startedAt = Date.now();
   const scripts = scriptsDir(P.dir);
   ensureScriptsDir(scripts);
+  const uploadDir = uploadsDir(P.dir);
+  ensureUploadsDir(uploadDir);
+  const uploads = { busy: false }; // one upload at a time, across all sessions
   let sessions = 0;
   let control;
   try {
@@ -51,7 +55,8 @@ export async function runDaemon({ dir, version, log, port: portOverride, exitOnS
         sessions++;
         const write = (line) => { if (!socket.destroyed) socket.write(line + '\n'); };
         ensureScriptsDir(scripts); // again here: it may have been deleted meanwhile
-        const session = createMcpSession({ write, browser: gateway, version, log, scriptsDir: scripts });
+        ensureUploadsDir(uploadDir);
+        const session = createMcpSession({ write, browser: gateway, version, log, scriptsDir: scripts, uploadsDir: uploadDir, uploads });
         const feed = lineSplitter((line) => {
           session.handleLine(line).catch((e) => log(`mcp error: ${e.message}`));
         }, { onOverflow: () => socket.destroy() });

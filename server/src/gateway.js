@@ -5,10 +5,11 @@
 import { createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
 import { EventEmitter } from 'node:events';
+import { setTimeout as sleep } from 'node:timers/promises';
 import {
   PROTO, LABEL_SERVER, LABEL_CLIENT, CLOSE, HANDSHAKE_TIMEOUT_MS, IDLE_TIMEOUT_MS,
-  MAX_FROM_EXTENSION, MAX_TO_EXTENSION, b64u, fromB64u, newNonce, proof, proofMatches,
-  deriveSessionKeys, SessionCipher,
+  MAX_FROM_EXTENSION, MAX_TO_EXTENSION, MAX_FRAGMENTED_TO_EXTENSION, MAX_FRAGMENTS, b64u, fromB64u, newNonce,
+  proof, proofMatches, deriveSessionKeys, SessionCipher, TooLargeError,
 } from './protocol.js';
 import { FailureLimiter, clientIp } from './ratelimit.js';
 
@@ -16,6 +17,46 @@ import { FailureLimiter, clientIp } from './ratelimit.js';
 export const MAX_FRAME = 1024 * 1024;
 const MAX_HANDSHAKE_MESSAGE = 2048;
 const MAX_PENDING_HANDSHAKES = 16;
+/**
+ * While fragments go to the extension, the next one is sent only once the socket's own buffer is
+ * below this: memory stays bounded, and a pong isn't stuck behind all of them (SPEC §4.4).
+ */
+const FRAG_HIGH_WATER = 256 * 1024;
+const FRAG_POLL_MS = 10;
+/** Most bytes of a fragment's envelope around its JSON-quoted slice: {"t":"frag","i":63,"n":64,"s":…}. */
+const FRAG_ENVELOPE = 31;
+
+const isHighSurrogate = (c) => c >= 0xd800 && c <= 0xdbff;
+
+/**
+ * Split a message to the extension into fragment slices (SPEC §4.4): each fragment, sealed, fits
+ * one frame, counting UTF-8 bytes after JSON quoting; a surrogate pair is never split. Throws
+ * TooLargeError if it needs more than `maxCount` fragments or `totalMax` bytes of frames.
+ * @returns {string[]} the slices, in order
+ */
+export function fragmentSlices(text, { frameMax = MAX_TO_EXTENSION, totalMax = MAX_FRAGMENTED_TO_EXTENSION, maxCount = MAX_FRAGMENTS } = {}) {
+  const room = frameMax - 16 - FRAG_ENVELOPE;
+  const slices = [];
+  let total = 0;
+  for (let pos = 0; pos < text.length;) {
+    let len = Math.min(text.length - pos, room);
+    for (;;) {
+      let end = pos + len;
+      if (end < text.length && isHighSurrogate(text.charCodeAt(end - 1))) end = len > 1 ? end - 1 : end + 1;
+      const s = text.slice(pos, end);
+      const bytes = Buffer.byteLength(JSON.stringify(s), 'utf8');
+      if (bytes <= room) {
+        slices.push(s);
+        total += FRAG_ENVELOPE + bytes + 16;
+        pos = end;
+        break;
+      }
+      len = Math.max(1, Math.min(len - 1, Math.floor((len * room) / bytes)));
+    }
+    if (slices.length > maxCount || total > totalMax) throw new TooLargeError(Math.max(total, Buffer.byteLength(text, 'utf8')));
+  }
+  return slices;
+}
 
 export class GatewayError extends Error {
   constructor(code, message) {
@@ -99,7 +140,7 @@ export class Gateway extends EventEmitter {
    * Run a tool in the browser.
    * @returns {Promise<{ ok: true, data: any } | { ok: false, error: { code: string, message: string } }>}
    */
-  call(tool, args, timeoutMs, { connection } = {}) {
+  call(tool, args, timeoutMs, { connection, fragments = false } = {}) {
     if (!this.#browser) {
       return Promise.reject(new GatewayError('no_browser', 'No browser is connected.'));
     }
@@ -107,7 +148,7 @@ export class Gateway extends EventEmitter {
     if (connection !== undefined && connection !== this.#browser) {
       return Promise.reject(new GatewayError('disconnected', 'The browser connection changed while cctether was preparing the call, so nothing was run.'));
     }
-    return this.#browser.call(tool, args, timeoutMs);
+    return this.#browser.call(tool, args, timeoutMs, { fragments });
   }
 
   async close() {
@@ -259,6 +300,9 @@ export class BrowserConnection extends EventEmitter {
   #fragments = null; // string[] while a fragmented message is arriving
   #fragmentsSize = 0;
   #closed = false;
+  /** True while a fragmented message goes out; other messages but pongs wait in #held. */
+  #fragmenting = false;
+  #held = [];
 
   #idleTimeoutMs;
 
@@ -282,22 +326,43 @@ export class BrowserConnection extends EventEmitter {
     this.#send({ t: 'welcome', server: this.version });
   }
 
-  call(tool, args, timeoutMs) {
+  /**
+   * Run a tool in the browser. `fragments`: the call may be too big for one frame, and is then
+   * sent in fragments (upload_file only; the caller checked that the extension takes them).
+   */
+  call(tool, args, timeoutMs, { fragments = false } = {}) {
     const id = this.#nextId++;
     return new Promise((resolve, reject) => {
       if (this.#closed) return reject(new GatewayError('disconnected', 'The browser disconnected.'));
+      const text = JSON.stringify({ t: 'call', id, tool, args });
+      let plain = null;
+      let slices = null;
+      try {
+        plain = Buffer.from(text, 'utf8');
+        if (plain.length + 16 > MAX_TO_EXTENSION) {
+          if (!fragments) throw new TooLargeError(plain.length + 16);
+          plain = null;
+          if (this.#fragmenting) return reject(new GatewayError('busy', 'Another large message is being sent to the browser. Try again when it is done.'));
+          slices = fragmentSlices(text);
+        }
+      } catch (e) {
+        return reject(new GatewayError('too_large', e.message));
+      }
+      const sending = { on: !!slices };
       const timer = setTimeout(() => {
         this.#pending.delete(id);
+        // The extension holds part of a message: only a new connection starts it afresh.
+        if (sending.on) {
+          this.log('timed out sending a large message to the browser: disconnecting');
+          this.#abort('timed out sending fragments');
+          reject(new GatewayError('send_timeout', `Sending it to the browser took more than ${Math.round(timeoutMs / 1000)} s (a slow connection?), so cctether stopped and the browser reconnects. Nothing was run.`));
+          return;
+        }
         reject(new GatewayError('timeout', `The browser did not answer within ${Math.round(timeoutMs / 1000)} s.`));
       }, timeoutMs);
-      this.#pending.set(id, { resolve, reject, timer });
-      try {
-        this.#send({ t: 'call', id, tool, args });
-      } catch (e) {
-        clearTimeout(timer);
-        this.#pending.delete(id);
-        reject(new GatewayError('too_large', e.message));
-      }
+      this.#pending.set(id, { resolve, reject, timer, sending });
+      if (slices) this.#sendFragments(slices, sending);
+      else this.#queue(plain, false);
     });
   }
 
@@ -311,10 +376,58 @@ export class BrowserConnection extends EventEmitter {
     this.#onClosed(reason ?? `code ${code}`);
   }
 
+  /**
+   * Drop the connection at once, without waiting for what is still buffered (a closing frame
+   * would wait behind the rest of the fragments). The extension reconnects by itself.
+   */
+  #abort(why) {
+    if (this.#closed) return;
+    this.#ws.terminate();
+    this.#onClosed(why);
+  }
+
   #send(obj) {
     // Checked before sealing (SessionCipher.seal): a frame sealed but not sent would leave the
     // extension expecting a counter value we've moved past.
-    this.#ws.send(this.#cipher.seal(obj, MAX_TO_EXTENSION));
+    const plain = Buffer.from(JSON.stringify(obj), 'utf8');
+    if (plain.length + 16 > MAX_TO_EXTENSION) throw new TooLargeError(plain.length + 16);
+    this.#queue(plain, obj.t === 'pong');
+  }
+
+  /** Seal and send now, or (while fragments go out, except a pong) once they are all sent. */
+  #queue(plain, urgent) {
+    if (this.#fragmenting && !urgent) {
+      this.#held.push(plain);
+      return;
+    }
+    this.#ws.send(this.#cipher.sealBytes(plain, MAX_TO_EXTENSION));
+  }
+
+  /** Send the fragments one by one, sealed as they go, then what waited for them. */
+  async #sendFragments(slices, sending) {
+    this.#fragmenting = true;
+    const n = slices.length;
+    try {
+      for (let i = 0; i < n; i++) {
+        while (!this.#closed && this.#ws.bufferedAmount > FRAG_HIGH_WATER) await sleep(FRAG_POLL_MS);
+        if (this.#closed) return;
+        const plain = Buffer.from(JSON.stringify({ t: 'frag', i, n, s: slices[i] }), 'utf8');
+        slices[i] = null;
+        this.#ws.send(this.#cipher.sealBytes(plain, MAX_TO_EXTENSION));
+      }
+    } catch (e) {
+      this.log(`could not send a large message to the browser (${e.message}): disconnecting`);
+      this.#abort('could not send fragments');
+      return;
+    }
+    sending.on = false;
+    this.#fragmenting = false;
+    const held = this.#held;
+    this.#held = [];
+    for (const p of held) {
+      if (this.#closed) return;
+      this.#queue(p, false);
+    }
   }
 
   #touch() {
@@ -346,7 +459,7 @@ export class BrowserConnection extends EventEmitter {
       if (typeof msg.s !== 'string') return this.#protocolError('bad fragment');
       this.#fragments ??= [];
       this.#fragments.push(msg.s);
-      this.#fragmentsSize += msg.s.length;
+      this.#fragmentsSize += Buffer.byteLength(msg.s, 'utf8');
       if (this.#fragmentsSize > MAX_FROM_EXTENSION) return this.#protocolError('message too large');
       if (!msg.end) return;
       const text = this.#fragments.join('');
@@ -399,9 +512,12 @@ export class BrowserConnection extends EventEmitter {
     if (this.#closed) return;
     this.#closed = true;
     clearTimeout(this.#idleTimer);
+    this.#held = [];
+    this.#fragments = null;
     for (const p of this.#pending.values()) {
       clearTimeout(p.timer);
-      p.reject(new GatewayError('disconnected', 'The browser disconnected before answering.'));
+      // Part of a fragmented message never left: the extension can't have run it.
+      p.reject(new GatewayError('disconnected', p.sending?.on ? 'The browser disconnected before the whole message reached it. Nothing was run.' : 'The browser disconnected before answering.'));
     }
     this.#pending.clear();
     this.emit('closed', why);
@@ -410,5 +526,6 @@ export class BrowserConnection extends EventEmitter {
 
 function sanitizeInfo(m) {
   const str = (v, n = 120) => (typeof v === 'string' ? v.slice(0, n) : null);
-  return { extension: str(m.extension, 20), browser: str(m.browser), platform: str(m.platform, 40) };
+  // frag: it takes fragmented messages from the server (upload_file, 0.8.0 and later).
+  return { extension: str(m.extension, 20), browser: str(m.browser), platform: str(m.platform, 40), frag: m.frag === true };
 }

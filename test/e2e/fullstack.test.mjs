@@ -102,6 +102,20 @@ before(async () => {
         <button id="go" onclick="document.getElementById('out').textContent = 'Hello ' + document.getElementById('email').value; console.log('clicked go')">Go</button>
         <p id="out"></p>
         <script>console.warn('form page loaded')</script>`);
+    } else if (req.url.startsWith('/upload')) {
+      res.end(`<!doctype html><title>Upload page</title>
+        <input type="file" id="f" multiple>
+        <script>
+          window.got = null;
+          document.getElementById('f').addEventListener('change', async (e) => {
+            const out = [];
+            for (const f of e.target.files) {
+              const d = new Uint8Array(await crypto.subtle.digest('SHA-256', await f.arrayBuffer()));
+              out.push({ name: f.name, size: f.size, type: f.type, sha: [...d].map((b) => b.toString(16).padStart(2, '0')).join('') });
+            }
+            window.got = out;
+          });
+        </script>`);
     } else {
       res.end('<!doctype html><title>Other</title><p>other page</p>');
     }
@@ -202,6 +216,43 @@ test('tools work end to end through MCP', async () => {
   // The popup's activity log saw these calls.
   const activity = await sw.evaluate('chrome.storage.session.get("activity").then(x => x.activity)');
   assert.ok(activity.some((a) => a.tool === 'click' && a.ok && a.tab?.id === tabId));
+});
+
+test('upload_file: files from the uploads directory reach the page, in fragments over the real connection', async () => {
+  const { writeFileSync, statSync } = await import('node:fs');
+  const { createHash, randomBytes } = await import('node:crypto');
+  const dir = join(home, 'uploads');
+  assert.equal(statSync(dir).mode & 0o777, 0o700, 'the service made the uploads directory, private');
+  // 5 MB: more than one frame, so it goes in fragments.
+  const big = randomBytes(5 * 1024 * 1024);
+  writeFileSync(join(dir, 'big data.bin'), big);
+  writeFileSync(join(dir, '说明.txt'), '你好');
+  const listed = await mcp.request('tools/list', {});
+  assert.ok(listed.result.tools.find((x) => x.name === 'upload_file').description.includes(dir));
+  const opened = await mcp.call('open_tab', { url: `${base}/upload` });
+  const tab = Number(text(opened).match(/\d+/)[0]);
+  const origin = base;
+  const r = await mcp.call('upload_file', { tab, origin, selector: '#f', files: ['big data.bin', '说明.txt'] }, 60000);
+  assert.ok(!r.isError, text(r));
+  assert.match(text(r), /^Gave 2 files "big data\.bin" \(5\.2 MB, application\/octet-stream\), "说明\.txt" \(6 B, text\/plain\) to file#f on /);
+  const got = await waitFor(async () => {
+    const v = await mcp.call('evaluate', { tab, expression: 'window.got' });
+    const m = text(v).match(/<untrusted-page-content>\n([\s\S]*)\n<\/untrusted-page-content>/);
+    const parsed = m && JSON.parse(m[1]);
+    return parsed && parsed.length ? parsed : null;
+  }, 'the page to read the files');
+  assert.deepEqual(got, [
+    { name: 'big data.bin', size: big.length, type: 'application/octet-stream', sha: createHash('sha256').update(big).digest('hex') },
+    { name: '说明.txt', size: 6, type: 'text/plain', sha: createHash('sha256').update('你好').digest('hex') },
+  ]);
+  // Refused by the service before anything is sent: a path, another site.
+  const path = await mcp.call('upload_file', { tab, origin, files: ['../config.json'] });
+  assert.match(text(path), /^Nothing was uploaded: .*is a path/);
+  const other = await mcp.call('upload_file', { tab, origin: 'https://example.com', selector: '#f', files: ['说明.txt'] });
+  assert.match(text(other), /not https:\/\/example\.com, so nothing was given/);
+  // The connection is still fine afterwards.
+  assert.ok(!(await mcp.call('list_tabs')).isError);
+  await mcp.call('close_tab', { tab });
 });
 
 test('tabs outside the cctether group are refused', async () => {
