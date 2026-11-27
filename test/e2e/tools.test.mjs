@@ -2439,7 +2439,7 @@ test('upload_file: file inputs (hidden, by label, the only one), events, accept,
   assert.match(e.message, /\[\d+\] file#plain: visible/);
   assert.match(e.message, /\[\d+\] file[^\n]*: accept="image\/\*", hidden, label "Choose a photo"/);
   e = await fails('upload_file', { tab, origin, files: [two[0]] }, 'ambiguous');
-  assert.match(e.message, /The page has 8 file inputs/);
+  assert.match(e.message, /The page has 10 file inputs/);
   e = await fails('upload_file', { tab, origin: 'https://example.com', selector: '#plain', files: [two[0]] }, 'bad_args');
   assert.match(e.message, /shows http:\/\/127\.0\.0\.1:\d+, not https:\/\/example\.com, so nothing was given/);
   e = await fails('upload_file', { tab, origin: 'javascript:alert(1)', selector: '#plain', files: [two[0]] }, 'bad_args');
@@ -2455,6 +2455,17 @@ test('upload_file: file inputs (hidden, by label, the only one), events, accept,
   assert.match(r.text, /The page emptied the input right after/);
   await until(async () => (await pageEval(tab, 'window.log.some((x) => x.where === "instant-sent" && x.ok)')), 'the page to send the file');
   await pageEval(tab, 'window.log.splice(0)');
+
+  // The page shows the file in an alert while handling the events: the result names the dialog's
+  // kind only, never its text.
+  r = await ok('upload_file', { tab, origin, selector: '#echo', files: [file('named.txt', 'text/plain', 'x')] });
+  assert.match(r.text, /^Gave the file "named\.txt" .* to file#echo on .*, and while the page handled the input and change events \(synthetic\) it opened a JavaScript alert dialog: the rest of its handling runs once it is closed\. The page is frozen until it is closed: call handle_dialog first/);
+  assert.doesNotMatch(r.text, /Got:/);
+  await ok('handle_dialog', { tab, accept: true });
+  r = await ok('upload_file', { tab, origin, selector: '#echoText', files: [file('secret.txt', 'text/plain', 'SECRET-123')] });
+  assert.match(r.text, /and fired input and change on it .* A JavaScript alert dialog is open in tab \d+\. The page is frozen/);
+  assert.doesNotMatch(r.text, /SECRET-123|Got:/);
+  await ok('handle_dialog', { tab, accept: true });
 
   // A same-origin frame's input.
   r = await ok('upload_file', { tab, origin, selector: '#inner', files: [file('in.txt', 'text/plain', 'framed')] });
@@ -2558,7 +2569,8 @@ test('upload_file stops before giving the files: pause, leaving the group, navig
   await until(async () => (await call('handle_dialog', { tab, accept: true })).ok, 'the alert to be handled');
   r = await p;
   assert.equal(r.ok, false);
-  assert.match(r.message, /a JavaScript alert dialog saying "Wait" opened|dialog/);
+  assert.match(r.message, /^Not done: a JavaScript alert dialog opened, so nothing was given to the page\./);
+  assert.doesNotMatch(r.message, /Wait/);
   await nothing();
   await swEval('delete self.__big, true');
   await ok('close_tab', { tab });

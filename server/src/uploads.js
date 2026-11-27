@@ -80,11 +80,11 @@ async function privateStat(dir) {
 
 /**
  * The real path of the uploads directory, after checking that it is a private directory of this
- * user, that the path resolves to that very directory (same device and inode: a directory above
- * may have been swapped meanwhile), and that no directory above the resolved one can be changed
- * by another user (root's and this user's own are fine, and so are sticky ones like /tmp, where
- * others can't rename what isn't theirs). Then nobody else can swap anything on the path the
- * files are opened by.
+ * user, that no directory above the resolved path can be changed by another user (root's and
+ * this user's own are fine, and so are sticky ones like /tmp, where others can't rename what
+ * isn't theirs), and that the resolved path is that very directory (same device and inode: a
+ * directory above may have been swapped meanwhile). Then nobody else can swap anything on the
+ * path the files are opened by.
  */
 async function checkedDir(dir) {
   const first = await privateStat(dir);
@@ -94,10 +94,15 @@ async function checkedDir(dir) {
   } catch {
     fail(MISSING);
   }
-  const resolved = await privateStat(real);
-  if (resolved.dev !== first.dev || resolved.ino !== first.ino) fail('The uploads directory changed while it was being checked. Try again.');
-  const me = uid();
+  // From the root down: each directory above must be root's or this user's, and not open to
+  // others' changes. Then the directory itself must still be the one checked first.
+  const above = [];
   for (let d = dirname(real); ; d = dirname(d)) {
+    above.unshift(d);
+    if (d === dirname(d)) break;
+  }
+  const me = uid();
+  for (const d of above) {
     let st;
     try {
       st = await lstat(d);
@@ -109,8 +114,9 @@ async function checkedDir(dir) {
     if (!st.isDirectory() || !owner || othersWrite) {
       fail('A directory above the uploads directory can be changed by another user (or is not a directory of this user or root), so upload_file is off: files there could be swapped while being read. Check the permissions of the directories above it.');
     }
-    if (d === dirname(d)) break;
   }
+  const resolved = await privateStat(real);
+  if (resolved.dev !== first.dev || resolved.ino !== first.ino) fail('The uploads directory changed while it was being checked. Try again.');
   return real;
 }
 

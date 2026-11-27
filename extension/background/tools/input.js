@@ -108,9 +108,11 @@ async function openedTabs(w, newTabs) {
 
 /**
  * After an action: wait briefly for a navigation to start; if one does, wait for it to load.
- * Returns a sentence about what happened ('' if nothing).
+ * Returns a sentence about what happened ('' if nothing). quiet: say only where (origin and
+ * path) and what kind of dialog, no title, query or dialog text (upload_file: the page has the
+ * files by then and could put them there).
  */
-export async function settle(s, w, tabId, beforeUrl, { startMs = 400, loadMs = 10000, newTabs = null } = {}) {
+export async function settle(s, w, tabId, beforeUrl, { startMs = 400, loadMs = 10000, newTabs = null, quiet = false } = {}) {
   const started = await w.until((st) => st.requested || st.sameDoc || st.committed, startMs);
   let loading = false;
   if (started && !w.st.sameDoc) loading = !(await w.until((st) => st.loaded || st.stopped || st.sameDoc, loadMs));
@@ -119,9 +121,11 @@ export async function settle(s, w, tabId, beforeUrl, { startMs = 400, loadMs = 1
   const t = await tabSummary(tabId);
   if (t.url !== beforeUrl || w.st.committed) {
     const status = w.st.status ? ` (HTTP ${w.st.status})` : '';
+    let where = t.url;
+    if (quiet) { try { const u = new URL(t.url); where = u.origin + u.pathname; } catch { where = 'another page'; } }
     notes.push(loading
-      ? `The page is navigating to ${t.url} (still loading after ${loadMs / 1000} s).`
-      : `The page ${w.st.committed ? 'navigated' : 'changed its URL'} to ${t.url}${status}: ${q(t.title || '(no title)', 100)}.`);
+      ? `The page is navigating to ${where} (still loading after ${loadMs / 1000} s).`
+      : `The page ${w.st.committed ? 'navigated' : 'changed its URL'} to ${where}${status}${quiet ? '' : `: ${q(t.title || '(no title)', 100)}`}.`);
   }
   if (newTabs) {
     for (const nt of await openedTabs(w, newTabs)) {
@@ -130,7 +134,7 @@ export async function settle(s, w, tabId, beforeUrl, { startMs = 400, loadMs = 1
     }
     newTabs.stop();
   }
-  if (s.dialog) notes.push(dialogError(tabId, s.dialog).message);
+  if (s.dialog) notes.push(dialogError(tabId, quiet ? { ...s.dialog, message: '' } : s.dialog).message);
   return notes.join(' ');
 }
 

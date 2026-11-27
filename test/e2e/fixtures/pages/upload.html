@@ -36,6 +36,7 @@
 <section><input type="file" id="off" disabled></section>
 <section><input type="file" id="folder" webkitdirectory></section>
 <section><input type="file" id="instant"></section>
+<section><input type="file" id="echo"> <input type="file" id="echoText"></section>
 <section><div id="zone">Drop files here</div> <div id="plainzone">Not a drop zone</div></section>
 <section><div id="widget" style="border:1px solid #999;padding:6px">Drop or click <input type="file" id="hiddenin" hidden></div></section>
 <section><button id="btn">Upload</button></section>
@@ -54,6 +55,9 @@
     const r = await fetch('/api/echo', { method: 'POST', body });
     window.log.push({ where: 'instant-sent', ok: r.ok, size: (await r.text()).length > 0 });
   });
+  // Show what they got in an alert: at once while handling change, or the contents a moment later.
+  document.getElementById('echo').addEventListener('change', (e) => { alert('Got: ' + e.target.files[0].name); });
+  document.getElementById('echoText').addEventListener('change', async (e) => { alert('Got: ' + await e.target.files[0].text()); });
   const zone = document.getElementById('zone');
   for (const t of ['dragenter', 'dragover']) zone.addEventListener(t, (e) => { e.preventDefault(); window.log.push({ where: 'zone', ev: e.type, types: [...e.dataTransfer.types] }); });
   zone.addEventListener('drop', (e) => { e.preventDefault(); window.record('zone', zone, e, [...e.dataTransfer.files]); });

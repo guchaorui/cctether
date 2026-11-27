@@ -71,6 +71,12 @@ function notAccepted(accept, f) {
 
 let uploading = false;
 
+/**
+ * A dialog named by its kind only: the page may have the files by then and could show them in
+ * it (the text is there for handle_dialog and the next call on the tab).
+ */
+const dialogKind = (d) => describeDialog({ ...d, message: '' });
+
 export async function uploadFile({ tab, s, startedAt = Date.now(), paused = () => false, live = () => true, cancelled = () => false }, args) {
   const want = wantedOrigin(args.origin);
   const files = args.files;
@@ -96,7 +102,7 @@ export async function uploadFile({ tab, s, startedAt = Date.now(), paused = () =
     if (s.closed) return ['not_shared', 'cctether no longer has the tab (it left the cctether group, or was paused or closed)'];
     if (paused()) return ['paused', 'cctether was paused'];
     if (!live()) return ['disconnected', 'the connection to the cctether service dropped'];
-    if (dialog) return ['dialog_open', `${describeDialog(dialog)} opened`];
+    if (dialog) return ['dialog_open', `${dialogKind(dialog)} opened`];
     if (w.st.committed) return ['navigated', 'the page navigated'];
     if (Date.now() > deadline) return ['timeout', `it took longer than ${UPLOAD_BUDGET_MS / 1000} s`];
     return null;
@@ -106,6 +112,7 @@ export async function uploadFile({ tab, s, startedAt = Date.now(), paused = () =
     if (code === 'dialog_open' && s.dialog) lines.push(dialogHint(s.dialog));
     const e = new ToolError(code, lines.join(' '));
     e.notGiven = true; // said by these checks, before anything went out
+    e.reason = why;
     return e;
   };
   /**
@@ -178,16 +185,27 @@ export async function uploadFile({ tab, s, startedAt = Date.now(), paused = () =
     }
 
     // A file input gets the files when they are set (uploadAssign); a drop zone when the drop
-    // event fires (uploadDispatch). The last checks come right before whichever that is.
+    // event fires (uploadDispatch). The last checks come right before whichever that is, and
+    // once more, synchronously, right before its command goes out; `sent` says whether it did.
+    const deliver = (fn, a2, gen) => {
+      const c = { sent: false };
+      const check = () => { if (gen !== null) goNow(gen)(); c.sent = true; };
+      if (gen !== null) goNow(gen)();
+      c.promise = s.lib(fn, a2, { retry: false, timeoutMs: left(), check });
+      return c;
+    };
+    /** Stopped before the command went out: nothing was given (by it). */
+    const notSent = (e) => (e?.notGiven ? e : stop(blockedNow() ?? ['internal', `the page could not be reached (${e?.code ?? 'error'})`]));
+    const reasonOf = (e) => notSent(e).reason;
     const assignArgs = [{ id, doc: t.doc, ref: t.ref, origin: want, drop, files: meta }];
     let a;
     if (!drop) {
-      const check = goNow(await lastCheck());
-      check(); // and again inside lib(), once the page's world is at hand
+      const c = deliver('uploadAssign', assignArgs, await lastCheck());
       try {
-        a = await s.lib('uploadAssign', assignArgs, { retry: false, timeoutMs: left(), check });
+        a = await c.promise;
       } catch (e) {
-        if (e?.fromPage || e?.notGiven) throw e; // the library answered, or it never went out
+        if (e?.fromPage) throw e; // the library answered: it says what happened
+        if (!c.sent) throw notSent(e);
         throw unclear(e, 'the files were being set on the input');
       }
     } else {
@@ -199,38 +217,41 @@ export async function uploadFile({ tab, s, startedAt = Date.now(), paused = () =
         + `(${a.got.map((g) => `${q(g.name, 60)} ${g.size} B ${g.type || 'no type'}`).join(', ') || 'none'}), so no events were fired. Check the page.`);
     }
     if (!drop) given = true;
-    const check = drop ? goNow(await lastCheck()) : null;
-    check?.();
 
     const list = files.map((f, i) => `${q(f.name, 120)} (${fmtBytes(sizes[i])}, ${f.type || 'no type'})`).join(', ');
     const them = n === 1 ? 'it' : 'them';
-    const lines = [];
-    // For a drop, the files reach the page here: the last checks run right before it goes out.
-    const r = await s.raceDialog(s.lib('uploadDispatch', [{ id, doc: t.doc, ref: t.ref, origin: want, drop }], { retry: false, timeoutMs: left(), check })
-      .then((v) => ({ ok: v }), (e) => ({ err: e })));
-    const err = r.value?.err;
     const named = `${n === 1 ? 'the file' : `${n} files`} ${list}`;
+    const lines = [];
+    // For a drop, the files reach the page here.
+    const c = deliver('uploadDispatch', [{ id, doc: t.doc, ref: t.ref, origin: want, drop }], drop ? await lastCheck() : null);
+    const r = await s.raceDialog(c.promise.then((v) => ({ ok: v }), (e) => ({ err: e })));
+    const err = r.value?.err;
+    // Nothing went out: a dialog (or a check) came first. The command won't go out later either:
+    // its last check sees the dialog.
+    const unsent = !c.sent && (r.dialog || (err && !err.fromPage));
+    const whyUnsent = () => (r.dialog ? ['dialog_open', `${dialogKind(r.dialog)} opened`] : null);
     if (drop) {
       // A refusal (the page library's, or the last checks'): the drop didn't happen. Anything
       // unclear: it may have.
       if (err?.fromPage) throw new ToolError(err.code, `Not done: ${err.message}, so nothing was given to the page.`);
-      if (err?.notGiven) throw err;
+      if (unsent) throw r.dialog ? stop(whyUnsent()) : notSent(err);
       given = true;
       if (err) throw unclear(err, `the files were being dropped on ${t.desc}`);
       if (r.dialog) {
-        lines.push(`Started dropping ${named} on ${t.desc} on ${want} (synthetic dragenter, dragover and drop), and while handling them the page opened ${describeDialog(r.dialog)}: the rest of the events, up to the drop, run once it is closed. ${dialogHint(r.dialog)}`);
+        lines.push(`Started dropping ${named} on ${t.desc} on ${want} (synthetic dragenter, dragover and drop), and while handling them the page opened ${dialogKind(r.dialog)}: the rest of the events, up to the drop, run once it is closed. ${dialogHint(r.dialog)}`);
       } else {
         lines.push(`Dropped ${named} on ${t.desc} on ${want}: fired dragenter, dragover and drop with ${them} (synthetic events).`);
       }
     } else {
       const replacing = a.before ? `, replacing the ${a.before === 1 ? 'file' : `${a.before} files`} chosen there before` : '';
-      if (r.dialog) {
-        lines.push(`Gave ${named} to ${t.desc} on ${want}${replacing}, and while the page handled the input and change events (synthetic) it opened ${describeDialog(r.dialog)}: the rest of its handling runs once it is closed. ${dialogHint(r.dialog)}`);
+      if (r.dialog && !unsent) {
+        lines.push(`Gave ${named} to ${t.desc} on ${want}${replacing}, and while the page handled the input and change events (synthetic) it opened ${dialogKind(r.dialog)}: the rest of its handling runs once it is closed. ${dialogHint(r.dialog)}`);
       } else {
         lines.push(`Gave ${named} to ${t.desc} on ${want}${replacing}`
-          + (err ? '.' : ', and fired input and change on it (synthetic events: a page that only accepts a real user\'s choice ignores them).'));
+          + (err || r.dialog ? '.' : ', and fired input and change on it (synthetic events: a page that only accepts a real user\'s choice ignores them).'));
       }
-      if (err?.fromPage) lines.push(`But the input and change events were not fired: ${err.message}. The page may not have noticed the files.`);
+      if (unsent) lines.push(`But the input and change events were not fired: ${r.dialog ? `${dialogKind(r.dialog)} opened first. ${dialogHint(r.dialog)}` : `${reasonOf(err)}.`} The page may not have noticed the files.`);
+      else if (err?.fromPage) lines.push(`But the input and change events were not fired: ${err.message}. The page may not have noticed the files.`);
       else if (err) lines.push(`But no clear answer came while the input and change events were fired (${err.code ?? 'error'}): the page may not have noticed the files.`);
     }
     if (!r.dialog && !err) {
@@ -244,7 +265,7 @@ export async function uploadFile({ tab, s, startedAt = Date.now(), paused = () =
       } else if (d.after === 0) {
         lines.push('The page emptied the input right after: normal for upload widgets that take the files at once.');
       }
-      const note = await settle(s, w, tab.id, before);
+      const note = await settle(s, w, tab.id, before, { quiet: true });
       if (note) lines.push(note);
     }
     if (t.accept) {

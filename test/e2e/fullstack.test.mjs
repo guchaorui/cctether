@@ -256,8 +256,8 @@ test('upload_file: files from the uploads directory reach the page, in fragments
   const cancelled = (await pending).result;
   assert.equal(cancelled.isError, true);
   assert.match(text(cancelled), /^(Cancelled\. Nothing was uploaded|Not done: it was cancelled, so nothing was given to the page)/);
-  // Cancelled while being sent, the connection was reset: wait until it is back.
-  await waitConn('connected');
+  // Cancelled while being sent, the connection was reset: wait until the service has it back.
+  await waitFor(async () => !(await mcp.call('list_tabs')).isError, 'the browser to be back');
   await sleep(300);
   assert.match(text(await mcp.call('evaluate', { tab, expression: 'window.got' })), /\nnull\n/);
 
