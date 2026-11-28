@@ -4,6 +4,13 @@
 
 ## 零、现在到哪了（先看这里）
 
+> **下一步（主人 2026-11-28 定）：做「用 nvm 装 Node 的人，在没加载 nvm 的环境里 Claude Code 起不来 cctether」**（第二节第 1 条第一小条）。新窗口从这里开始，照全局 CLAUDE.md 的流程：先改 SPEC、方案给 GPT 挑刺、做、测、复审、发布。已知的情况和思路：
+> - 现象：setup 注册给 Claude Code 的是 `[<npm 全局 bin>/cctether, 'mcp']`（`server/src/system.js` 的 `mcpCommand`），靠脚本第一行 `#!/usr/bin/env node` 找 node。nvm 的 node 只在交互 shell 里（`.bashrc` 加载 nvm 以后）才在 PATH 上。2026-11-27 在干净的 Ubuntu 上实测：`ssh 服务器 '~/.nvm/versions/node/v26.13.1/bin/cctether version'` 报 `env: 'node': No such file or directory`。会碰上的场合：`ssh 服务器 'claude -p …'`、定时任务、systemd 里跑 Claude、项目的 `.nvmrc` 把 node 切到 22 以下的旧版本。
+> - systemd 服务单元不受影响：它写的是 node 的完整路径（`process.execPath`）。
+> - 思路（还没定，要先给 GPT 挑刺）：`node` 和 `cctether` 在同一个 bin 目录里时（nvm、官方压缩包、`/usr/bin`、Homebrew 的 `/opt/homebrew/bin`），注册成 `[<那个目录>/node, <cctether>, 'mcp']`；用那个目录里的 `node` 而不是 `process.execPath`，因为 Homebrew 的 `process.execPath` 是带版本号的 Cellar 路径，升级就失效。不在同一个目录时（比如 `npm config set prefix ~/.local` 配系统 node）照旧。
+> - 要注意：已经注册过的用户重跑 setup，现有注册和新的不一样，会被问要不要替换（`--yes` 时不替换，只提示）；`cctether check` 也许可以顺便查出「注册的命令在没有 nvm 的环境里起不来」。用 nvm 时每换一个 Node 版本，全局装的 cctether 和注册的路径都跟着那个版本目录走，这一点改不了，文档里可以提醒。
+> - 测试：setup 的单元测试（`server/test/setup.test.js` 里有假的 `self`、假的 npm 前缀），以及在开发机上用 `env -i PATH=/usr/bin:/bin` 起注册的命令，确认能跑。
+
 > **2026-11-28：0.8.3，安装向导和 `cctether check` 主动发现上传文件夹用不了**（主人定的下一步）。规则在 SPEC §8.1 第 6 步、§8.2，经过在 §13 v0.25。新窗口从这一段开始：
 > - **做了什么**：服务多了管理命令 `uploads`，由服务自己（可能在沙盒里）查上传文件夹能不能用，说出原因和是哪个文件夹（路径、设备号、inode）。向导第 6 步和 `check` 去问它：能用打 ✓；原因是往上某个**自己的**文件夹同组或别人可写（Debian/Ubuntu 上早就有的 `~/.config` 常这样），向导在终端里问「改成只有你能写吗？会运行：chmod go-w -- <路径>」，同意才改；`--yes` 和 `check` 只打命令。上传文件夹本身缺写或进入权限时给 `chmod 700` 命令。别的原因只说明，不改。这些都只打 !，不算安装失败。
 > - **改权限有多小心**（GPT 审了五轮，细节在 §13 v0.25）：只改按配置路径字面数出来的上传文件夹上级；从根逐级打开、每级不跟随链接（经 `/proc/self/fd`，只在 Linux 上）；核对设备号、inode、属主、写位以后对句柄 `fchmod`；同意以后再问服务、再逐级打开核对一遍才改；用 root 跑时不改；带路径的命令也只给核对得上的文件夹。没再追的残余风险写在 §13 v0.25「不再追的」。
