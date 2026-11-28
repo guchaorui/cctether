@@ -58,15 +58,15 @@
 
 | 在哪 | 版本 | 说明 |
 |---|---|---|
-| 仓库 `main` | 0.8.2 | 已公开（`guchaorui/cctether`），GitHub 上的测试全过 |
-| npm（`cctether`） | 0.8.2 | 2026-11-09 起由 GitHub Actions 可信发布，带来源证明。0.8.1、0.8.2 的包都和 Release 里的逐字节一致 |
-| GitHub Release | v0.8.2 | 附插件 zip、npm 包和校验和；两个插件 zip 和本地打的一致 |
-| Chrome 应用商店 | 0.8.0 | 2026-11-27 过审（主人告知），主人 Mac 已自动更新到 0.8.0。0.8.1、0.8.2 只改服务端，不用传新包。[商店页面](https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib)，插件 ID `mbkadoolgknacadjkfjjajldmllbkdib` |
-| 主人的服务器 | 0.8.2 | 2026-11-28 从 npm 装的，`cctether check` 全过。`~/.config` 原来是 771（同组可写），上传被拒，改成了 751（`chmod g-w`，要改回就 `chmod g+w ~/.config`）。之后在主人真 Mac 上经公网地址传了一个小文件，网页收到的内容一字不差 |
+| 仓库 `main` | 0.8.3 | 已公开（`guchaorui/cctether`），GitHub 上的测试全过 |
+| npm（`cctether`） | 0.8.3 | 2026-11-09 起由 GitHub Actions 可信发布，带来源证明。0.8.1 到 0.8.3 的包都和 Release 里的逐字节一致 |
+| GitHub Release | v0.8.3 | 附插件 zip、npm 包和校验和；两个插件 zip 和本地打的一致 |
+| Chrome 应用商店 | 0.8.0 | 2026-11-27 过审（主人告知），主人 Mac 已自动更新到 0.8.0。0.8.1 到 0.8.3 只改服务端，不用传新包。[商店页面](https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib)，插件 ID `mbkadoolgknacadjkfjjajldmllbkdib` |
+| 主人的服务器 | 0.8.3 | 2026-11-28 从 npm 装的，`cctether check` 全过，新的「upload_file 能用它的文件夹」也是 ✓（服务在 systemd 沙盒里自己查的）。`~/.config` 前一天从 771 改成了 751（`chmod g-w`，要改回就 `chmod g+w ~/.config`），在主人真 Mac 上经公网地址传过一个小文件，网页收到的一字不差 |
 | 主人的 Mac | 商店版 0.8.0 | Chrome 158，连接正常（升级服务时断开十几秒后都自己连回来了） |
 | 官网主页 | 已有卡片 | site-ops 做的。要改卡片交给 site-ops |
 
-- **测试**：服务端 138 个（0.8.1 的在 `uploads.test.js` 末尾：沙盒里属主看不出来的几种情况，其中一个在开发机上用 `unshare --user --map-current-user` 真建命名空间，Ubuntu 24.04 这类不许建的地方会跳过；`setup.test.js` 末尾：npm 全局目录还没建出来、不能写时不提问；0.6.2 的在 `server/test/shim.test.js`：假的常驻服务 + 子进程跑的 `cctether mcp`；0.8.0 的上传目录在 `uploads.test.js`，分段协议在 `fragments.test.js`：带背压的限速转发、按规矩乱发的假服务）；端到端 89 个（88 个通过，1 个要有界面的 Chrome，GitHub 上会跳过）。上传文件的两个测试在 `tools.test.mjs` 末尾，测试页 `fixtures/pages/upload.html`、`upload-one.html`，经真服务的一个在 `fullstack.test.mjs`；拖拽的在它们前面，测试页 `fixtures/pages/drag.html`；iframe 的再前面，测试页 `fixtures/pages/frames.html`、`frame-inner.html`（别的网站用 localhost 对 127.0.0.1 来模拟）。
+- **测试**：服务端 144 个（0.8.3 的在 `setup.test.js` 末尾：向导和 `check` 发现上传文件夹的问题、只在同意时改、核对不上不改不给命令、Ctrl+D；`uploads.test.js` 的 `uploadsDirStatus`；0.8.1 的在 `uploads.test.js` 末尾：沙盒里属主看不出来的几种情况，其中一个在开发机上用 `unshare --user --map-current-user` 真建命名空间，Ubuntu 24.04 这类不许建的地方会跳过；`setup.test.js` 末尾：npm 全局目录还没建出来、不能写时不提问；0.6.2 的在 `server/test/shim.test.js`：假的常驻服务 + 子进程跑的 `cctether mcp`；0.8.0 的上传目录在 `uploads.test.js`，分段协议在 `fragments.test.js`：带背压的限速转发、按规矩乱发的假服务）；端到端 89 个（88 个通过，1 个要有界面的 Chrome，GitHub 上会跳过）。上传文件的两个测试在 `tools.test.mjs` 末尾，测试页 `fixtures/pages/upload.html`、`upload-one.html`，经真服务的一个在 `fullstack.test.mjs`；拖拽的在它们前面，测试页 `fixtures/pages/drag.html`；iframe 的再前面，测试页 `fixtures/pages/frames.html`、`frame-inner.html`（别的网站用 localhost 对 127.0.0.1 来模拟）。
 - **两个新工具在主人的真 Mac 上试过的（2026-11-18，Chrome 157，Retina 屏，系统是浅色）**：调到 390 宽、只改高度、调到比窗口还高（1280×2000）；截图是 1 图片像素 = 1 CSS 像素，按截图坐标点击点得中；强制深色、再恢复跟随系统；跳到别的页面后两个模拟都还在；恢复后回到真实大小（1710×806）；标签页在前台和在后台都试了；在一个真实网站上（nodejs.org）也试了。模拟自动结束后的提醒两种情况都试了：5 分钟没操作后，下一次截图的说明末尾带了一句提醒，再下一次就不带了；Mac 断线几分钟再连上后，按旧坐标点击被拒绝了一次，之后正常。两种情况下页面都回到了真实大小和浅色。
 - **主人在真 Mac 上确认过的**：合盖再打开，连接很快恢复；常用快捷键都对（清单在 SPEC §13 v0.10）；商店版能连上服务端，整条链走通。
 - **外部反馈**：GitHub 上目前 0 个 star，没有 issue。还没有别人用过的反馈。
