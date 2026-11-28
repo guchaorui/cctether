@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, linkSync, rmSync, r
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { readUploads, ensureUploadsDir, uploadsDir, UploadError, UPLOAD_MAX_BYTES, mimeType, badName, parseUidMap, idView, ownerKind } from '../src/uploads.js';
+import { readUploads, ensureUploadsDir, uploadsDir, UploadError, UPLOAD_MAX_BYTES, mimeType, badName, parseUidMap, idView, ownerKind, uploadsDirStatus } from '../src/uploads.js';
 
 // A private config directory with its uploads directory, a secret next to it, and a directory elsewhere.
 const base = realpathSync(mkdtempSync(join(tmpdir(), 'cct-up-')));
@@ -294,4 +294,50 @@ test('uploads: a group-writable directory above is refused, and the error says w
     chmodSync(cfg, 0o700);
     chmodSync(join(cfg, 'cctether'), 0o700);
   }
+});
+
+test('uploads: uploadsDirStatus says why, with the directory, for setup and check', async (t) => {
+  if (process.getuid() === 0) return t.skip('root');
+  const conf = join(base, 'st', 'conf');
+  const up = join(conf, 'uploads');
+  mkdirSync(conf, { recursive: true, mode: 0o700 });
+  ensureUploadsDir(up);
+  assert.deepEqual(await uploadsDirStatus(up), { ok: true, dir: up });
+  const missing = await uploadsDirStatus(join(conf, 'nope'));
+  assert.equal(missing.code, 'missing');
+  assert.match(missing.message, /does not exist/);
+  // A directory above, writable by its group: which one, with its device and inode.
+  chmodSync(conf, 0o770);
+  const w = await uploadsDirStatus(up);
+  const st = statSync(conf, { bigint: true });
+  assert.deepEqual({ ...w, message: undefined }, { ok: false, code: 'above_writable', level: 1, path: conf, dev: String(st.dev), ino: String(st.ino), message: undefined });
+  assert.match(w.message, /^The directory 1 level above the uploads directory can be changed/);
+  chmodSync(conf, 0o700);
+  // The uploads directory itself open to others.
+  chmodSync(up, 0o755);
+  assert.equal((await uploadsDirStatus(up)).code, 'not_private');
+  chmodSync(up, 0o700);
+  // Its owner can't put files in or open them: not usable (reading its list isn't needed).
+  chmodSync(up, 0o600);
+  assert.equal((await uploadsDirStatus(up)).code, 'not_usable');
+  chmodSync(up, 0o300);
+  assert.equal((await uploadsDirStatus(up)).ok, true);
+  chmodSync(up, 0o700);
+  // Can't be looked at (no permission on the folder above): not "missing".
+  chmodSync(conf, 0o000);
+  try {
+    const c = await uploadsDirStatus(up);
+    assert.equal(c.code, 'cant_check');
+    assert.match(c.message, /EACCES/);
+  } finally {
+    chmodSync(conf, 0o700);
+  }
+  // In a sandbox: an owner it can't see, not above the home; root not mapped (owner not trusted).
+  const rootOwner = statSync('/').uid;
+  const u = await uploadsDirStatus(up, { view: { partial: true, rootMapped: false, overflow: rootOwner }, homeDir: '/nonexistent' });
+  assert.equal(u.code, 'above_unknown');
+  assert.equal(u.path, '/');
+  const o = await uploadsDirStatus(up, { view: { partial: true, rootMapped: false, overflow: null } });
+  assert.equal(o.code, 'above_owner');
+  assert.equal(o.path, '/');
 });

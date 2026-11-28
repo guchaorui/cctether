@@ -129,7 +129,7 @@ cctether 这些情况都能用，因为浏览器连的是你自己跑的服务�
 | `cctether setup` | 一步步装好一切，从这里开始。可以重复运行。 |
 | `cctether init [--port N] [--url URL]` | 生成密钥和设置。第一次用到时会自动做。 |
 | `cctether pair [--url URL]` | 显示要粘贴到插件里的连接码。 |
-| `cctether check` | 测试插件用的地址能不能连到这台电脑上的服务。 |
+| `cctether check` | 测试插件用的地址能不能连到这台电脑上的服务，以及 `upload_file`（上传文件）能不能用它的文件夹。 |
 | `cctether status [--json]` | 服务在运行吗？有浏览器连着吗？ |
 | `cctether rotate` | 换一把新密钥，旧的连接码立刻失效。 |
 | `cctether daemon [--takeover]` | 在前台运行服务。systemd 后台服务用的是 `--takeover`：Claude Code 已经拉起过一个的话，由它接手。 |

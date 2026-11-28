@@ -34,7 +34,7 @@ export async function adminRequest(path, req, timeoutMs = 3000) {
       const i = buf.indexOf('\n');
       if (i >= 0) {
         clearTimeout(t);
-        s.end();
+        s.destroy(); // the one line is all: a peer that kept the connection open would keep this process
         try { resolve(JSON.parse(buf.slice(0, i))); } catch { resolve(null); }
       }
     });

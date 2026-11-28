@@ -129,7 +129,7 @@ Run `cctether help` for the full text.
 | `cctether setup` | Sets everything up, step by step. Start here. Safe to run again. |
 | `cctether init [--port N] [--url URL]` | Creates the key and settings. Done automatically on first use. |
 | `cctether pair [--url URL]` | Shows the connection code to paste into the extension. |
-| `cctether check` | Tests that the extension's address reaches this computer's service. |
+| `cctether check` | Tests that the extension's address reaches this computer's service, and that `upload_file` can use its folder. |
 | `cctether status [--json]` | Is the service running? Is a browser connected? |
 | `cctether rotate` | Makes a new key. The old connection code stops working at once. |
 | `cctether daemon [--takeover]` | Runs the service in the foreground. The systemd service runs it with `--takeover`, so it replaces a copy that Claude Code started. |

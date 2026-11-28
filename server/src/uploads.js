@@ -18,9 +18,18 @@ export const UPLOAD_MAX_BYTES = 20 * 1024 * 1024; // all files of one call toget
 export const UPLOAD_MAX_FILES = 10;
 const NAME_MAX_BYTES = 255;
 
-export class UploadError extends Error {}
+/**
+ * `info`, when the uploads directory itself is the problem: { code, level?, path?, dev?, ino? }
+ * for setup and check (see uploadsDirStatus). Claude gets only the message.
+ */
+export class UploadError extends Error {
+  constructor(message, info = null) {
+    super(message);
+    this.info = info;
+  }
+}
 
-const fail = (m) => { throw new UploadError(m); };
+const fail = (m, info) => { throw new UploadError(m, info); };
 
 export const uploadsDir = (configDir) => join(configDir, 'uploads');
 export const ensureUploadsDir = ensurePrivateDir;
@@ -159,12 +168,18 @@ async function privateStat(dir, view) {
   let st;
   try {
     st = await lstat(dir, { bigint: true });
-  } catch {
-    fail(MISSING);
+  } catch (e) {
+    missing(e);
   }
   const me = uid();
-  if (!st.isDirectory() || (me !== null && ownerKind(Number(st.uid), me, view) !== 'me') || (Number(st.mode) & 0o077) !== 0) fail(NOT_PRIVATE);
+  if (!st.isDirectory() || (me !== null && ownerKind(Number(st.uid), me, view) !== 'me') || (Number(st.mode) & 0o077) !== 0) fail(NOT_PRIVATE, { code: 'not_private' });
   return st;
+}
+
+/** The uploads directory couldn't be looked at: missing, or something else (no permission, say). */
+function missing(e) {
+  if (e?.code === 'ENOENT' || e?.code === 'ENOTDIR') fail(MISSING, { code: 'missing' });
+  fail(`Can't check the uploads directory (${e?.code || 'error'}).`, { code: 'cant_check' });
 }
 
 const sameDir = (a, b) => a.dev === b.dev && a.ino === b.ino; // both BigInt stats
@@ -185,8 +200,8 @@ async function checkedDir(dir, view, homeDir) {
   let real;
   try {
     real = await realpath(dir);
-  } catch {
-    fail(MISSING);
+  } catch (e) {
+    missing(e);
   }
   // From the root down: each directory above must be root's or this user's, and not open to
   // others' changes. Then the directory itself must still be the one checked first.
@@ -201,28 +216,31 @@ async function checkedDir(dir, view, homeDir) {
   for (const d of above) {
     let st;
     try {
-      st = await lstat(d);
+      st = await lstat(d, { bigint: true });
     } catch (e) {
-      fail(`Can't check a directory above the uploads directory (${e.code || 'error'}).`);
+      fail(`Can't check a directory above the uploads directory (${e.code || 'error'}).`, { code: 'cant_check' });
     }
     const n = relative(d, real).split(sep).length;
     const where = `The directory ${n} level${n === 1 ? '' : 's'} above the uploads directory`;
-    const kind = ownerKind(st.uid, me, view);
+    const info = (code) => ({ code, level: n, path: d, dev: String(st.dev), ino: String(st.ino) });
+    const mode = Number(st.mode);
+    const kind = ownerKind(Number(st.uid), me, view);
     const owner = me === null || kind === 'me' || kind === 'root' || (kind === 'unknown' && trusted.has(d));
     // Writable by the group is refused too, even when the group is this user's own (Debian and
     // Ubuntu's umask 002 makes ~/.config so): who else can write can't be told reliably (ACLs,
     // LDAP, supplementary groups a process kept). The message says which directory, to fix it.
-    const othersWrite = (st.mode & 0o022) !== 0 && (st.mode & 0o1000) === 0;
+    const othersWrite = (mode & 0o022) !== 0 && (mode & 0o1000) === 0;
     if (st.isDirectory() && !othersWrite && kind === 'unknown' && !owner) {
-      fail(`${where} belongs to an owner this service can't see (it runs in a sandbox, such as the background service's, that only knows its own user), so upload_file is off: files there could be swapped while being read. Keep cctether's configuration directory inside your home directory.`);
+      fail(`${where} belongs to an owner this service can't see (it runs in a sandbox, such as the background service's, that only knows its own user), so upload_file is off: files there could be swapped while being read. Keep cctether's configuration directory inside your home directory.`, info('above_unknown'));
     }
     if (!st.isDirectory() || !owner || othersWrite) {
-      fail(`${where} can be changed by another user (or is not a directory of this user or root), so upload_file is off: files there could be swapped while being read. If it is yours, make it writable only by you (chmod go-w).`);
+      fail(`${where} can be changed by another user (or is not a directory of this user or root), so upload_file is off: files there could be swapped while being read. If it is yours, make it writable only by you (chmod go-w).`,
+        info(!st.isDirectory() ? 'above_not_dir' : !owner ? 'above_owner' : 'above_writable'));
     }
     if (me !== null && kind === 'unknown') relaxed = true;
   }
   const resolved = await privateStat(real, view);
-  if (!sameDir(resolved, first)) fail(CHANGED);
+  if (!sameDir(resolved, first)) fail(CHANGED, { code: 'changed' });
   return { real, st: resolved, relaxed };
 }
 
@@ -240,18 +258,18 @@ const CANT_BIND = 'upload_file is off: this service runs in a sandbox where it c
  * the binding is what makes it safe, so no binding means no upload.
  */
 async function bindDir(real, checked, relaxed) {
-  const without = () => (relaxed ? fail(CANT_BIND) : null);
+  const without = () => (relaxed ? fail(CANT_BIND, { code: 'cant_bind' }) : null);
   if (process.platform !== 'linux' || constants.O_DIRECTORY === undefined) return without();
   let fh;
   try {
     fh = await open(real, constants.O_RDONLY | constants.O_DIRECTORY | (constants.O_NOFOLLOW ?? 0));
   } catch (e) {
-    if (e.code === 'ENOENT' || e.code === 'ELOOP' || e.code === 'ENOTDIR') fail(CHANGED);
+    if (e.code === 'ENOENT' || e.code === 'ELOOP' || e.code === 'ENOTDIR') fail(CHANGED, { code: 'changed' });
     return without();
   }
   try {
     const st = await fh.stat({ bigint: true });
-    if (!sameDir(st, checked)) fail(CHANGED);
+    if (!sameDir(st, checked)) fail(CHANGED, { code: 'changed' });
     const path = `/proc/self/fd/${fh.fd}`;
     // The fd folder itself is procfs (statfs of the link would report the uploads directory's).
     const fs = await statfs('/proc/self/fd').catch(() => null);
@@ -264,7 +282,34 @@ async function bindDir(real, checked, relaxed) {
   } catch (e) {
     await fh.close().catch(() => {});
     if (e instanceof UploadError) throw e;
-    fail(`Can't check the uploads directory (${e.code || 'error'}).`);
+    fail(`Can't check the uploads directory (${e.code || 'error'}).`, { code: 'cant_check' });
+  }
+}
+
+/**
+ * Whether upload_file can use the uploads directory now, by the same checks, as this process sees
+ * it (the service may run in a sandbox): { ok: true, dir } with the resolved path, or { ok: false,
+ * code, level?, path?, dev?, ino?, message } (dev and ino as strings). For setup and check
+ * (SPEC §8.2). `homeDir` and `view` are for tests.
+ */
+export async function uploadsDirStatus(dir, { homeDir, view } = {}) {
+  try {
+    const ids = view ?? await readIdView();
+    const { real, st, relaxed } = await checkedDir(dir, ids, homeDir);
+    const fh = await bindDir(real, st, relaxed);
+    await fh?.close().catch(() => {});
+    // Claude copies files in (write) and the service opens them by name (search): reading the
+    // directory's list isn't needed.
+    if ((Number(st.mode) & 0o300) !== 0o300) {
+      return {
+        ok: false, code: 'not_usable', path: real, dev: String(st.dev), ino: String(st.ino),
+        message: 'The uploads directory can\'t be used by its owner: files can\'t be copied into it or opened (its mode should be 700).',
+      };
+    }
+    return { ok: true, dir: real };
+  } catch (e) {
+    if (e instanceof UploadError) return { ok: false, code: e.info?.code ?? 'cant_check', ...e.info, message: e.message };
+    return { ok: false, code: 'cant_check', message: `Can't check the uploads directory (${e.code || 'error'}).` };
   }
 }
 

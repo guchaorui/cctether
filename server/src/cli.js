@@ -201,18 +201,26 @@ export async function main(argv) {
       case 'setup': {
         const { runSetup } = await import('./setup.js');
         const interactive = !!(process.stdin.isTTY && process.stdout.isTTY);
-        const { createInterface } = await import('node:readline/promises');
+        const { createInterface } = await import('node:readline');
         // One readline per question: while it's open the terminal is in raw mode, and Ctrl-C
-        // wouldn't reach a long `npm install` or systemctl run in between.
-        const ask = async (prompt) => {
+        // wouldn't reach a long `npm install` or systemctl run in between. The input ending
+        // (Ctrl+D) rejects with code 'input_ended'. The callback form marks the answer at once,
+        // so an answer and the end arriving together still count as an answer.
+        const ask = (prompt) => new Promise((resolve, reject) => {
           const rl = createInterface({ input: process.stdin, output: process.stdout });
           rl.on('SIGINT', () => { out(''); process.exit(130); });
-          try {
-            return await rl.question(prompt);
-          } finally {
+          let answered = false;
+          rl.once('close', () => {
+            if (answered) return;
+            process.stdout.write('\n'); // Ctrl+D doesn't end the line
+            reject(Object.assign(new Error('The input ended.'), { code: 'input_ended' }));
+          });
+          rl.question(prompt, (answer) => {
+            answered = true;
+            resolve(answer);
             rl.close();
-          }
-        };
+          });
+        });
         return runSetup({
           dir, version: VERSION, cliPath: CLI_PATH, opts, write: out, ask, interactive,
           // The code is a secret: only show it on a terminal, not in logs or another program's output.

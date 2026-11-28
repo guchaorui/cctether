@@ -213,7 +213,9 @@ test('a call in flight during a restart gets an error; a restart before the hand
   const c = shimClient(dir);
   t.after(async () => { c.close(); await svc.close(); });
   const slow = c.request('tools/call', { name: 'slow', arguments: {} });
-  await sleep(200);
+  // Restart only once the call has reached the service (a fixed wait was too short on a busy computer).
+  for (const end = Date.now() + 5000; Date.now() < end && !svc.seen.some((m) => m.params?.name === 'slow'); await sleep(20));
+  assert.ok(svc.seen.some((m) => m.params?.name === 'slow'), 'the call reached the service');
   svc = await restart(dir, svc, V1, { checked: false });
   const r = await slow;
   assert.equal(r.result.isError, true);

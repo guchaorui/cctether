@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, existsSync, rmSync, statSync, lstatSync, chmodSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, existsSync, rmSync, statSync, lstatSync, chmodSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,7 +12,7 @@ import { randomBytes } from 'node:crypto';
 import { WebSocketServer } from 'ws';
 import { startGateway, makeExtension, sleep, EXT_ID } from './helpers.js';
 import { checkAddress } from '../src/check.js';
-import { runSetup, runCheck, normalizePublicUrl, shellJoin, caddySnippet } from '../src/setup.js';
+import { runSetup, runCheck, normalizePublicUrl, shellJoin, caddySnippet, uploadsReport } from '../src/setup.js';
 import { renderUnit, sdQuote, UNIT_HEADER, UnitError, unitConfigDir, npmPrefixWritable } from '../src/system.js';
 import { loadConfig, paths } from '../src/config.js';
 import { decodePairingCode } from '../src/pairing.js';
@@ -680,4 +680,169 @@ test('setup from npx doesn’t ask to install when it can’t, and says how to f
   assert.ok(!calls.some((c) => c.startsWith('npm install')), calls.join('\n'));
   assert.ok(!existsSync(join(sb.dir, 'config.json')));
   chmodSync(join(prefix, 'lib', 'node_modules'), 0o755);
+});
+
+test('setup and check point out a group-writable folder above the uploads folder; setup fixes it only when told to', async (t) => {
+  if (process.getuid?.() === 0) return t.skip('root');
+  if (process.platform !== 'linux') return t.skip('the fix is offered on Linux only (it opens each level through /proc/self/fd)');
+  const sb = await sandbox(t, { systemd: false, claude: false });
+  const first = await sb.setup({ yes: true, mode: 'local' });
+  assert.equal(first.code, 0, first.out);
+  assert.match(first.out, new RegExp(`upload_file can use its folder: ${sb.dir}/uploads`));
+  const mode = (p) => statSync(p).mode & 0o7777;
+  // Like ~/.config on Debian and Ubuntu: the folders above, writable by the group.
+  chmodSync(sb.root, 0o770);
+  chmodSync(sb.dir, 0o770);
+
+  // --yes: says so and prints the command, changes nothing; not a failure.
+  const y = await sb.setup({ yes: true, mode: 'local' });
+  assert.equal(y.code, 0, y.out);
+  assert.match(y.out, new RegExp(`upload_file is off: others can change ${sb.root} too`));
+  assert.match(y.out, /umask 002/);
+  assert.match(y.out, new RegExp(`To fix it, run:\\n\\s+chmod go-w -- ${sb.root}`));
+  assert.equal(mode(sb.root), 0o770);
+
+  // check: the same, without asking; the exit code is about the address only.
+  const lines = [];
+  assert.equal(await runCheck({ dir: sb.dir, version: VERSION, write: (l) => lines.push(l), env: sb.env }), 0);
+  assert.match(lines.join('\n'), new RegExp(`To fix it, run:\\n\\s+chmod go-w -- ${sb.root}`));
+  assert.equal(mode(sb.root), 0o770);
+
+  // At a terminal, declined: left as it is.
+  const n = await sb.setup({ mode: 'local' }, ['n']);
+  assert.equal(n.code, 0, n.out);
+  assert.match(n.prompts.at(-1), new RegExp(`Make it writable only by you\\? This runs: chmod go-w -- ${sb.root}`));
+  assert.match(n.out, new RegExp(`Left as it is\\. To fix it later, run:\\n\\s+chmod go-w -- ${sb.root}`));
+  assert.equal(mode(sb.root), 0o770);
+
+  // Accepted: one folder at a time, as the service names them (from the root down), asking again.
+  const a = await sb.setup({ mode: 'local' }, ['y', 'y']);
+  assert.equal(a.code, 0, a.out);
+  assert.equal(a.prompts.length, 2);
+  assert.match(a.prompts[1], new RegExp(`chmod go-w -- ${sb.dir}`));
+  assert.equal(mode(sb.root), 0o750);
+  assert.equal(mode(sb.dir), 0o750);
+  assert.match(a.out, new RegExp(`Done\\. upload_file can use its folder now: ${sb.dir}/uploads`));
+  assert.equal((a.out.match(/umask 002/g) ?? []).length, 1, 'the explanation once');
+});
+
+test('the uploads report: what it offers, and what it never touches', async (t) => {
+  if (process.getuid?.() === 0) return t.skip('root');
+  if (process.platform !== 'linux') return t.skip('the fix is offered on Linux only');
+  const { createText } = await import('../src/text.js');
+  const { createStyle } = await import('../src/setup.js');
+  const style = createStyle(false);
+  const tx = createText('en', style);
+  const run = async (dir, answers, { ask = async () => true } = {}) => {
+    const lines = [];
+    const asked = [];
+    await uploadsReport({
+      t: tx, style, dir, out: { line: (l) => lines.push(l) },
+      ask: async (q) => { asked.push(q); return ask(q); }, query: async () => answers.shift() ?? null,
+    });
+    return { out: lines.join('\n'), asked };
+  };
+  const here = mkdtempSync(join(tmpdir(), 'cct-rep-'));
+  t.after(() => rmSync(here, { recursive: true, force: true }));
+  const conf = join(here, 'conf'); // `here` is above its uploads folder, by the path as written
+  chmodSync(here, 0o770);
+  const st = statSync(here, { bigint: true });
+  const target = { ok: false, code: 'above_writable', level: 2, path: here, dev: String(st.dev), ino: String(st.ino), message: 'm' };
+  const mode = () => statSync(here).mode & 0o777;
+
+  assert.deepEqual(await run(conf, []), { out: '', asked: [] }, 'no answer (an older service, a timeout)');
+  // Named, but with another device or inode: not offered, and no command to copy (it could hit something else).
+  let r = await run(conf, [{ ...target, ino: '1' }]);
+  assert.deepEqual(r.asked, []);
+  assert.match(r.out, /others can change/);
+  assert.match(r.out, /If it’s yours, make it writable only by you \(chmod go-w\)/);
+  assert.doesNotMatch(r.out, /chmod go-w --/);
+  // Reached through a link in the middle of the configured path: not offered either.
+  mkdirSync(join(here, 'real', 'sub'), { recursive: true });
+  chmodSync(join(here, 'real', 'sub'), 0o770);
+  symlinkSync(join(here, 'real'), join(here, 'link'));
+  const sub = statSync(join(here, 'real', 'sub'), { bigint: true });
+  r = await run(join(here, 'link', 'sub', 'conf'), [{ ...target, path: join(here, 'link', 'sub'), dev: String(sub.dev), ino: String(sub.ino) }]);
+  assert.deepEqual(r.asked, []);
+  assert.doesNotMatch(r.out, /chmod go-w --/);
+  assert.equal(statSync(join(here, 'real', 'sub')).mode & 0o777, 0o770);
+  // A folder that isn't above this configuration's uploads folder (a swapped socket could name any): never offered, no command.
+  r = await run('/somewhere/else', [target]);
+  assert.deepEqual(r.asked, []);
+  assert.match(r.out, /others can change/);
+  assert.doesNotMatch(r.out, /chmod go-w --/);
+  assert.equal(mode(), 0o770);
+  // Agreed, but asked again the service no longer names it (it changed meanwhile): not changed.
+  r = await run(conf, [target, { ok: true, dir: join(conf, 'uploads') }]);
+  assert.equal(r.asked.length, 1);
+  assert.equal(mode(), 0o770, 'left alone');
+  assert.match(r.out, /upload_file can use its folder/);
+  // Agreed, but meanwhile the folder was moved away and another put at its path (the service, or
+  // something posing as it, still names the old one): the path no longer leads to it, nothing changed.
+  r = await run(conf, [target, target], {
+    ask: async () => { renameSync(here, `${here}.moved`); mkdirSync(here); chmodSync(here, 0o770); return true; },
+  });
+  assert.match(r.out, /Couldn’t change .* \(couldn’t confirm it’s still the same folder\)\.\n?.*If it’s yours/s);
+  assert.equal(statSync(`${here}.moved`).mode & 0o777, 0o770, 'the moved folder is left alone');
+  assert.equal(statSync(here).mode & 0o777, 0o770, 'and so is the one put in its place');
+  rmSync(here, { recursive: true });
+  renameSync(`${here}.moved`, here);
+  // Agreed, still the same: changed through a handle opened afresh; asked once more afterwards.
+  r = await run(conf, [target, target, { ok: true, dir: join(conf, 'uploads') }]);
+  assert.equal(mode(), 0o750);
+  assert.match(r.out, /Done\. upload_file can use its folder now/);
+  // Paths that can't be shown as a command; other reasons: explained, never changed.
+  const nl = { ...target, path: `${here}\nx` };
+  assert.match((await run(conf, [nl])).out, /upload_file is off: m/);
+  assert.match((await run(conf, [{ ok: false, code: 'above_unknown', level: 3, path: '/home', message: 'm' }])).out, /sandbox can’t tell who owns \/home/);
+  assert.match((await run(conf, [{ ok: false, code: 'above_owner', level: 3, path: '/srv', message: 'm' }])).out, /\/srv can be changed by other users, and it isn’t yours/);
+  assert.match((await run('/tmp/x', [{ ok: false, code: 'not_private', message: 'm' }])).out, /\/tmp\/x\/uploads should be a plain folder only you can use/);
+  // Not usable: the command only for the very directory the service checked.
+  assert.match((await run('/tmp/x', [{ ok: false, code: 'not_usable', message: 'm' }])).out, /upload_file is off: m/);
+  const up = join(conf, 'uploads');
+  mkdirSync(up, { recursive: true, mode: 0o700 });
+  chmodSync(up, 0o600);
+  const ust = statSync(up, { bigint: true });
+  const nu = { ok: false, code: 'not_usable', path: up, dev: String(ust.dev), ino: String(ust.ino), message: 'm' };
+  assert.match((await run(conf, [nu])).out, new RegExp(`mode should be 700\\)\\. To fix it, run:\\n\\s+chmod 700 -- ${up}`));
+  assert.match((await run(conf, [{ ...nu, ino: '1' }])).out, /upload_file is off: m/);
+  chmodSync(up, 0o700);
+  assert.match((await run(conf, [{ ok: false, code: 'cant_bind', message: 'The exact words.' }])).out, /upload_file is off: The exact words\./);
+  // An answer of the wrong shape is no answer.
+  assert.deepEqual(await run(conf, [{ ok: false, code: 'cant_bind', message: { toString: 1 } }]), { out: '', asked: [] });
+  assert.deepEqual(await run(conf, [{ ok: true, dir: 5 }]), { out: '', asked: [] });
+});
+
+test('setup: answers that make no sense to the uploads question count as no, and setup goes on', async (t) => {
+  if (process.getuid?.() === 0) return t.skip('root');
+  if (process.platform !== 'linux') return t.skip('the question is asked on Linux only');
+  const sb = await sandbox(t, { systemd: false, claude: false });
+  await sb.setup({ yes: true, mode: 'local' });
+  chmodSync(sb.root, 0o770);
+  const r = await sb.setup({ mode: 'local' }, Array(10).fill('maybe'));
+  assert.equal(r.code, 0, r.out);
+  assert.equal(r.prompts.length, 10, 'asked, ten times');
+  assert.match(r.out, /Left as it is/);
+  assert.equal(statSync(sb.root).mode & 0o777, 0o770);
+  assert.match(r.out, /cctether1:/, 'the connection code is still printed');
+  // The input ending at that question (Ctrl+D) is a no too.
+  const d = await sb.setup({ mode: 'local' }, []);
+  assert.equal(d.code, 0, d.out);
+  assert.equal(d.prompts.length, 1);
+  assert.match(d.out, /Left as it is/);
+  assert.match(d.out, /cctether1:/);
+});
+
+test('setup: the input ending (Ctrl+D) at a question stops cleanly, keeping what is done', async (t) => {
+  const sb = await sandbox(t, { systemd: false, claude: false });
+  const lines = [];
+  const code = await runSetup({
+    dir: sb.dir, version: VERSION, cliPath: CLI, opts: { port: sb.port }, env: sb.env, platform: 'linux', runFn: () => ({ status: 1, stdout: '', stderr: '' }),
+    write: (l) => lines.push(l), interactive: true,
+    ask: async () => { throw Object.assign(new Error('The input ended.'), { code: 'input_ended' }); },
+    self: { kind: 'installed', binPath: join(sb.root, 'global', 'bin', 'cctether'), cliPath: CLI, onPath: true },
+  });
+  assert.equal(code, 2);
+  assert.match(lines.join('\n'), /Stopped: the input ended\./);
+  assert.ok(existsSync(join(sb.dir, 'config.json')), 'the key made before the question is kept');
 });

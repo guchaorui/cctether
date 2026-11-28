@@ -3,9 +3,10 @@
 // are reported and skipped, the key is never replaced (that's `cctether rotate`), and a service unit
 // or Claude Code entry that setup didn't write is only replaced when the user says so.
 
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, constants as fsc } from 'node:fs';
+import { open, statfs } from 'node:fs/promises';
 import { homedir, userInfo } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -16,6 +17,7 @@ import { adminRequest } from './control.js';
 import { spawnDaemon } from './shim.js';
 import { checkAddress, explainCheck } from './check.js';
 import { createText, pickLanguage } from './text.js';
+import { uploadsDir } from './uploads.js';
 import * as sys from './system.js';
 
 const MODES = ['local', 'ssh', 'https'];
@@ -116,6 +118,10 @@ export async function runSetup(c) {
   try {
     return await steps();
   } catch (e) {
+    if (e?.code === 'input_ended') {
+      out.line(t('setup.inputEnded'));
+      return 2;
+    }
     if (!(e instanceof TooManyTries)) throw e;
     out.line(t('setup.tooManyTries'));
     return 2;
@@ -259,6 +265,10 @@ export async function runSetup(c) {
         if (HAIRPIN_REASONS.has(results.publicReason)) out.line(style.dim(t('check.hairpin')));
         out.line(t('check.later'));
       }
+      // Only a person at a terminal is asked; --yes never changes the folders.
+      // An optional question: answers that make no sense, or the input ending (Ctrl+D), count as no.
+      const ask = (q) => yn(q, true).catch(() => false);
+      await uploadsReport({ t, out, style, P, dir: c.dir, ask: opts.yes ? null : ask });
     }
 
     // Connection code ------------------------------------------------------------------------
@@ -627,9 +637,225 @@ export async function runCheck({ dir, version, write, color, lang, env = process
   const publicUrl = cfg.publicUrl && !isLocalUrl(cfg.publicUrl) ? cfg.publicUrl : null;
   const r = await checkUrls({ t, out, cfg, publicUrl });
   if (publicUrl && !r.publicOk && r.localOk && HAIRPIN_REASONS.has(r.publicReason)) out.line(style.dim(t('check.hairpin')));
+  await uploadsReport({ t, out, style, P, dir, ask: null });
   const b = st.browser;
   if (b?.connected) out.line(t('check.browser.connected', { browser: b.info?.browser ?? '?', extension: b.info?.extension ?? '?' }));
   else out.line(t('check.browser.none'));
   out.blank();
   return r.localOk && (!publicUrl || r.publicOk) ? 0 : 1;
+}
+
+// --- upload_file's folder (SPEC §8.1 step 6, §8.2) ---------------------------------------------
+
+/**
+ * A promise's value, or `fallback` after `ms`; `late` gets the value if it comes afterwards. (The
+ * operation itself isn't stopped: a file system that never answers can still keep the process.)
+ */
+function within(promise, ms, fallback = null, late = () => {}) {
+  let timer;
+  let timedOut = false;
+  return Promise.race([
+    promise.then((v) => { if (timedOut) late(v); return v; }),
+    new Promise((r) => { timer = setTimeout(() => { timedOut = true; r(fallback); }, ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+const closeSoon = (fh) => { fh?.close().catch(() => {}); };
+
+/** Ask the running service whether upload_file can use its folder. null: no answer (an older service, a timeout). */
+async function askUploads(P) {
+  const r = await adminRequest(P.socket, { cmd: 'uploads' }, 5000);
+  return r?.ok ? r.uploads : null;
+}
+
+/** The service's answer if it has the expected shape (strings where strings go); else null. */
+function wellFormed(u) {
+  if (!u || typeof u !== 'object' || typeof u.ok !== 'boolean') return null;
+  const str = (k) => u[k] === undefined || typeof u[k] === 'string';
+  if (u.ok) return typeof u.dir === 'string' ? u : null;
+  return typeof u.code === 'string' && ['path', 'dev', 'ino', 'message'].every(str) ? u : null;
+}
+
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/; // a path with these can't be shown as a command to copy
+
+/**
+ * The only directories setup may change: those above the uploads folder by the configured path as
+ * written (no links followed). Whatever answers on the control socket, a fix can't reach anything
+ * else (a socket swapped through a writable directory above could name any folder).
+ */
+function lexicalAbove(dir) {
+  const set = new Set();
+  for (let d = resolve(dir); ; d = dirname(d)) {
+    set.add(d);
+    if (d === dirname(d)) break;
+  }
+  return set;
+}
+
+const sameTarget = (a, b) => a && !a.ok && a.code === b.code && a.path === b.path && a.dev === b.dev && a.ino === b.ino;
+
+const fixable = (st, u, me) => st.isDirectory() && String(st.dev) === u.dev && String(st.ino) === u.ino && Number(st.uid) === me
+  && (Number(st.mode) & 0o022) !== 0 && (Number(st.mode) & 0o1000) === 0;
+
+/**
+ * The directory at the absolute path `path`, opened one level at a time from the root without
+ * following any link (through /proc/self/fd, like openat with O_NOFOLLOW at every level): so it
+ * really is the directory at that path as written. Linux only (needs procfs); else, or if any
+ * level can't be opened, null.
+ */
+async function openNoLinks(path, stop = { now: false }) {
+  if (process.platform !== 'linux' || fsc.O_DIRECTORY === undefined || !path.startsWith('/')) return null;
+  if ((await statfs('/proc/self/fd').catch(() => null))?.type !== 0x9fa0 || stop.now) return null;
+  const flags = fsc.O_RDONLY | fsc.O_DIRECTORY | (fsc.O_NOFOLLOW ?? 0);
+  let fh = await open('/', flags).catch(() => null);
+  for (const part of path.split('/').filter(Boolean)) {
+    if (!fh || stop.now) { // given up on (a timeout): no more opens
+      closeSoon(fh);
+      return null;
+    }
+    const next = await open(`/proc/self/fd/${fh.fd}/${part}`, flags).catch(() => null);
+    closeSoon(fh);
+    fh = next;
+  }
+  return fh;
+}
+
+/** `openNoLinks(path)` if it is the directory `u` names (device and inode) and `ok(stat)`; else null. */
+async function openNamed(path, u, ok) {
+  if (typeof path !== 'string' || CONTROL_CHARS.test(path) || !u.dev || !u.ino) return null;
+  const stop = { now: false };
+  const fh = await within(openNoLinks(path, stop), 5000, null, closeSoon);
+  stop.now = true;
+  if (!fh) return null;
+  const st = await within(fh.stat({ bigint: true }).catch(() => null), 5000);
+  if (st && st.isDirectory() && String(st.dev) === u.dev && String(st.ino) === u.ino && ok(st)) return fh;
+  closeSoon(fh);
+  return null;
+}
+
+/**
+ * The directory the service named (`u.path`), opened, if setup may change it (see lexicalAbove),
+ * it is that very directory at that path (no links; device and inode), this user's, and writable
+ * by its group or by everyone (not sticky). Else null. The change is made through this handle
+ * (fchmod), so a path swapped meanwhile can't redirect it. Never as root (sudo). A command to
+ * copy is only printed for a directory that passes the same checks.
+ */
+async function openFixTarget(u, allowed) {
+  const me = process.getuid?.();
+  if (me === undefined || me === 0 || !allowed.has(u.path)) return null;
+  return openNamed(u.path, u, (st) => fixable(st, u, me));
+}
+
+/**
+ * Say whether upload_file can use its folder, as the running service sees it. When a directory
+ * above is the problem only because its group or everyone may write to it, and it is this user's:
+ * with `ask` (setup, at a terminal), offer `chmod go-w` on it, one directory at a time, asking the
+ * service again before and after each change; without (check, --yes), print the command. Nothing
+ * here fails setup.
+ */
+export async function uploadsReport({ t, out, style, P, dir, ask, query: rawQuery = () => askUploads(P) }) {
+  const query = async () => wellFormed(await rawQuery().catch(() => null));
+  let u = await query();
+  if (!u) return;
+  const allowed = lexicalAbove(dir);
+  let explained = false;
+  const why = () => { if (!explained) out.line(style.dim(t('uploads.writableWhy'))); explained = true; };
+  for (let round = 0; round < 20 && !u.ok; round++) {
+    const fh = u.code === 'above_writable' ? await openFixTarget(u, allowed) : null;
+    if (!fh) break;
+    closeSoon(fh); // only told whether to offer; the change goes through a handle opened afresh
+    const cmd = shellJoin(['chmod', 'go-w', '--', u.path]);
+    // A command with the path only for a directory that passes the checks at that very moment.
+    const later = async () => {
+      const again = await openFixTarget(u, allowed);
+      closeSoon(again);
+      return again ? t('uploads.hint', { cmd }) : t('uploads.manual');
+    };
+    out.line(t('uploads.writable', { path: u.path }));
+    why();
+    if (!ask) {
+      out.line(await later());
+      return;
+    }
+    if (!(await ask(t('uploads.ask', { cmd })))) {
+      const again = await openFixTarget(u, allowed);
+      closeSoon(again);
+      out.line(again ? t('uploads.declinedHint', { cmd }) : `${t('uploads.declined')}\n${t('uploads.manual')}`);
+      return;
+    }
+    // Time has passed: the service must still name this directory, and the path still lead to it.
+    const now = await query();
+    if (!now) return;
+    if (!sameTarget(now, u)) {
+      u = now;
+      continue;
+    }
+    const target = await openFixTarget(u, allowed);
+    if (!target) {
+      out.line(t('uploads.fixFailed', { path: u.path, detail: t('uploads.changed') }));
+      out.line(t('uploads.manual'));
+      return;
+    }
+    let failed;
+    try {
+      // The last look before the change must pass the same checks (a sticky bit set meanwhile, say).
+      const st = await within(target.stat({ bigint: true }).catch(() => null), 5000);
+      failed = !st || !fixable(st, u, process.getuid()) ? t('uploads.changed')
+        : await within(target.chmod(Number(st.mode) & 0o7777 & ~0o022).then(() => null, (e) => e.code || e.message), 5000, 'pending');
+    } finally {
+      closeSoon(target);
+    }
+    if (failed === 'pending') {
+      // It may still happen: don't say it failed.
+      out.line(t('uploads.fixPending', { path: u.path }));
+      return;
+    }
+    if (failed) {
+      out.line(t('uploads.fixFailed', { path: u.path, detail: failed }));
+      out.line(t('uploads.manual'));
+      return;
+    }
+    u = await query();
+    if (!u) return;
+    if (u.ok) {
+      out.line(t('uploads.fixed', { path: u.dir }));
+      return;
+    }
+  }
+  if (u.ok) out.line(t('uploads.ok', { path: u.dir }));
+  else await explainUploads({ t, out, style, u, dir, explained });
+}
+
+async function explainUploads({ t, out, style, u, dir, explained }) {
+  const mine = uploadsDir(dir);
+  const other = () => out.line(t('uploads.other', { why: u.message ?? u.code }));
+  const shown = (p) => typeof p === 'string' && !CONTROL_CHARS.test(p);
+  switch (u.code) {
+    case 'above_writable':
+      // Not offered (run as root, not on the configured path, reached through a link, not the
+      // folder the service checked any more, or no answer in time). Nothing more is claimed about
+      // whatever is at that path now, and no command (it could hit something else).
+      if (!shown(u.path)) return other();
+      out.line(t('uploads.writable', { path: u.path }));
+      if (!explained) out.line(style.dim(t('uploads.writableWhy')));
+      return out.line(t('uploads.manual'));
+    case 'above_owner':
+    case 'above_not_dir':
+      return shown(u.path) ? out.line(t('uploads.notMine', { path: u.path })) : other();
+    case 'above_unknown':
+      return shown(u.path) ? out.line(t('uploads.unknown', { path: u.path })) : other();
+    case 'not_private':
+      return out.line(t('uploads.notPrivate', { path: mine }));
+    case 'not_usable': {
+      // Only for the very directory the service checked, at the configured path, still private.
+      const me = process.getuid?.();
+      const fh = me && me !== 0 && u.path === mine ? await openNamed(mine, u, (st) => Number(st.uid) === me && (Number(st.mode) & 0o077) === 0) : null;
+      closeSoon(fh);
+      return fh ? out.line(t('uploads.notUsable', { path: mine, cmd: shellJoin(['chmod', '700', '--', mine]) })) : other();
+    }
+    case 'missing':
+      return out.line(t('uploads.missing', { path: mine }));
+    default:
+      return other();
+  }
 }

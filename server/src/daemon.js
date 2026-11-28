@@ -6,7 +6,7 @@ import { Gateway } from './gateway.js';
 import { startControl, adminRequest, AlreadyRunningError } from './control.js';
 import { createMcpSession, lineSplitter } from './mcp.js';
 import { scriptsDir, ensureScriptsDir } from './evalfile.js';
-import { uploadsDir, ensureUploadsDir } from './uploads.js';
+import { uploadsDir, ensureUploadsDir, uploadsDirStatus } from './uploads.js';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 /**
@@ -72,6 +72,10 @@ export async function runDaemon({ dir, version, log, port: portOverride, exitOnS
               publicUrl: cfg.publicUrl, trustProxy: gateway.trustProxy, fingerprint: keyFingerprint(cfg.key), startedAt,
               browser: gateway.status(), mcpSessions: sessions,
             };
+          case 'uploads':
+            // Can upload_file use its directory, as this service sees it (SPEC §8.2)? Only setup
+            // and check ask, separately from `status`, so a slow file system never delays that.
+            return { ok: true, uploads: await uploadsDirStatus(uploadDir) };
           case 'reload':
             return reload();
           case 'stop':
