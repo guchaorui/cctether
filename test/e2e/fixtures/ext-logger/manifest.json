@@ -2,11 +2,15 @@
   "manifest_version": 3,
   "name": "ext-logger",
   "version": "1.0.0",
-  "description": "Test fixture: logs from a content script on 127.0.0.1 pages.",
+  "description": "Test fixture: logs from a content script on 127.0.0.1 pages; its page act.html stands in for another extension (mute_tab tests).",
   "content_scripts": [
     {
-      "matches": ["http://127.0.0.1/*"],
-      "js": ["content.js"],
+      "matches": [
+        "http://127.0.0.1/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ]

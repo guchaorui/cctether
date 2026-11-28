@@ -1,6 +1,6 @@
 # 交接
 
-> 2026-11-27 更新。新窗口读 `CLAUDE.md`、`CLAUDE.local.md`（这两个会自动加载）、`docs/SPEC.md` 和本文第零、一节，就能接上。
+> 2026-11-28 更新。新窗口读 `CLAUDE.md`、`CLAUDE.local.md`（这两个会自动加载）、`docs/SPEC.md` 和本文第零、一节，就能接上。
 
 ## 零、现在到哪了（先看这里）
 
@@ -10,6 +10,13 @@
 > - 思路（还没定，要先给 GPT 挑刺）：`node` 和 `cctether` 在同一个 bin 目录里时（nvm、官方压缩包、`/usr/bin`、Homebrew 的 `/opt/homebrew/bin`），注册成 `[<那个目录>/node, <cctether>, 'mcp']`；用那个目录里的 `node` 而不是 `process.execPath`，因为 Homebrew 的 `process.execPath` 是带版本号的 Cellar 路径，升级就失效。不在同一个目录时（比如 `npm config set prefix ~/.local` 配系统 node）照旧。
 > - 要注意：已经注册过的用户重跑 setup，现有注册和新的不一样，会被问要不要替换（`--yes` 时不替换，只提示）；`cctether check` 也许可以顺便查出「注册的命令在没有 nvm 的环境里起不来」。用 nvm 时每换一个 Node 版本，全局装的 cctether 和注册的路径都跟着那个版本目录走，这一点改不了，文档里可以提醒。
 > - 测试：setup 的单元测试（`server/test/setup.test.js` 里有假的 `self`、假的 npm 前缀），以及在开发机上用 `env -i PATH=/usr/bin:/bin` 起注册的命令，确认能跑。
+
+> **2026-11-28 晚：0.9.0，给标签页静音**（新工具 `mute_tab`、`open_tab` 的 `muted`、`list_tabs` 标出静音和正在出声的）。起因是另一个项目的 Claude 反馈「想让自己开的标签页静音，免得自动播放吵到主人，只好用 `evaluate` 包 `play()`」，主人问有没有必要做，Claude 建议做，主人定**默认不静音**。规则在 SPEC §5.2「静音 `mute_tab`，和 `open_tab` 的 `muted`」，经过在 §13 v0.26。新窗口从这一段开始：
+> - **做法**：用 Chrome 自己的标签页静音（`chrome.tabs.update({ muted })`），跳转后还在、所有声音都管、页面感觉不到，不用调试器、不加权限。
+> - **最要紧的一条 Chrome 规矩**（GPT 挑刺时指出，Claude 在 Chromium 源码里核实过）：插件一旦写过某个标签页的静音状态（静音或取消都算），Chrome 就不再按「网站声音设置」管它，直到关掉；右键「将网站静音 / 取消网站静音」对它不起作用。所以：能不写就不写（已经是要的样子就不写）；只取消 cctether 自己加的静音（别的报 `not_own_mute`）；**标签页离开组以后不管它**（原来想拖出组时自动取消，撤掉了：会让用户屏蔽了声音的网站响起来，也是「不碰组外标签页」唯一的例外）。代价是拖出组的标签页一直静音，README「已知的限制」写了怎么办（拖回组里让 Claude 取消，或关掉重开）。
+> - **检查和写入之间的空档**（GPT 复审、核验两轮提的）：写之前读标签页、读组、再读标签页，期间收到范围相关的事件（换组、改名、挪窗口……，`tabs.js` 不防抖地计数）就从头再查，然后看暂停、马上写。`open_tab` 在挂完调试器、加载网址前再核对一次（还在组里、没暂停、要静音的还静音着），不满足就停在空白页；这道核对对不静音的 `open_tab` 也加了，修了一个以前就有的小问题（挂调试器期间被拖出组还会照样打开网页）。都有卡时间点的测试（拿掉修正会失败）。
+> - **GPT 把关**：方案挑刺 5 条全采纳（撤掉自动取消是其中一条）；复审 3 条全改；核验两轮，第一轮又提 2 处（组改名、关掉时的说法）都改了，第二轮确认没有必须改的。没采纳的一条小的：`audible` 的标记叫 `playing sound`，没用它建议的 `audio recently detected`。
+> - **主人要做的**：上传商店的新包（这次改了插件），见下面「还等主人定的」。过审以后在真 Mac 上试一次：让 Claude 开一个会自动放声音的网页并静音，听一下确实没声音、标签页上有静音图标；再让它取消静音。
 
 > **2026-11-28：0.8.3，安装向导和 `cctether check` 主动发现上传文件夹用不了**（主人定的下一步）。规则在 SPEC §8.1 第 6 步、§8.2，经过在 §13 v0.25。新窗口从这一段开始：
 > - **做了什么**：服务多了管理命令 `uploads`，由服务自己（可能在沙盒里）查上传文件夹能不能用，说出原因和是哪个文件夹（路径、设备号、inode）。向导第 6 步和 `check` 去问它：能用打 ✓；原因是往上某个**自己的**文件夹同组或别人可写（Debian/Ubuntu 上早就有的 `~/.config` 常这样），向导在终端里问「改成只有你能写吗？会运行：chmod go-w -- <路径>」，同意才改；`--yes` 和 `check` 只打命令。上传文件夹本身缺写或进入权限时给 `chmod 700` 命令。别的原因只说明，不改。这些都只打 !，不算安装失败。
@@ -73,7 +80,7 @@
 | 主人的 Mac | 商店版 0.8.0 | Chrome 158，连接正常（升级服务时断开十几秒后都自己连回来了） |
 | 官网主页 | 已有卡片 | site-ops 做的。要改卡片交给 site-ops |
 
-- **测试**：服务端 144 个（0.8.3 的在 `setup.test.js` 末尾：向导和 `check` 发现上传文件夹的问题、只在同意时改、核对不上不改不给命令、Ctrl+D；`uploads.test.js` 的 `uploadsDirStatus`；0.8.1 的在 `uploads.test.js` 末尾：沙盒里属主看不出来的几种情况，其中一个在开发机上用 `unshare --user --map-current-user` 真建命名空间，Ubuntu 24.04 这类不许建的地方会跳过；`setup.test.js` 末尾：npm 全局目录还没建出来、不能写时不提问；0.6.2 的在 `server/test/shim.test.js`：假的常驻服务 + 子进程跑的 `cctether mcp`；0.8.0 的上传目录在 `uploads.test.js`，分段协议在 `fragments.test.js`：带背压的限速转发、按规矩乱发的假服务）；端到端 89 个（88 个通过，1 个要有界面的 Chrome，GitHub 上会跳过）。上传文件的两个测试在 `tools.test.mjs` 末尾，测试页 `fixtures/pages/upload.html`、`upload-one.html`，经真服务的一个在 `fullstack.test.mjs`；拖拽的在它们前面，测试页 `fixtures/pages/drag.html`；iframe 的再前面，测试页 `fixtures/pages/frames.html`、`frame-inner.html`（别的网站用 localhost 对 127.0.0.1 来模拟）。
+- **测试**：服务端 144 个（0.8.3 的在 `setup.test.js` 末尾：向导和 `check` 发现上传文件夹的问题、只在同意时改、核对不上不改不给命令、Ctrl+D；`uploads.test.js` 的 `uploadsDirStatus`；0.8.1 的在 `uploads.test.js` 末尾：沙盒里属主看不出来的几种情况，其中一个在开发机上用 `unshare --user --map-current-user` 真建命名空间，Ubuntu 24.04 这类不许建的地方会跳过；`setup.test.js` 末尾：npm 全局目录还没建出来、不能写时不提问；0.6.2 的在 `server/test/shim.test.js`：假的常驻服务 + 子进程跑的 `cctether mcp`；0.8.0 的上传目录在 `uploads.test.js`，分段协议在 `fragments.test.js`：带背压的限速转发、按规矩乱发的假服务）；端到端 94 个（93 个通过，1 个要有界面的 Chrome，GitHub 上会跳过）。静音的 5 个在 `tools.test.mjs` 末尾，测试页 `fixtures/pages/sound.html`（点一下放一段 Web Audio）；「别的插件」用测试插件 `fixtures/ext-logger` 的 `act.html` 页面来静音；卡时间点的办法是在后台给 `chrome.tabGroups.get`、`chrome.debugger.attach` 打补丁。上传文件的两个测试在 `tools.test.mjs` 末尾，测试页 `fixtures/pages/upload.html`、`upload-one.html`，经真服务的一个在 `fullstack.test.mjs`；拖拽的在它们前面，测试页 `fixtures/pages/drag.html`；iframe 的再前面，测试页 `fixtures/pages/frames.html`、`frame-inner.html`（别的网站用 localhost 对 127.0.0.1 来模拟）。
 - **两个新工具在主人的真 Mac 上试过的（2026-11-18，Chrome 157，Retina 屏，系统是浅色）**：调到 390 宽、只改高度、调到比窗口还高（1280×2000）；截图是 1 图片像素 = 1 CSS 像素，按截图坐标点击点得中；强制深色、再恢复跟随系统；跳到别的页面后两个模拟都还在；恢复后回到真实大小（1710×806）；标签页在前台和在后台都试了；在一个真实网站上（nodejs.org）也试了。模拟自动结束后的提醒两种情况都试了：5 分钟没操作后，下一次截图的说明末尾带了一句提醒，再下一次就不带了；Mac 断线几分钟再连上后，按旧坐标点击被拒绝了一次，之后正常。两种情况下页面都回到了真实大小和浅色。
 - **主人在真 Mac 上确认过的**：合盖再打开，连接很快恢复；常用快捷键都对（清单在 SPEC §13 v0.10）；商店版能连上服务端，整条链走通。
 - **外部反馈**：GitHub 上目前 0 个 star，没有 issue。还没有别人用过的反馈。
@@ -87,7 +94,7 @@
 
 **还等主人定的：**
 
-- **上传商店的包**：传 `dist/cctether-extension-0.8.0-store.zip`（照 `store/README.zh-CN.md` 末尾），顺手把商店介绍更新成 `store/listing*.md` 里的（功能列表多了拖拽和上传文件）。iframe、拖拽、上传文件都在插件里，过审以后才到主人的 Mac 上。
+- **上传商店的包**：传 `dist/cctether-extension-0.9.0-store.zip`（照 `store/README.zh-CN.md` 末尾），顺手把商店介绍更新成 `store/listing*.md` 里的（功能列表的第一条多了「给标签页静音」）。静音在插件里，过审以后才到主人的 Mac 上；在那之前 Claude 调 `mute_tab` 会被告知「请更新插件」。
 - **请 Oracle 那个项目的 Claude 再用一次**（商店版更新以后）：看 iframe、`file`、拖拽、上传文件在真的控制台里好不好用。它的会话要是开在 0.6.2 之前，要重开一次 Claude Code。
 
 - **请谷歌云那个项目的 Claude 再用一次**（不急，主人方便时）：看那六条反馈在真的控制台里是不是解决了。有新反馈就照这次的流程改。
@@ -112,7 +119,7 @@
 2. **Mac 当服务端。** 代码里没有 Mac 的后台服务（launchd），setup 在 Mac 上不会装开机自启，靠 Claude Code 启动时把服务拉起来。文档写的是「没测过，欢迎反馈」。Claude 碰不到 Mac，要主人配合，或者等用户反馈。
 3. **WSL 当服务端。** 同样没测过，开发机上测不了。
 
-**再补工具的缺口。** 现在有 23 个工具，这几件事 Claude 做不了：
+**再补工具的缺口。** 现在有 25 个工具（0.9.0 加了 `mute_tab`），这几件事 Claude 做不了：
 
 4. ~~上传文件~~：2026-11-27 做完，0.8.0。
 5. ~~拖拽~~：2026-11-27 做完，0.7.0。

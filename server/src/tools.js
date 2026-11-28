@@ -57,6 +57,7 @@ export const TOOLS = [
       properties: {
         url: { type: 'string', maxLength: 8192, description: 'Default about:blank.' },
         active: { type: 'boolean', description: 'Bring the tab to the front. Default false, so the user\'s own browsing is not interrupted.' },
+        muted: { type: 'boolean', description: 'Mute the tab before the page loads (see mute_tab). Default false.' },
       },
       additionalProperties: false,
     },
@@ -69,6 +70,20 @@ export const TOOLS = [
     description: 'Close a tab in the cctether group.',
     inputSchema: { type: 'object', properties: { tab }, required: ['tab'], additionalProperties: false },
     annotations: DANGER,
+  },
+  {
+    name: 'mute_tab',
+    title: 'Mute tab',
+    description: 'Mute a shared tab, or undo cctether\'s mute. Chrome\'s tab mute: all its sound, kept when it navigates; the page can\'t tell. list_tabs shows muted tabs and tabs playing sound.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        muted: { type: 'boolean', description: 'Default true. false unmutes (only a mute cctether set).' },
+        tab,
+      },
+      additionalProperties: false,
+    },
+    annotations: ACT,
   },
   {
     name: 'navigate',

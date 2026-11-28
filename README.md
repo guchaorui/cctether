@@ -143,13 +143,14 @@ Settings live in `$CCTETHER_HOME`, else `$XDG_CONFIG_HOME/cctether`, else `~/.co
 
 ## Tools
 
-Claude gets these 24 tools:
+Claude gets these 25 tools:
 
 | Tool | What it does |
 |---|---|
-| `list_tabs` | Lists the tabs in the cctether group, plus browser info. |
-| `open_tab` | Opens a new tab in the group and makes it the current tab. |
+| `list_tabs` | Lists the tabs in the cctether group (and which are muted or playing sound), plus browser info. |
+| `open_tab` | Opens a new tab in the group and makes it the current tab, muted if Claude asks. |
 | `close_tab` | Closes a tab in the group. |
+| `mute_tab` | Mutes a tab in the group, so a page that plays sound doesn't disturb you (Chrome's own tab mute). |
 | `navigate` | Loads a URL, or goes back, forward or reloads. Waits for the page to load, and optionally for some text or element to appear. |
 | `read_page` | Reads the page, including same-origin iframes: visible text, a numbered list of interactive elements, or the HTML of a selector. Long output is split. |
 | `find` | Finds elements by CSS selector and/or visible text, also inside same-origin iframes. |
@@ -228,7 +229,7 @@ Your pairing is kept either way.
 
 ## Does it cost much?
 
-- **Claude's context:** the 24 tool descriptions take about 5,900 tokens, under 3% of a 200k context. Recent Claude Code versions load MCP tools on demand when there are many of them, so until Claude actually uses the browser, only the tool names (about 150 tokens) and a short note (about 120 tokens) sit in the context.
+- **Claude's context:** the 25 tool descriptions take about 6,100 tokens, under 3% of a 200k context. Recent Claude Code versions load MCP tools on demand when there are many of them, so until Claude actually uses the browser, only the tool names (about 150 tokens) and a short note (about 120 tokens) sit in the context.
 - **Memory on the Claude Code computer:** the service uses about 75 MB, and each open Claude Code window adds a small relay process of about 55 MB.
 - **The browser:** the extension does nothing while Claude isn't using it, apart from a tiny heartbeat every 10 seconds.
 
@@ -241,6 +242,7 @@ Your pairing is kept either way.
 - `resize_viewport` gives a narrow desktop viewport, not a phone emulation: the user agent, touch and pixel ratio stay as they are, so it checks the layout at that width, not everything a real phone does.
 - `set_color_scheme` changes what the page is told about the system's color scheme; it does not operate a site's own theme switch or change a theme the site has saved.
 - `upload_file` sets the files of a file input with script events, as a page's own code could; it can't answer the browser's "choose a file" window. Most pages and upload widgets take files this way. A page that insists on a real person's choice won't, and some drop zones (react-dropzone, for example) ignore a drop that didn't come from a real drag: setting the files on their file input works instead. Files go only from the uploads folder; inputs in other sites' iframes and choosing folders aren't supported.
+- `mute_tab` uses Chrome's own tab mute, and once an extension has muted or unmuted a tab, Chrome stops applying that site's sound setting to it until the tab is closed. So a tab cctether muted stays muted if you drag it out of the group (cctether doesn't touch tabs outside the group), and "Unmute site" in the tab's menu doesn't bring the sound back: put the tab back into the group and ask Claude to unmute it, or close it and open the page again.
 - One browser per service at a time.
 - The service doesn't run on Windows directly. Use WSL.
 

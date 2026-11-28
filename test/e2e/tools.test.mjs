@@ -195,6 +195,16 @@ test('tool names and arguments match the server definitions', async () => {
     for (const [lang, pack] of Object.entries(STRINGS)) {
       for (const name of ext.TOOL_NAMES) assert.ok(pack[`tool.${name}`], `${lang} has no activity label for ${name}`);
     }
+    const { mutedBy } = await import(join(EXT, 'background', 'tools', 'browser.js'));
+    const self = 'a'.repeat(32);
+    assert.equal(mutedBy({ muted: false }, self), undefined);
+    assert.equal(mutedBy({ muted: false, reason: 'extension', extensionId: self }, self), undefined);
+    assert.equal(mutedBy({ muted: true, reason: 'extension', extensionId: self }, self), 'cctether');
+    assert.equal(mutedBy({ muted: true, reason: 'extension', extensionId: 'b'.repeat(32) }, self), 'extension');
+    assert.equal(mutedBy({ muted: true, reason: 'user' }, self), 'user');
+    assert.equal(mutedBy({ muted: true, reason: 'capture' }, self), 'other');
+    assert.equal(mutedBy({ muted: true }, self), 'other');
+    assert.equal(mutedBy(undefined, self), undefined);
     const util = await import(join(EXT, 'background', 'tools', 'util.js'));
     assert.equal(util.normalizeUrl('example.com'), 'https://example.com/');
     assert.equal(util.normalizeUrl('localhost:3000/x'), 'http://localhost:3000/x');
@@ -2582,4 +2592,248 @@ test('upload_file stops before giving the files: pause, leaving the group, navig
   await nothing();
   await swEval('delete self.__big, true');
   await ok('close_tab', { tab });
+});
+
+// ---- mute_tab and open_tab's muted (0.9.0) -------------------------------------------------------
+
+const mutedInfo = (tab) => swEval(`chrome.tabs.get(${tab}).then((t) => t.mutedInfo)`);
+
+test('open_tab muted mutes before the page loads; mute_tab mutes, unmutes and says what it found', async () => {
+  // Record the order of the new tab's mute and its navigation to the page.
+  await swEval(`(self.__muteLog = [], self.__muteListener = (id, info) => {
+    if ('mutedInfo' in info) self.__muteLog.push({ id, muted: info.mutedInfo.muted });
+    if ((info.url || '').includes('sound.html')) self.__muteLog.push({ id, url: info.url });
+  }, chrome.tabs.onUpdated.addListener(self.__muteListener), true)`);
+  const r = await ok('open_tab', { url: `${base}/pages/sound.html?muted`, muted: true });
+  const tab = r.tab.id;
+  await swEval('chrome.tabs.onUpdated.removeListener(self.__muteListener), true');
+  assert.match(r.text, /^Opened tab \d+ in the background \(the user's view did not change\), muted: "Sound" /);
+  assert.deepEqual(await mutedInfo(tab), { muted: true, reason: 'extension', extensionId: EXT_ID });
+  const log = (await swEval('self.__muteLog')).filter((e) => e.id === tab);
+  const mutedAt = log.findIndex((e) => e.muted === true);
+  const loadedAt = log.findIndex((e) => e.url);
+  assert.ok(mutedAt >= 0 && loadedAt >= 0 && mutedAt < loadedAt, `muted before loading the page: ${JSON.stringify(log)}`);
+
+  // list_tabs: muted, then playing sound too once the page plays (a click is a user gesture).
+  assert.match((await ok('list_tabs')).text, new RegExp(`- tab ${tab}: "Sound" \\S+ \\(current, muted\\)`));
+  await ok('click', { tab, selector: '#play' });
+  await until(async () => /\(current, muted, playing sound\)/.test((await ok('list_tabs')).text), 'list_tabs to say playing sound');
+
+  // Kept across a navigation (Chrome's tab mute, not the page's).
+  await ok('navigate', { tab, url: `${base}/pages/sound.html?again` });
+  assert.equal((await mutedInfo(tab)).muted, true);
+
+  // Already muted; then unmuted; unmuted again; muted (default) without `tab`: the current tab.
+  assert.equal((await ok('mute_tab', { tab })).text, `Tab ${tab} was already muted (by cctether); it stays muted.`);
+  assert.equal((await ok('mute_tab', { tab, muted: false })).text, `Unmuted tab ${tab} (it was muted by cctether).`);
+  assert.equal((await mutedInfo(tab)).muted, false);
+  assert.equal((await ok('mute_tab', { tab, muted: false })).text, `Tab ${tab} was not muted; nothing changed.`);
+  assert.equal((await ok('mute_tab')).text, `Muted tab ${tab}: no sound from it reaches the user, also after it navigates.`);
+  assert.equal((await mutedInfo(tab)).muted, true);
+
+  // mute_tab does not change the current tab.
+  const other = await openShared('/pages/nav-a.html?mute-other');
+  await ok('mute_tab', { tab });
+  assert.match((await ok('list_tabs')).text, new RegExp(`- tab ${other}: .*\\(current`));
+  await ok('mute_tab', { tab, muted: false });
+  assert.doesNotMatch((await ok('list_tabs')).text, new RegExp(`- tab ${tab}: .*muted`));
+
+  await fails('mute_tab', { tab, muted: 'yes' }, 'bad_args');
+  await fails('mute_tab', { tab: 987654321 }, 'no_tab');
+  await fails('open_tab', { url: `${base}/pages/nav-a.html`, muted: 1 }, 'bad_args');
+  await ok('close_tab', { tab: other });
+  await ok('close_tab', { tab });
+});
+
+test('mute_tab: only shared tabs; restricted pages too', async () => {
+  await browser.cdp.send('Target.createTarget', { url: `${base}/pages/nav-a.html?mute-outside`, background: true });
+  const outside = await until(() => tabIdFor('nav-a.html?mute-outside'), 'the outside tab');
+  const e = await fails('mute_tab', { tab: outside }, 'not_shared');
+  assert.match(e.message, /Share this tab/);
+  assert.equal((await mutedInfo(outside)).muted, false);
+  await swEval(`chrome.tabs.remove(${outside})`);
+
+  const tab = await openShared('/pages/nav-a.html?mute-restricted');
+  await swEval(`chrome.tabs.update(${tab}, { url: 'chrome://version' })`);
+  await new Promise((r) => setTimeout(r, 500));
+  assert.match((await ok('mute_tab', { tab })).text, /^Muted tab \d+/);
+  assert.equal((await mutedInfo(tab)).muted, true);
+  await ok('close_tab', { tab });
+});
+
+test('mute_tab leaves other mutes alone; a tab that leaves the group is not touched', async () => {
+  // Another extension mutes a shared tab: cctether says so, doesn't take it over, won't unmute it.
+  const { targetId: otherPage } = await browser.cdp.send('Target.createTarget', { url: `chrome-extension://${loggerId}/act.html`, background: true });
+  const other = await browser.cdp.attach(otherPage);
+  const a = await openShared('/pages/sound.html?other-ext');
+  await until(() => other.evaluate('typeof chrome.tabs?.update === "function"').catch(() => false), 'the other extension\'s page');
+  await other.evaluate(`chrome.tabs.update(${a}, { muted: true }).then(() => true)`);
+  await browser.cdp.send('Target.closeTarget', { targetId: otherPage });
+  assert.match((await ok('list_tabs')).text, new RegExp(`- tab ${a}: .*muted by another extension`));
+  assert.equal((await ok('mute_tab', { tab: a })).text, `Tab ${a} was already muted (by another extension); it stays muted.`);
+  assert.deepEqual(await mutedInfo(a), { muted: true, reason: 'extension', extensionId: loggerId }, 'no write: still the other extension\'s');
+  const e = await fails('mute_tab', { tab: a, muted: false }, 'not_own_mute');
+  assert.equal(e.message, `Did not unmute tab ${a}: it was muted by another extension, and cctether only undoes its own mute. Ask the user to unmute it in Chrome.`);
+  assert.equal(e.tab.id, a);
+  assert.equal((await mutedInfo(a)).muted, true);
+  // open_tab without muted (or with false) leaves the tab's sound alone: no write at all.
+  const b = await openShared('/pages/sound.html?no-write', { muted: false });
+  assert.deepEqual(await mutedInfo(b), { muted: false });
+
+  // A tab cctether muted that leaves the group stays as it is (cctether doesn't touch it), and
+  // mute_tab refuses it.
+  await ok('mute_tab', { tab: b });
+  await swEval(`chrome.tabs.ungroup(${b})`);
+  await new Promise((r) => setTimeout(r, 600));
+  assert.equal((await mutedInfo(b)).muted, true);
+  await fails('mute_tab', { tab: b, muted: false }, 'not_shared');
+  await rejoin(b);
+  assert.equal((await ok('mute_tab', { tab: b, muted: false })).text, `Unmuted tab ${b} (it was muted by cctether).`);
+
+  // Paused during the call: checked again right before writing (a pause before the call is the caller's).
+  const paused = await swEval(`self.cctether.runTool('mute_tab', { tab: ${b} }, { paused: () => true })
+    .then(() => 'done', (e2) => e2.code)`);
+  assert.equal(paused, 'paused');
+  assert.equal((await mutedInfo(b)).muted, false, 'nothing written while paused');
+
+  for (const t of [a, b]) await ok('close_tab', { tab: t });
+});
+
+/**
+ * Hold the `n`th chrome.tabGroups.get call (after it read the group) until the test opens the
+ * gate: the moment between "the group is checked" and "the tab is read again, then written".
+ */
+const gateGroupGet = (n) => swEval(`(() => {
+  const orig = chrome.tabGroups.get;
+  self.__groupGetOrig = orig;
+  let calls = 0;
+  self.__gateHit = false;
+  self.__gate = new Promise((r) => { self.__openGate = r; });
+  chrome.tabGroups.get = async function (...a) {
+    const r = await orig.apply(this, a);
+    if (++calls === ${n}) { self.__gateHit = true; await self.__gate; }
+    return r;
+  };
+  return true;
+})()`);
+const openGate = () => swEval('(chrome.tabGroups.get = self.__groupGetOrig, self.__openGate?.(), true)');
+const runAsync = (name, args) => swEval(`(self.__pending = self.cctether.runTool(${JSON.stringify(name)}, ${JSON.stringify(args)},
+  { paused: () => self.__paused === true }).then((r) => ({ ok: true, text: r.content[0].text }), (e) => ({ ok: false, code: e.code, message: e.message, tab: e.tab ?? null })), true)`);
+
+test('mute_tab decides from a read taken right before writing: leaving the group, a pause, another extension', async () => {
+  const tab = await openShared('/pages/sound.html?race');
+  try {
+    // The tab leaves the group while its group is checked: not written.
+    await gateGroupGet(2); // 1: resolveTab, 2: the check right before the write
+    await runAsync('mute_tab', { tab });
+    await until(() => swEval('self.__gateHit'), 'the check to start');
+    await swEval(`chrome.tabs.ungroup(${tab})`);
+    await openGate();
+    let r = await swEval('self.__pending');
+    assert.equal(r.code, 'not_shared', JSON.stringify(r));
+    assert.equal((await mutedInfo(tab)).muted, false, 'nothing written to a tab outside the group');
+    await rejoin(tab);
+
+    // Its group is renamed while the group is checked (the group id stays the same): not written.
+    await swEval(`chrome.tabs.ungroup(${tab}).then(() => chrome.tabs.group({ tabIds: [${tab}] })).then((g) => chrome.tabGroups.update(g, { title: 'cctether' }))`);
+    await gateGroupGet(2);
+    await runAsync('mute_tab', { tab });
+    await until(() => swEval('self.__gateHit'), 'the check to start');
+    await swEval(`chrome.tabs.get(${tab}).then((t) => chrome.tabGroups.update(t.groupId, { title: 'mine' }))`);
+    await openGate();
+    r = await swEval('self.__pending');
+    assert.equal(r.code, 'not_shared', JSON.stringify(r));
+    assert.equal((await mutedInfo(tab)).muted, false, 'nothing written to a tab whose group was renamed');
+    await swEval(`chrome.tabs.ungroup(${tab})`);
+    await rejoin(tab);
+
+    // Paused during the check: not written.
+    await gateGroupGet(2);
+    await runAsync('mute_tab', { tab });
+    await until(() => swEval('self.__gateHit'), 'the check to start');
+    await swEval('self.__paused = true');
+    await openGate();
+    r = await swEval('self.__pending');
+    await swEval('self.__paused = false');
+    assert.equal(r.code, 'paused', JSON.stringify(r));
+    assert.equal((await mutedInfo(tab)).muted, false);
+
+    // cctether muted it; another extension takes the mute over during the check: not unmuted.
+    await ok('mute_tab', { tab });
+    const { targetId } = await browser.cdp.send('Target.createTarget', { url: `chrome-extension://${loggerId}/act.html`, background: true });
+    const other = await browser.cdp.attach(targetId);
+    await until(() => other.evaluate('typeof chrome.tabs?.update === "function"').catch(() => false), 'the other extension\'s page');
+    await gateGroupGet(2);
+    await runAsync('mute_tab', { tab, muted: false });
+    await until(() => swEval('self.__gateHit'), 'the check to start');
+    await other.evaluate(`chrome.tabs.update(${tab}, { muted: true }).then(() => true)`);
+    await openGate();
+    r = await swEval('self.__pending');
+    await browser.cdp.send('Target.closeTarget', { targetId });
+    assert.equal(r.code, 'not_own_mute', JSON.stringify(r));
+    assert.deepEqual(await mutedInfo(tab), { muted: true, reason: 'extension', extensionId: loggerId });
+  } finally {
+    await openGate();
+    await swEval('self.__paused = false');
+    await ok('close_tab', { tab });
+  }
+});
+
+test('open_tab muted: checked again right before loading; stops on about:blank', async () => {
+  // After cctether muted the blank tab, something happens while the debugger attaches (between
+  // muting and loading the page).
+  const armMuteWrite = (then) => swEval(`(() => {
+    const orig = chrome.debugger.attach;
+    self.__attachOrig = orig;
+    chrome.debugger.attach = async function (target, ...rest) {
+      chrome.debugger.attach = orig;
+      const id = target.tabId;
+      ${then}
+      return orig.apply(this, [target, ...rest]);
+    };
+    return true;
+  })()`);
+  const restore = () => swEval('(self.__attachOrig && (chrome.debugger.attach = self.__attachOrig), true)');
+  const urlOf = (tab) => swEval(`chrome.tabs.get(${tab}).then((t) => t.pendingUrl || t.url)`);
+  try {
+    // Its mute is undone (an extension's unmute: here cctether's own call stands in for one).
+    await armMuteWrite('await chrome.tabs.update(id, { muted: false });');
+    let r = await call('open_tab', { url: `${base}/pages/sound.html?undone`, muted: true });
+    assert.equal(r.code, 'internal', JSON.stringify(r));
+    assert.match(r.message, /^Opened tab (\d+) but did not load http:\/\/127\.0\.0\.1:\d+\/pages\/sound\.html\?undone: its mute was undone \(by an extension\) before the page loaded\. It shows about:blank\.$/);
+    assert.equal(await urlOf(r.tab.id), 'about:blank');
+    await ok('close_tab', { tab: r.tab.id });
+
+    // It leaves the group.
+    await armMuteWrite('await chrome.tabs.ungroup(id);');
+    r = await call('open_tab', { url: `${base}/pages/sound.html?left`, muted: true });
+    assert.equal(r.code, 'not_shared', JSON.stringify(r));
+    assert.match(r.message, /but did not load .*sound\.html\?left: it left the cctether group\. It shows about:blank\.$/);
+    assert.equal(await urlOf(r.tab.id), 'about:blank', 'a tab outside the group is not navigated');
+    await swEval(`chrome.tabs.remove(${r.tab.id})`);
+
+    // It is closed: said so (not "it shows about:blank").
+    await armMuteWrite('await chrome.tabs.remove(id);');
+    r = await call('open_tab', { url: `${base}/pages/sound.html?closed`, muted: true });
+    assert.equal(r.code, 'no_tab', JSON.stringify(r));
+    assert.match(r.message, /^Opened tab \d+ but did not load .*sound\.html\?closed: it was closed\.$/);
+
+    // cctether is paused.
+    await armMuteWrite('self.__paused = true;');
+    await runAsync('open_tab', { url: `${base}/pages/sound.html?paused`, muted: true });
+    r = await swEval('self.__pending');
+    await swEval('self.__paused = false');
+    assert.equal(r.code, 'paused', JSON.stringify(r));
+    assert.match(r.message, /did not load .*sound\.html\?paused: cctether was paused\. It shows about:blank\.$/);
+    assert.equal(await tabIdFor('sound.html?paused'), null);
+    await ok('close_tab', { tab: r.tab.id });
+
+    // Nothing in the way: it loads, muted.
+    const ok1 = await ok('open_tab', { url: `${base}/pages/sound.html?fine`, muted: true });
+    assert.match(ok1.text, /, muted: "Sound"/);
+    await ok('close_tab', { tab: ok1.tab.id });
+  } finally {
+    await restore();
+    await swEval('self.__paused = false');
+  }
 });

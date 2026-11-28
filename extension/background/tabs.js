@@ -249,17 +249,25 @@ export function onSharedTabsChanged(cb) {
   return () => changeCallbacks.delete(cb);
 }
 
+// Counts events that can change which tabs are shared (not debounced). A check that reads a tab
+// and its group in several calls compares it before and after, and starts again if it moved: a
+// rename or a move during the reads can't be seen in the reads themselves (browser.js freshShared).
+let scopeEvents = 0;
+export const scopeEventCount = () => scopeEvents;
+const scopeChanged = () => { scopeEvents++; changed(); };
+
 chrome.tabs.onCreated.addListener(changed);
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (currentTabId === tabId) setCurrentTab(null);
-  changed();
+  scopeChanged();
 });
 chrome.tabs.onUpdated.addListener((_id, info) => {
-  if ('groupId' in info || 'url' in info) changed();
+  if ('groupId' in info) scopeChanged();
+  else if ('url' in info) changed();
 });
-chrome.tabs.onAttached.addListener(changed);
-chrome.tabs.onDetached.addListener(changed);
-chrome.tabs.onReplaced.addListener(changed);
-chrome.tabGroups.onCreated.addListener(changed);
-chrome.tabGroups.onUpdated.addListener(changed);
-chrome.tabGroups.onRemoved.addListener(changed);
+chrome.tabs.onAttached.addListener(scopeChanged);
+chrome.tabs.onDetached.addListener(scopeChanged);
+chrome.tabs.onReplaced.addListener(scopeChanged);
+chrome.tabGroups.onCreated.addListener(scopeChanged);
+chrome.tabGroups.onUpdated.addListener(scopeChanged);
+chrome.tabGroups.onRemoved.addListener(scopeChanged);

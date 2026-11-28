@@ -4,15 +4,15 @@
 // Expected failures throw ToolError(code, message) with these codes:
 //   no_tab, not_shared, restricted_url, dialog_open, debugger_busy, no_element, stale_ref,
 //   ambiguous, stale_screenshot, timeout, js_error, navigated, bad_args, not_found,
-//   emulation_changed, busy, internal
-// ("paused" and "not connected" are handled by the caller.) When the failing call had resolved
+//   emulation_changed, busy, not_own_mute, paused, internal
+// (A pause before the call starts, and "not connected", are handled by the caller.) When the failing call had resolved
 // a tab, the error carries it as `error.tab` ({ id, title, url }).
 
 import { ToolError } from './errors.js';
 import { A, int, num, bool, str, oneOf, strOrStrings, listOf, pattern, obj, checkArgs } from './args.js';
 import { resolveTab, setCurrentTab, isRestrictedUrl, restrictedMessage } from '../tabs.js';
 import { session, dialogError, takeLostEmulation } from '../debugger.js';
-import { listTabs, openTab, closeTab, listExtensions, reloadExtension, tabSummary } from './browser.js';
+import { listTabs, openTab, closeTab, muteTab, listExtensions, reloadExtension, tabSummary } from './browser.js';
 import {
   navigate, readPage, find, screenshot, resizeViewport, setColorScheme, evaluate, waitFor,
 } from './page.js';
@@ -51,7 +51,8 @@ function checkDrag(a) {
 }
 
 /**
- * kind: 'browser' = run(args); 'page' = resolve tab, attach debugger, run({ tab, s }, args).
+ * kind: 'browser' = run(args, { paused, live, cancelled }); 'page' = resolve tab, attach debugger,
+ *   run({ tab, s, ... }, args).
  * restrictedOk: the tool works even if the tab shows a restricted page (s is null then).
  * dialogOk: the tool may run while a JS dialog is open.
  * ownsEmulation: the tool manages an emulation itself (resize_viewport, set_color_scheme), so it
@@ -61,8 +62,9 @@ function checkDrag(a) {
  */
 const TOOLS = {
   list_tabs: { kind: 'browser', args: {}, run: listTabs },
-  open_tab: { kind: 'browser', args: { url: str(0, 8192), active: bool() }, run: openTab },
+  open_tab: { kind: 'browser', args: { url: str(0, 8192), active: bool(), muted: bool() }, run: openTab },
   close_tab: { kind: 'browser', args: { tab: A.tab }, required: ['tab'], run: closeTab },
+  mute_tab: { kind: 'browser', args: { muted: bool(), tab: A.tab }, run: muteTab },
   navigate: {
     kind: 'page', restrictedOk: true,
     args: {
@@ -296,7 +298,7 @@ export async function runTool(name, args, { paused = () => false, live = () => t
   try {
     const clean = checkArgs(name, args, def.args, def.required);
     def.check?.(clean);
-    return def.kind === 'page' ? await runPageTool(def, clean, startedAt, { paused, live, cancelled }) : await def.run(clean);
+    return def.kind === 'page' ? await runPageTool(def, clean, startedAt, { paused, live, cancelled }) : await def.run(clean, { paused, live, cancelled });
   } catch (e) {
     if (e instanceof ToolError) throw e;
     const err = new ToolError('internal', `${name} failed unexpectedly: ${e?.message ?? e}`);

@@ -18,7 +18,7 @@ This extension needs a small service, which you run on the computer where Claude
 
 WHAT IT CAN DO
 When your Claude Code asks, cctether can:
-- list, open and close tabs, and navigate
+- list, open and close tabs, navigate, and mute tabs
 - read a page as text, and find elements
 - take screenshots
 - click, type, press keys, scroll, hover, drag and choose menu options

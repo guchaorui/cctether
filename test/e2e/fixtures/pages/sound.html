@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sound</title>
+</head>
+<body>
+<h1>Sound</h1>
+<!-- A click (a real user gesture) starts a quiet tone with Web Audio, so the tab becomes audible. -->
+<button id="play" type="button">Play a tone</button>
+<button id="stop" type="button">Stop</button>
+<p id="state">silent</p>
+<script>
+  let ctx = null;
+  let osc = null;
+  document.getElementById('play').addEventListener('click', async () => {
+    ctx ??= new AudioContext();
+    await ctx.resume();
+    if (osc) return;
+    const gain = ctx.createGain();
+    gain.gain.value = 0.02;
+    osc = ctx.createOscillator();
+    osc.frequency.value = 440;
+    osc.connect(gain).connect(ctx.destination);
+    osc.start();
+    document.getElementById('state').textContent = `playing (${ctx.state})`;
+  });
+  document.getElementById('stop').addEventListener('click', () => {
+    osc?.stop();
+    osc = null;
+    document.getElementById('state').textContent = 'silent';
+  });
+</script>
+</body>
+</html>

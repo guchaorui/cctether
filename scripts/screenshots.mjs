@@ -51,6 +51,7 @@ const VITE = { id: 0, title: 'My extension – options', host: 'localhost:5173' 
 const DOCS = { id: 0, title: 'chrome.tabGroups | API | Chrome for Developers', host: 'developer.chrome.com' };
 const ACTIVITY = [
   { tool: 'screenshot', tab: GH, ok: true, ago: 8 },
+  { tool: 'mute_tab', tab: GH, ok: true, ago: 9 },
   { tool: 'upload_file', tab: GH, ok: true, ago: 10 },
   { tool: 'drag', tab: GH, ok: true, ago: 11 },
   { tool: 'set_color_scheme', tab: GH, ok: true, ago: 12 },
