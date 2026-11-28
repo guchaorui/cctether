@@ -72,11 +72,11 @@
 
 | 在哪 | 版本 | 说明 |
 |---|---|---|
-| 仓库 `main` | 0.8.3 | 已公开（`guchaorui/cctether`），GitHub 上的测试全过 |
-| npm（`cctether`） | 0.8.3 | 2026-11-09 起由 GitHub Actions 可信发布，带来源证明。0.8.1 到 0.8.3 的包都和 Release 里的逐字节一致 |
-| GitHub Release | v0.8.3 | 附插件 zip、npm 包和校验和；两个插件 zip 和本地打的一致 |
-| Chrome 应用商店 | 0.8.0 | 2026-11-27 过审（主人告知），主人 Mac 已自动更新到 0.8.0。0.8.1 到 0.8.3 只改服务端，不用传新包。[商店页面](https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib)，插件 ID `mbkadoolgknacadjkfjjajldmllbkdib` |
-| 主人的服务器 | 0.8.3 | 2026-11-28 从 npm 装的，`cctether check` 全过，新的「upload_file 能用它的文件夹」也是 ✓（服务在 systemd 沙盒里自己查的）。`~/.config` 前一天从 771 改成了 751（`chmod g-w`，要改回就 `chmod g+w ~/.config`），在主人真 Mac 上经公网地址传过一个小文件，网页收到的一字不差 |
+| 仓库 `main` | 0.9.0 | 已公开（`guchaorui/cctether`），GitHub 上的测试全过 |
+| npm（`cctether`） | 0.9.0 | 2026-11-09 起由 GitHub Actions 可信发布，带来源证明。0.8.1 到 0.9.0 的包都和 Release 里的逐字节一致（0.9.0 发布后约 4 分钟 npm 才查得到） |
+| GitHub Release | v0.9.0 | 附插件 zip、npm 包和校验和；两个插件 zip 和本地打的一致 |
+| Chrome 应用商店 | 0.8.0 | 2026-11-27 过审（主人告知），主人 Mac 已自动更新到 0.8.0。0.8.1 到 0.8.3 只改服务端；**0.9.0 改了插件，要传新包**（`dist/cctether-extension-0.9.0-store.zip`）。[商店页面](https://chromewebstore.google.com/detail/cctether/mbkadoolgknacadjkfjjajldmllbkdib)，插件 ID `mbkadoolgknacadjkfjjajldmllbkdib` |
+| 主人的服务器 | 0.9.0 | 2026-11-28 晚从 npm 装的，`cctether check` 全过。开着的会话没重开就拿到了 `mute_tab`；配主人 Mac 上的 0.8.0 插件调用时，回的是「插件 0.8.0、服务 0.9.0，请更新插件」，`open_tab` 的新参数也随提示带到了。0.8.3 那次：新的「upload_file 能用它的文件夹」也是 ✓（服务在 systemd 沙盒里自己查的）。`~/.config` 前一天从 771 改成了 751（`chmod g-w`，要改回就 `chmod g+w ~/.config`），在主人真 Mac 上经公网地址传过一个小文件，网页收到的一字不差 |
 | 主人的 Mac | 商店版 0.8.0 | Chrome 158，连接正常（升级服务时断开十几秒后都自己连回来了） |
 | 官网主页 | 已有卡片 | site-ops 做的。要改卡片交给 site-ops |
 
